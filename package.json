@@ -1,0 +1,22 @@
+{
+  "name": "@cupthread/agentic-coding",
+  "version": "0.1.0",
+  "description": "AI-friendly CLI, skills, and cross-repo synchronization tools for CupThread SaaS and SDKs",
+  "type": "module",
+  "bin": {
+    "cupthread": "./bin/cupthread.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "start": "node bin/cupthread.js",
+    "link:skills": "node bin/cupthread.js skills link"
+  },
+  "dependencies": {
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2"
+  }
+}
