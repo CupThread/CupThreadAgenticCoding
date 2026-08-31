@@ -7,3 +7,6 @@ node_modules/
 
 .DS_Store
 *.log
+
+# ZCode agent session files
+.zcode/
