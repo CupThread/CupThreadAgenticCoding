@@ -1,4 +1,9 @@
-node_modules/
+# Build output
+bin/
 dist/
+
+# Node (historical; JS CLI was removed)
+node_modules/
+
 .DS_Store
 *.log
