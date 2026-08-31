@@ -15,7 +15,6 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 - `cupthread-api`: Public, Console, and Admin API endpoints reference.
 - `cupthread-sdk-sync`: Procedures for keeping API models and SDK implementations in sync.
 - `cupthread-dev`: Local Cloudflare Workers, Pages, and SDK demo execution workflow.
-- Full suite of Clerk authentication skills (`clerk`, `clerk-swift`, `clerk-android`, `clerk-react-patterns`, `clerk-billing`, `clerk-cli`, `clerk-webhooks`, etc.).
 
 ---
 
@@ -40,18 +39,84 @@ go install ./cmd/cupthread
 
 ### Log in
 
-```sh
-# OAuth (opens your browser; use --device on headless machines)
-cupthread auth login
+The CLI supports two authentication methods.
 
-# Or with a personal access token from the Console (Settings → API Tokens)
-cupthread auth login --token cpt_...
+#### Option A — OAuth via browser (recommended for daily use)
+
+```sh
+cupthread auth login
 ```
+
+This opens your browser; you approve access once and the CLI stores a
+long-lived token pair in `~/.config/cupthread/config.json` (file mode
+`0600`). Expired access tokens are refreshed automatically and transparently.
+On machines without a local browser (SSH, containers) use the device flow:
+
+```sh
+cupthread auth login --device
+# First, open:  https://console.cupthread.com/oauth/device
+# Enter code:   CPTW-4F7K
+```
+
+#### Option B — Personal access token (recommended for CI, agents, scripts)
+
+Create a token in the Console under **Settings → API Tokens** (it looks like
+`cpt_...` and is displayed only once at creation). Then either store it:
+
+```sh
+cupthread auth login --token cpt_...
+# or pass "-" to read the token from stdin, keeping it out of your
+# shell history and CI logs:
+cupthread auth login --token - < token.txt
+```
+
+…or skip local storage entirely and pass the token through the environment:
+
+```sh
+export CUPTHREAD_TOKEN="cpt_..."
+cupthread apps list        # every command picks the env token up automatically
+```
+
+How the environment variable behaves:
+
+- `$CUPTHREAD_TOKEN` **overrides** any stored credential, so CI jobs and
+  agents can inject their own token without touching the shared config file.
+- Scope it to a single invocation instead of exporting globally:
+  `CUPTHREAD_TOKEN="cpt_..." cupthread inbox list`
+- It composes with CI secrets and secret managers (GitHub Actions secrets,
+  direnv, 1Password CLI, …). Tokens are high-entropy and can be revoked in
+  the Console at any time.
+- `cupthread auth status` shows which credential is active — it reports
+  `token ($CUPTHREAD_TOKEN)` for the env var versus `token` or `oauth` for
+  the config file.
+- With an env token there is no refresh machinery involved: a PAT is a
+  static credential, so simply create one with a suitable expiry for the job.
+
+`cupthread auth logout` removes stored credentials from this machine (an env
+token simply stops being set); it never revokes anything server-side — revoke
+tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
 
 > The token/OAuth endpoints are being shipped in the platform repository — the
 > contracts are specified in `SaaS/docs/CLI-Access-Tokens.md` and
 > `SaaS/docs/CLI-OAuth.md`. Until then, point the CLI at a local dev API
 > (`--base-url http://127.0.0.1:8787`) or use `$CUPTHREAD_TOKEN`.
+
+### Output formats
+
+Every command renders an aligned table for humans by default, and can emit
+structured output for scripts, agents, and pipelines:
+
+```sh
+cupthread inbox list --json        # shorthand for --output json
+cupthread inbox list -o json       # same thing
+cupthread workspaces list -o yaml  # YAML
+cupthread billing show -o yaml
+```
+
+`--output` (short `-o`) accepts `table` (default), `json`, or `yaml`. In
+`json` mode commands print a faithful, indented copy of the API response; the
+`yaml` variant renders the same data as YAML. `cupthread api request` also
+honors both formats for raw endpoint calls.
 
 ### Manage your projects
 

@@ -18,7 +18,7 @@ Build once (`go build -o bin/cupthread ./cmd/cupthread`, requires Go 1.25+), the
 - `bin/cupthread auth login --token cpt_...` (or plain `bin/cupthread auth login` for the browser OAuth flow): Authenticate.
 - `bin/cupthread workspaces list`, `apps list`, `inbox list`, `features list`, `changelog list`, `billing show`, `search <q>`, …: Manage the caller's CupThread projects (the full Console surface).
 - `bin/cupthread api request GET /api/v1/console/me`: Raw authenticated API passthrough.
-- Append `--json` to any command for stable machine-readable output.
+- Append `--json` (shorthand for `-o json`) or `-o yaml` to any command for stable machine-readable output; default is a human-readable table.
 
 Global overrides: `--base-url` / `$CUPTHREAD_BASE_URL` (default `https://api.cupthread.com`, local dev `http://127.0.0.1:8787`), `--workspace` / `--app` for context, `$CUPTHREAD_TOKEN` for credential injection, `--config` / `$CUPTHREAD_CONFIG` for the config path (default `~/.config/cupthread/config.json`).
 
