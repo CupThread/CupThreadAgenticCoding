@@ -11,6 +11,7 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 ---
 
 ## Agent Skills Included
+- `cupthread-cli`: Guide for using the `cupthread` CLI tool to manage Console resources and workflows.
 - `cupthread-api`: Reference for CupThread public and console backend API endpoints.
 - `cupthread-swift-sdk`: Guide for integrating and using the CupThread Swift SDK (iOS, macOS, visionOS, tvOS).
 - `cupthread-android-sdk`: Guide for integrating and using the CupThread Android SDK (Kotlin & Jetpack Compose).
@@ -26,14 +27,28 @@ requests, roadmap columns, versions, changelog entries, imports (GitHub /
 Linear / Notion / Slack), integrations, notifications, billing, and global
 search. Add `--json` to any command for machine-readable output.
 
-### Build & install
+### Installation
+
+#### Option A — Homebrew Tap (Recommended)
+
+```sh
+brew tap CupThread/tap
+brew install cupthread
+
+# or one-liner:
+brew install CupThread/tap/cupthread
+```
+
+#### Option B — Go Install / Build from Source
 
 Requires Go 1.25+.
 
 ```sh
+# Install directly via Go
+go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
+
+# Or build from local clone
 go build -o bin/cupthread ./cmd/cupthread
-# or install into $GOPATH/bin:
-go install ./cmd/cupthread
 ```
 
 ### Log in

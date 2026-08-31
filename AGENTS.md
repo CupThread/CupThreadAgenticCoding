@@ -10,10 +10,10 @@
 - **Agentic Coding & CLI**: [`CupThread/CupThreadAgenticCoding`](https://github.com/CupThread/CupThreadAgenticCoding) (AI Skills, Go CLI tools)
 
 ## CLI Usage for Agents
-Build once (`go build -o bin/cupthread ./cmd/cupthread`, requires Go 1.25+), then:
+Install via `brew install CupThread/tap/cupthread` (or `go build -o bin/cupthread ./cmd/cupthread`), then:
 
 - `bin/cupthread status --json`: Inspect local repo status in machine-readable JSON.
-- `bin/cupthread skills list`: List all agent skills (`cupthread-api`, `cupthread-swift-sdk`, `cupthread-android-sdk`).
+- `bin/cupthread skills list`: List all agent skills (`cupthread-cli`, `cupthread-api`, `cupthread-swift-sdk`, `cupthread-android-sdk`).
 - `bin/cupthread skills link <targetDir>`: Symlink skills into `.agents`, `.claude`, and `.zcode` of target project.
 - `bin/cupthread auth login --token cpt_...` (or plain `bin/cupthread auth login` for the browser OAuth flow): Authenticate.
 - `bin/cupthread workspaces list`, `apps list`, `inbox list`, `features list`, `changelog list`, `billing show`, `search <q>`, …: Manage the caller's CupThread projects (the full Console surface).
