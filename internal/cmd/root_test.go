@@ -68,10 +68,59 @@ func TestSubcommandTreesComplete(t *testing.T) {
 	}
 }
 
+// TestOutputFlagParsing exercises the global --output/--json resolution in
+// PersistentPreRunE, including the shorthand and invalid values.
+func TestOutputFlagParsing(t *testing.T) {
+	cases := []struct {
+		args    []string
+		wantErr bool
+	}{
+		{args: []string{"skills", "list", "--json"}},
+		{args: []string{"skills", "list", "-o", "json"}},
+		{args: []string{"skills", "list", "-o", "yaml"}},
+		{args: []string{"skills", "list"}},
+		{args: []string{"skills", "list", "-o", "bogus"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		root := newRootCmd()
+		root.SetOut(nil)
+		root.SetArgs(tc.args)
+		err := root.Execute()
+		if tc.wantErr && err == nil {
+			t.Errorf("args %v: expected error, got nil", tc.args)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("args %v: unexpected error %v", tc.args, err)
+		}
+		// The writer format must match the requested output.
+		if A != nil && !tc.wantErr {
+			switch {
+			case contains(tc.args, "--json"), contains(tc.args, "json"):
+				if A.out.Format != output.FormatJSON {
+					t.Errorf("args %v: format = %s, want json", tc.args, A.out.Format)
+				}
+			case contains(tc.args, "yaml"):
+				if A.out.Format != output.FormatYAML {
+					t.Errorf("args %v: format = %s, want yaml", tc.args, A.out.Format)
+				}
+			}
+		}
+	}
+}
+
+func contains(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 // TestOutputWiring keeps the package honest about imports used in tests above.
 func TestOutputWiring(t *testing.T) {
 	var buf bytes.Buffer
-	w := output.New(&buf, false)
+	w := output.New(&buf, output.FormatTable)
 	w.Printf("ok")
 	if buf.String() != "ok\n" {
 		t.Fatalf("unexpected writer output %q", buf.String())

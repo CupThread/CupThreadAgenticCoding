@@ -34,8 +34,8 @@ func newInboxListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/submissions"), q, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Submissions))
 			for _, s := range resp.Submissions {
@@ -85,8 +85,8 @@ func newInboxPriorityCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+args[0]+"/priority"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Priority of %s set to %s", args[0], p)
 			return nil
@@ -110,8 +110,8 @@ func newInboxRetryCmd() *cobra.Command {
 				// 502 carries a structured partial-failure payload; surface it.
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			if resp.Error != nil {
 				return fmt.Errorf("retry failed: %s", *resp.Error)
@@ -140,8 +140,8 @@ func newInboxDeliveriesCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/delivery-jobs"), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Jobs))
 			for _, j := range resp.Jobs {

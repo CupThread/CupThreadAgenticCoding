@@ -19,8 +19,8 @@ func newSearchCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", "/api/v1/console/search", q, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Results))
 			for _, r := range resp.Results {

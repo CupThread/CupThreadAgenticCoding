@@ -103,8 +103,8 @@ the Swift SDK, the Android SDK, and this agentic-coding repository.`,
 				statuses = append(statuses, st)
 			}
 
-			if flagJSON {
-				return A.out.JSON(statuses)
+			if A.structured() {
+				return A.out.Structured(statuses)
 			}
 			rows := make([][]string, 0, len(statuses))
 			for _, st := range statuses {

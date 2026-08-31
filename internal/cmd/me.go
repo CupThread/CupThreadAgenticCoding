@@ -15,8 +15,8 @@ func newMeCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(me)
+			if A.structured() {
+				return A.out.Structured(me)
 			}
 			email := "—"
 			if me.Email != nil {

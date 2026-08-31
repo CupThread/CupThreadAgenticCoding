@@ -2,15 +2,16 @@ package output
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestJSONModeEmitsIndentedJSON(t *testing.T) {
+func TestJSONOutput(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, true)
-	if err := w.JSON(map[string]any{"a": 1}); err != nil {
-		t.Fatalf("JSON: %v", err)
+	w := New(&buf, FormatJSON)
+	if err := w.Structured(map[string]any{"a": 1}); err != nil {
+		t.Fatalf("Structured: %v", err)
 	}
 	got := buf.String()
 	if !strings.Contains(got, "\"a\": 1") {
@@ -21,9 +22,68 @@ func TestJSONModeEmitsIndentedJSON(t *testing.T) {
 	}
 }
 
+func TestYAMLOutput(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatYAML)
+	if err := w.Structured(map[string]any{"a": 1, "b": "x"}); err != nil {
+		t.Fatalf("Structured: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "a: 1") || !strings.Contains(got, `b: x`) {
+		t.Errorf("output = %q", got)
+	}
+}
+
+func TestYAMLNormalizesRawMessage(t *testing.T) {
+	// Fields typed as json.RawMessage must render as structures in YAML,
+	// not as base64-encoded bytes.
+	payload := struct {
+		Name string          `json:"name"`
+		SDK  json.RawMessage `json:"sdk"`
+	}{Name: "app", SDK: json.RawMessage(`{"theme":"dark","enabled":true}`)}
+
+	var buf bytes.Buffer
+	w := New(&buf, FormatYAML)
+	if err := w.Structured(payload); err != nil {
+		t.Fatalf("Structured: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "theme: dark") || !strings.Contains(got, "enabled: true") {
+		t.Errorf("raw JSON not normalized to YAML structures: %q", got)
+	}
+	if strings.Contains(got, "eyK") || strings.Contains(got, "!!binary") {
+		t.Errorf("YAML output contains base64/binary payload: %q", got)
+	}
+}
+
+func TestYAMLKeepsIntegerForm(t *testing.T) {
+	payload := struct {
+		Bytes int `json:"bytes"`
+	}{Bytes: 20000000}
+	var buf bytes.Buffer
+	w := New(&buf, FormatYAML)
+	if err := w.Structured(payload); err != nil {
+		t.Fatalf("Structured: %v", err)
+	}
+	if got := buf.String(); !strings.Contains(got, "bytes: 20000000") {
+		t.Errorf("integer rendered in exponent form: %q", got)
+	}
+}
+
+func TestParseFormat(t *testing.T) {
+	for _, valid := range []string{"table", "json", "yaml"} {
+		if _, err := ParseFormat(valid); err != nil {
+			t.Errorf("ParseFormat(%q) = %v, want nil", valid, err)
+		}
+	}
+	if _, err := ParseFormat("xml"); err == nil {
+		t.Error("ParseFormat(xml) = nil, want error")
+	}
+}
+
 func TestTableAlignsColumns(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, false)
+	w := New(&buf, FormatTable)
 	w.Table([]string{"ID", "Name"}, [][]string{
 		{"1", "short"},
 		{"22", "much-longer-name"},
@@ -46,7 +106,7 @@ func TestTableAlignsColumns(t *testing.T) {
 
 func TestPrintf(t *testing.T) {
 	var buf bytes.Buffer
-	w := New(&buf, false)
+	w := New(&buf, FormatTable)
 	w.Printf("✓ %s", "done")
 	if buf.String() != "✓ done\n" {
 		t.Errorf("output = %q", buf.String())

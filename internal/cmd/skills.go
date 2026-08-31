@@ -61,8 +61,8 @@ func newSkillsListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(map[string]any{"count": len(names), "skills": names})
+			if A.structured() {
+				return A.out.Structured(map[string]any{"count": len(names), "skills": names})
 			}
 			A.out.Printf("%d skills:", len(names))
 			for _, n := range names {

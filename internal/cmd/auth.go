@@ -197,8 +197,8 @@ func newAuthStatusCmd() *cobra.Command {
 				}
 			}
 
-			if flagJSON {
-				return A.out.JSON(row)
+			if A.structured() {
+				return A.out.Structured(row)
 			}
 			A.out.Table([]string{"Field", "Value"}, [][]string{
 				{"Base URL", row.BaseURL},

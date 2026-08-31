@@ -21,11 +21,12 @@ import (
 const Version = "0.2.0"
 
 var (
-	flagJSON     bool
-	flagBaseURL  string
-	flagConfig   string
+	flagJSON      bool
+	flagOutput    string
+	flagBaseURL   string
+	flagConfig    string
 	flagWorkspace string
-	flagApp      string
+	flagApp       string
 )
 
 // app carries shared state to all commands, built once per execution.
@@ -65,7 +66,17 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 		SilenceErrors:         false,
 		DisableFlagsInUseLine: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			A = &app{out: output.New(os.Stdout, flagJSON)}
+			format := output.FormatTable
+			if flagOutput != "" {
+				parsed, err := output.ParseFormat(flagOutput)
+				if err != nil {
+					return err
+				}
+				format = parsed
+			} else if flagJSON {
+				format = output.FormatJSON
+			}
+			A = &app{out: output.New(os.Stdout, format)}
 			path := flagConfig
 			if path == "" {
 				var err error
@@ -85,7 +96,8 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 	}
 
 	pf := root.PersistentFlags()
-	pf.BoolVar(&flagJSON, "json", false, "Output machine-readable JSON")
+	pf.StringVarP(&flagOutput, "output", "o", "", "Output format for results: table, json or yaml (default table)")
+	pf.BoolVar(&flagJSON, "json", false, "Shorthand for --output json")
 	pf.StringVar(&flagBaseURL, "base-url", "", "API base URL (default $CUPTHREAD_BASE_URL, then https://api.cupthread.com)")
 	pf.StringVar(&flagConfig, "config", "", "Config file path (default $CUPTHREAD_CONFIG, then ~/.config/cupthread/config.json)")
 	pf.StringVarP(&flagWorkspace, "workspace", "w", "", "Workspace ID (default: saved default from 'workspaces use')")
@@ -111,6 +123,12 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 		newSkillsCmd(),
 	)
 	return root
+}
+
+// structured reports whether output should be machine-formatted (json/yaml)
+// rather than the default human table.
+func (a *app) structured() bool {
+	return a.out.Format != output.FormatTable
 }
 
 // baseURL resolves the API origin from flags, env, config, then the default.

@@ -36,8 +36,8 @@ func newWorkspacesListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(me.Workspaces)
+			if A.structured() {
+				return A.out.Structured(me.Workspaces)
 			}
 			rows := make([][]string, 0, len(me.Workspaces))
 			for _, entry := range me.Workspaces {
@@ -80,8 +80,8 @@ func newWorkspacesCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", "/api/v1/console/workspaces", nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Created workspace %s (%s)", resp.Workspace.Name, resp.Workspace.ID)
 			A.out.Printf("  Make it the default with: cupthread workspaces use %s", resp.Workspace.ID)
@@ -153,8 +153,8 @@ func newWorkspaceMembersCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/members"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				rows := make([][]string, 0, len(resp.Members))
 				for _, m := range resp.Members {
@@ -196,8 +196,8 @@ func newMembersInviteCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/members"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			verb := "Added"
 			if resp.Status == "invited" {
@@ -233,8 +233,8 @@ func newMembersAddCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/members"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			if resp.Member != nil {
 				A.out.Printf("✓ Added member %s (%s)", clerkUserID, resp.Member.ID)
@@ -265,7 +265,7 @@ func newMembersSetRoleCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/members/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Role of %s set to %s", args[0], role)
 			}
 			return nil
@@ -291,7 +291,7 @@ func newMembersRemoveCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/members/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Removed member %s", args[0])
 			}
 			return nil
@@ -315,8 +315,8 @@ func newWorkspaceInvitationsCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/invitations"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				rows := make([][]string, 0, len(resp.Invitations))
 				for _, inv := range resp.Invitations {
@@ -339,7 +339,7 @@ func newWorkspaceInvitationsCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/invitations/"+args[0]), nil, nil, nil); err != nil {
 					return err
 				}
-				if !flagJSON {
+				if !A.structured() {
 					A.out.Printf("✓ Revoked invitation %s", args[0])
 				}
 				return nil

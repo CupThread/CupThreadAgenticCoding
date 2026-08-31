@@ -67,8 +67,8 @@ func newFeaturesListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Table([]string{"ID", "Title", "Column", "Version", "Votes", "Approved", "Revenue", "Created"}, featureRows(resp.Requests))
 			A.out.Printf("(%d shown, %d total)", len(resp.Requests), resp.Total)
@@ -146,8 +146,8 @@ func newFeaturesGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(r)
+			if A.structured() {
+				return A.out.Structured(r)
 			}
 			A.out.Table([]string{"Field", "Value"}, [][]string{
 				{"ID", r.ID},
@@ -199,8 +199,8 @@ func newFeaturesCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/feature-requests"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Created feature request %s", resp.ID)
 			return nil
@@ -252,7 +252,7 @@ func newFeaturesUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/feature-requests/"+r.ID), nil, body, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Updated feature request %s", r.ID)
 			}
 			return nil
@@ -283,7 +283,7 @@ func newFeaturesApproveCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/feature-requests/"+r.ID+"/approve"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Approved %s", r.ID)
 			}
 			return nil
@@ -309,7 +309,7 @@ func newFeaturesDeleteCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/feature-requests/"+r.ID), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Deleted %s", r.ID)
 			}
 			return nil
@@ -355,8 +355,8 @@ func newFeaturesForwardCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", path, nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			if resp.Success {
 				A.out.Printf("✓ Forwarded to GitHub %s: %s", resp.TargetType, resp.URL)

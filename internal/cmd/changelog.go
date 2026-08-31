@@ -49,8 +49,8 @@ func newChangelogListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/changelog"), q, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Entries))
 			for _, e := range resp.Entries {
@@ -120,8 +120,8 @@ func newChangelogCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Created changelog entry %s", resp.ID)
 			return nil
@@ -192,8 +192,8 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+args[0]), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Updated changelog entry %s", resp.ID)
 			return nil
@@ -223,7 +223,7 @@ func newChangelogDeleteCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Deleted changelog entry %s", args[0])
 			}
 			return nil
@@ -245,8 +245,8 @@ func newChangelogPublishCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/publish"), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Published %s", resp.ID)
 			return nil
@@ -267,7 +267,7 @@ func newChangelogUnpublishCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/unpublish"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Unpublished %s", args[0])
 			}
 			return nil

@@ -32,7 +32,7 @@ func newIntegrationsStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flagJSON {
+			if A.structured() {
 				out := map[string]any{}
 				var gh api.GitHubIntegrationResponse
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/github"), nil, nil, &gh); err != nil {
@@ -47,7 +47,7 @@ func newIntegrationsStatusCmd() *cobra.Command {
 					out[p] = resp.Integration
 					out[p+"_oauthConfigured"] = resp.OAuthConfigured
 				}
-				return A.out.JSON(out)
+				return A.out.Structured(out)
 			}
 			rows := [][]string{}
 			var gh api.GitHubIntegrationResponse
@@ -100,8 +100,8 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/github/authorize"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				A.out.Printf("%s", resp.URL)
 				return nil
@@ -119,7 +119,7 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/github"), nil, nil, nil); err != nil {
 					return err
 				}
-				if !flagJSON {
+				if !A.structured() {
 					A.out.Printf("✓ Disconnected GitHub")
 				}
 				return nil
@@ -138,8 +138,8 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/github/repos"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				rows := make([][]string, 0, len(resp.Repos))
 				for _, r := range resp.Repos {
@@ -181,8 +181,8 @@ URL in a browser and finish the OAuth flow in the Console.`,
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/integrations/github/manual-token"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp.Integration)
+			if A.structured() {
+				return A.out.Structured(resp.Integration)
 			}
 			A.out.Printf("✓ Connected GitHub as %s", orDash(deref(resp.Integration.AccountLogin)))
 			return nil
@@ -211,8 +211,8 @@ func newGitHubCategoriesCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", path, nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Categories))
 			for _, c := range resp.Categories {
@@ -282,7 +282,7 @@ func newGitHubConfigCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PATCH", path, nil, body, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
 			}
 			return nil
@@ -320,8 +320,8 @@ func newGitHubSyncCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", path, nil, map[string]any{}, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Synced %d requests", resp.SyncedCount)
 			for _, e := range resp.Errors {
@@ -352,8 +352,8 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 					if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov+"/authorize"), nil, nil, &resp); err != nil {
 						return err
 					}
-					if flagJSON {
-						return A.out.JSON(resp)
+					if A.structured() {
+						return A.out.Structured(resp)
 					}
 					A.out.Printf("%s", resp.URL)
 					return nil
@@ -371,7 +371,7 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 					if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/"+prov), nil, nil, nil); err != nil {
 						return err
 					}
-					if !flagJSON {
+					if !A.structured() {
 						A.out.Printf("✓ Disconnected %s", prov)
 					}
 					return nil
@@ -390,8 +390,8 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 					if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov), nil, nil, &resp); err != nil {
 						return err
 					}
-					if flagJSON {
-						return A.out.JSON(resp)
+					if A.structured() {
+						return A.out.Structured(resp)
 					}
 					A.out.Printf("Connected: %s", boolYesNo(resp.Integration != nil))
 					if resp.Integration != nil {
@@ -426,8 +426,8 @@ func newProviderConnectCmd(prov string) *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/integrations/"+prov+"/manual-token"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp.Integration)
+			if A.structured() {
+				return A.out.Structured(resp.Integration)
 			}
 			A.out.Printf("✓ Connected %s as %s", prov, orDash(deref(resp.Integration.AccountLogin)))
 			return nil

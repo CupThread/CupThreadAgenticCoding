@@ -34,8 +34,8 @@ func newColumnsListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", fmt.Sprintf("%s/apps/%s/columns", wsPath(ws, ""), appID), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Columns))
 			for _, c := range resp.Columns {
@@ -89,8 +89,8 @@ func newColumnsCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", fmt.Sprintf("%s/apps/%s/columns", wsPath(ws, ""), appID), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Created column %s (%s)", resp.Name, resp.ID)
 			return nil
@@ -137,7 +137,7 @@ func newColumnsUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/columns/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Updated column %s", args[0])
 			}
 			return nil
@@ -164,7 +164,7 @@ func newColumnsDeleteCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/columns/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Deleted column %s", args[0])
 			}
 			return nil
@@ -196,8 +196,8 @@ func newVersionsListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", fmt.Sprintf("%s/apps/%s/versions", wsPath(ws, ""), appID), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Versions))
 			for _, v := range resp.Versions {
@@ -238,8 +238,8 @@ func newVersionsCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", fmt.Sprintf("%s/apps/%s/versions", wsPath(ws, ""), appID), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Created version %s (%s)", resp.Label, resp.ID)
 			return nil
@@ -287,7 +287,7 @@ func newVersionsUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/versions/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Updated version %s", args[0])
 			}
 			return nil
@@ -315,7 +315,7 @@ func newVersionsDeleteCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/versions/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Deleted version %s", args[0])
 			}
 			return nil

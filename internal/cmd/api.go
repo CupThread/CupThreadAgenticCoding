@@ -57,8 +57,8 @@ the CLI does not wrap yet.`,
 			var raw json.RawMessage
 			if err := A.client.Do(cmd.Context(), method, path, nil, body, &raw); err != nil {
 				// Still surface structured API errors as JSON when in JSON mode.
-				if apiErr, ok := err.(*api.APIError); ok && flagJSON {
-					return A.out.JSON(map[string]any{
+				if apiErr, ok := err.(*api.APIError); ok && A.structured() {
+					return A.out.Structured(map[string]any{
 						"error":   apiErr.Message,
 						"code":    apiErr.Code,
 						"status":  apiErr.Status,
@@ -67,8 +67,8 @@ the CLI does not wrap yet.`,
 				return err
 			}
 
-			if flagJSON {
-				return A.out.JSON(raw)
+			if A.structured() {
+				return A.out.Structured(raw)
 			}
 			if len(raw) == 0 {
 				A.out.Printf("✓ %s %s succeeded (no response body)", method, path)

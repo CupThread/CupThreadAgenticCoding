@@ -42,8 +42,8 @@ func newAppsListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/apps"), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Apps))
 			for _, appRec := range resp.Apps {
@@ -95,8 +95,8 @@ func newAppsCreateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/apps"), nil, body, &appRec); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(appRec)
+			if A.structured() {
+				return A.out.Structured(appRec)
 			}
 			A.out.Printf("✓ Created app %s (%s)", appRec.Name, appRec.AppID)
 			A.out.Printf("  App key: %s", appRec.AppKey)
@@ -119,8 +119,8 @@ func newAppsGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(appRec)
+			if A.structured() {
+				return A.out.Structured(appRec)
 			}
 			printApp(appRec)
 			return nil
@@ -241,8 +241,8 @@ func newAppsUpdateCmd() *cobra.Command {
 				fmt.Sprintf("%s/apps/%s", wsPath(ws, ""), appRec.AppID), nil, body, &updated); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(updated)
+			if A.structured() {
+				return A.out.Structured(updated)
 			}
 			A.out.Printf("✓ Updated app %s", updated.AppID)
 			return nil
@@ -314,8 +314,8 @@ func newAppSettingsCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/settings"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				for _, entry := range resp.Apps {
 					A.out.Printf("App: %s (%s)", entry.Name, entry.AppID)
@@ -324,11 +324,11 @@ func newAppSettingsCmd() *cobra.Command {
 				}
 				return nil
 			}
-			if flagJSON {
+			if A.structured() {
 				if settings == nil {
-					return A.out.JSON(map[string]any{"settings": nil})
+					return A.out.Structured(map[string]any{"settings": nil})
 				}
-				return A.out.JSON(settings)
+				return A.out.Structured(settings)
 			}
 			printSettings(settings)
 			return nil
@@ -383,8 +383,8 @@ func newAppSettingsCmd() *cobra.Command {
 				fmt.Sprintf("%s/apps/%s/settings", wsPath(ws, ""), appRec.AppID), nil, body, &updated); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(updated)
+			if A.structured() {
+				return A.out.Structured(updated)
 			}
 			A.out.Printf("✓ Settings updated for %s", appRec.AppID)
 			return nil

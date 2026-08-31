@@ -32,8 +32,8 @@ func newBillingShowCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/billing"), nil, nil, &usage); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(usage)
+			if A.structured() {
+				return A.out.Structured(usage)
 			}
 			A.out.Table([]string{"Field", "Value"}, [][]string{
 				{"Tier", usage.Tier + " (" + usage.Status + ")"},
@@ -66,8 +66,8 @@ func newBillingCheckoutCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/billing/checkout"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			if resp.CheckoutURL == nil {
 				msg := "billing is not configured on the server"
@@ -106,8 +106,8 @@ func newBillingPortalCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/billing/portal"), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			if resp.PortalURL == nil {
 				msg := "billing is not configured on the server"
@@ -145,8 +145,8 @@ func newBillingAddonsCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/billing/addons"), nil, body, &usage); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(usage)
+			if A.structured() {
+				return A.out.Structured(usage)
 			}
 			A.out.Printf("✓ Add-ons updated: %d extra apps, %d extra members (monthly $%.2f)",
 				usage.ExtraApps, usage.ExtraMembers, usage.MonthlyPrice)

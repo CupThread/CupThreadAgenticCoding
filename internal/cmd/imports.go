@@ -59,8 +59,8 @@ func newImportsListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", path, nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			printImportJobs(resp.Jobs)
 			return nil
@@ -82,8 +82,8 @@ func newImportsHistoryCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/imports"), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			printImportJobs(resp.Jobs)
 			return nil
@@ -179,8 +179,8 @@ per-source flags.`,
 			if err := A.client.Do(cmd.Context(), "POST", path, nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Import job %s (%s/%s, status %s)", resp.Job.ID, resp.Job.Source, resp.Job.Mode, resp.Job.Status)
 			A.out.Printf("  Drain: %d processed, %d succeeded, %d failed", resp.Drain.Processed, resp.Drain.Succeeded, resp.Drain.Failed)
@@ -224,8 +224,8 @@ func newImportsGetCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/imports/"+args[0]), nil, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			j := resp.Job
 			errMsg := "—"
@@ -260,7 +260,7 @@ func newImportsCancelCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+args[0]+"/cancel"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Canceled import %s", args[0])
 			}
 			return nil
@@ -291,8 +291,8 @@ func newImportsRerunCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+args[0]+"/rerun"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Re-running import %s (status %s)", resp.Job.ID, resp.Job.Status)
 			return nil

@@ -57,8 +57,8 @@ func newNotificationsListCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/notifications"), q, nil, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			rows := make([][]string, 0, len(resp.Notifications))
 			for _, n := range resp.Notifications {
@@ -93,7 +93,7 @@ func newNotificationsReadCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/"+args[0]+"/read"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Marked %s as read", args[0])
 			}
 			return nil
@@ -114,7 +114,7 @@ func newNotificationsReadAllCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/read-all"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !flagJSON {
+			if !A.structured() {
 				A.out.Printf("✓ Marked all notifications as read")
 			}
 			return nil
@@ -138,8 +138,8 @@ func newNotificationPrefsCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/notification-prefs"), nil, nil, &resp); err != nil {
 					return err
 				}
-				if flagJSON {
-					return A.out.JSON(resp)
+				if A.structured() {
+					return A.out.Structured(resp)
 				}
 				rows := make([][]string, 0, len(resp.Prefs))
 				for _, p := range resp.Prefs {
@@ -197,8 +197,8 @@ switch the channel on or off.`,
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/notification-prefs"), nil, body, &resp); err != nil {
 				return err
 			}
-			if flagJSON {
-				return A.out.JSON(resp)
+			if A.structured() {
+				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ %s notifications: %s", resp.Channel, boolYesNo(resp.Enabled))
 			return nil
