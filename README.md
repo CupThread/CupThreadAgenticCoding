@@ -11,10 +11,9 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 ---
 
 ## Agent Skills Included
-- `cupthread-ecosystem`: Master navigation, platform concepts, and architecture.
-- `cupthread-api`: Public, Console, and Admin API endpoints reference.
-- `cupthread-sdk-sync`: Procedures for keeping API models and SDK implementations in sync.
-- `cupthread-dev`: Local Cloudflare Workers, Pages, and SDK demo execution workflow.
+- `cupthread-api`: Reference for CupThread public and console backend API endpoints.
+- `cupthread-swift-sdk`: Guide for integrating and using the CupThread Swift SDK (iOS, macOS, visionOS, tvOS).
+- `cupthread-android-sdk`: Guide for integrating and using the CupThread Android SDK (Kotlin & Jetpack Compose).
 
 ---
 
@@ -95,11 +94,6 @@ How the environment variable behaves:
 `cupthread auth logout` removes stored credentials from this machine (an env
 token simply stops being set); it never revokes anything server-side — revoke
 tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
-
-> The token/OAuth endpoints are being shipped in the platform repository — the
-> contracts are specified in `SaaS/docs/CLI-Access-Tokens.md` and
-> `SaaS/docs/CLI-OAuth.md`. Until then, point the CLI at a local dev API
-> (`--base-url http://127.0.0.1:8787`) or use `$CUPTHREAD_TOKEN`.
 
 ### Output formats
 

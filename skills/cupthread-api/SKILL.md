@@ -1,18 +1,16 @@
 ---
 name: cupthread-api
-description: Comprehensive reference for CupThread backend API endpoints, authentication flows, Cloudflare Workers architecture, and D1 database schema.
+description: Reference for CupThread backend API endpoints, authentication flows, and public/console APIs.
 ---
 
 # CupThread API Reference
 
 ## Base URL
-- Production: `https://api.cupthread.com`
-- Local: `http://127.0.0.1:8787`
+- `https://api.cupthread.com`
 
 ## Roles & Authentication
-- **Developer / Console**: Clerk JWT session + workspace tenant verification (`/api/v1/console/*`).
+- **Developer / Console**: Developer API token / Bearer token or Clerk session (`/api/v1/console/*`).
 - **End-User / Public**: Identified by `appKey` in path/query/body, optional `X-User-Token` header for anonymous voting/draft tracking (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`).
-- **Platform Admin**: Clerk session + platform role (`/api/v1/platform/*`).
 
 ## Key Public & SDK Endpoints
 
