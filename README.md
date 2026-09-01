@@ -6,6 +6,8 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 - 🌐 [CupThread.com](https://cupthread.com) — Feedback SaaS platform, developer console, and API.
 - 🍏 [CupThread/CupThreadSwiftSDK](https://github.com/CupThread/CupThreadSwiftSDK) — Apple platform SDK (SwiftUI / SPM / XCFramework).
 - 🤖 [CupThread/CupThreadAndroidSDK](https://github.com/CupThread/CupThreadAndroidSDK) — Android SDK (Jetpack Compose / Maven).
+- ⚛️ [CupThread/CupThreadReactNativeSDK](https://github.com/CupThread/CupThreadReactNativeSDK) — React Native & Expo SDK (TypeScript).
+- 💙 [CupThread/CupThreadFlutterSDK](https://github.com/CupThread/CupThreadFlutterSDK) — Flutter SDK (Dart).
 - 🧠 [CupThread/CupThreadAgenticCoding](https://github.com/CupThread/CupThreadAgenticCoding) — AI-friendly CLI & Skills for pair programming.
 
 ---
@@ -15,6 +17,8 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 - `cupthread-api`: Reference for CupThread public and console backend API endpoints.
 - `cupthread-swift-sdk`: Guide for integrating and using the CupThread Swift SDK (iOS, macOS, visionOS, tvOS).
 - `cupthread-android-sdk`: Guide for integrating and using the CupThread Android SDK (Kotlin & Jetpack Compose).
+- `cupthread-react-native-sdk`: Guide for integrating and using the CupThread React Native SDK (TypeScript & Expo).
+- `cupthread-flutter-sdk`: Guide for integrating and using the CupThread Flutter SDK (Dart & Flutter).
 
 ---
 

@@ -89,6 +89,8 @@ the Swift SDK, the Android SDK, and this agentic-coding repository.`,
 			}{
 				{"apple-sdk", filepath.Join(workspace, "CupThreadSwiftSDK")},
 				{"android-sdk", filepath.Join(workspace, "CupThreadAndroidSDK")},
+				{"react-native-sdk", filepath.Join(workspace, "CupThreadReactNativeSDK")},
+				{"flutter-sdk", filepath.Join(workspace, "CupThreadFlutterSDK")},
 				{"agentic-coding", root},
 			}
 

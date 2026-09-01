@@ -7,13 +7,15 @@
 - **CupThread Platform**: [`CupThread.com`](https://cupthread.com) (Main SaaS website & backend API; source in the local `~/g/SaaS` monorepo)
 - **Apple SDK**: [`CupThread/CupThreadSwiftSDK`](https://github.com/CupThread/CupThreadSwiftSDK) (SwiftUI / SPM / XCFramework)
 - **Android SDK**: [`CupThread/CupThreadAndroidSDK`](https://github.com/CupThread/CupThreadAndroidSDK) (Kotlin + Jetpack Compose)
+- **React Native SDK**: [`CupThread/CupThreadReactNativeSDK`](https://github.com/CupThread/CupThreadReactNativeSDK) (TypeScript + React Native)
+- **Flutter SDK**: [`CupThread/CupThreadFlutterSDK`](https://github.com/CupThread/CupThreadFlutterSDK) (Dart + Flutter)
 - **Agentic Coding & CLI**: [`CupThread/CupThreadAgenticCoding`](https://github.com/CupThread/CupThreadAgenticCoding) (AI Skills, Go CLI tools)
 
 ## CLI Usage for Agents
 Install via `brew install CupThread/tap/cupthread` (or `go build -o bin/cupthread ./cmd/cupthread`), then:
 
 - `bin/cupthread status --json`: Inspect local repo status in machine-readable JSON.
-- `bin/cupthread skills list`: List all agent skills (`cupthread-cli`, `cupthread-api`, `cupthread-swift-sdk`, `cupthread-android-sdk`).
+- `bin/cupthread skills list`: List all agent skills (`cupthread-cli`, `cupthread-api`, `cupthread-swift-sdk`, `cupthread-android-sdk`, `cupthread-react-native-sdk`, `cupthread-flutter-sdk`).
 - `bin/cupthread skills link <targetDir>`: Symlink skills into `.agents`, `.claude`, and `.zcode` of target project.
 - `bin/cupthread auth login --token cpt_...` (or plain `bin/cupthread auth login` for the browser OAuth flow): Authenticate.
 - `bin/cupthread workspaces list`, `apps list`, `inbox list`, `features list`, `changelog list`, `billing show`, `search <q>`, …: Manage the caller's CupThread projects (the full Console surface).
