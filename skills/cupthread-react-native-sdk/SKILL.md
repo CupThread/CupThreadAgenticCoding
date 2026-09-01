@@ -13,6 +13,14 @@ The **CupThread React Native SDK** (`@cupthread/react-native`) provides cross-pl
 
 ---
 
+## 🤖 Quick Prompt for Coding Agents
+
+```text
+Integrate the CupThread feedback roadmap and feature requests screens into this React Native app using appKey app_xxx.
+```
+
+---
+
 ## Installation
 
 ```sh

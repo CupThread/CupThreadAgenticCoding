@@ -13,6 +13,14 @@ The **CupThread Swift SDK** (`CupThreadFeedback`) provides native SwiftUI compon
 
 ---
 
+## 🤖 Quick Prompt for Coding Agents
+
+```text
+Integrate the CupThread SwiftUI roadmap board and changelog overlay into this app using appKey app_xxx.
+```
+
+---
+
 ## Installation
 
 ### Swift Package Manager (SPM)

@@ -13,6 +13,14 @@ The **CupThread Android SDK** (`dev.cupthread:feedback`) provides native Jetpack
 
 ---
 
+## 🤖 Quick Prompt for Coding Agents
+
+```text
+Integrate the CupThread feedback roadmap and changelog screens into this Android app using appKey app_xxx.
+```
+
+---
+
 ## Installation
 
 ### 1. Add Maven Repository

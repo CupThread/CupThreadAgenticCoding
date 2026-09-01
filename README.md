@@ -1,6 +1,13 @@
 # CupThread Agentic Coding
 
-AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.com](https://cupthread.com) platform.
+AI-friendly CLI, agent skills, OpenAPI specifications, and SDK synchronization tools for the [CupThread.com](https://cupthread.com) platform.
+
+## 🌐 Official API Documentation & OpenAPI Spec
+- **Interactive API Documentation (Web)**: [https://cupthread.com/api](https://cupthread.com/api)
+- **OpenAPI 3.1 Spec (JSON)**: [https://api.cupthread.com/api/v1/openapi.json](https://api.cupthread.com/api/v1/openapi.json)
+- **OpenAPI 3.1 Spec (YAML)**: [https://api.cupthread.com/api/v1/openapi.yaml](https://api.cupthread.com/api/v1/openapi.yaml)
+
+---
 
 ## 🤖 Install AI Skills via `npx skills`
 
@@ -34,6 +41,37 @@ npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-api
 
 ---
 
+## 📋 Quick-Start Prompts for AI Coding Agents
+
+After installing the desired skill, copy and paste the corresponding prompt to your coding agent:
+
+#### For Flutter Apps
+```text
+Integrate the CupThread feedback roadmap and changelog screens into this Flutter app using appKey app_xxx.
+```
+
+#### For React Native & Expo Apps
+```text
+Integrate the CupThread feedback roadmap and feature requests screens into this React Native app using appKey app_xxx.
+```
+
+#### For Apple (Swift / SwiftUI) Apps
+```text
+Integrate the CupThread SwiftUI roadmap board and changelog overlay into this app using appKey app_xxx.
+```
+
+#### For Android (Kotlin / Compose) Apps
+```text
+Integrate the CupThread feedback roadmap and changelog screens into this Android app using appKey app_xxx.
+```
+
+#### For Custom API Integrations
+```text
+Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com/api/v1/openapi.json and implement a type-safe API client for submitting user feedback and querying roadmaps.
+```
+
+---
+
 ## 📚 Available Skills Reference
 
 | Skill Name | Description | Target Surface |
@@ -43,7 +81,7 @@ npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-api
 | **`cupthread-swift-sdk`** | Guide for integrating SwiftUI views (`RoadmapBoardView`, `FeatureRequestsView`, `WhatsNewView`, `.changelogOverlay`, `FeedbackComposerView`), SPM packages, and client APIs. | Apple platforms (iOS, macOS, visionOS, tvOS) |
 | **`cupthread-android-sdk`** | Guide for integrating Jetpack Compose screens (`RoadmapBoardScreen`, `FeatureRequestsScreen`, `WhatsNewScreen`, `ChangelogOverlay`, `FeedbackComposer`), Maven dependencies, and client APIs. | Android apps (Kotlin / Material 3) |
 | **`cupthread-cli`** | Complete guide for using the `cupthread` Go CLI tool to manage Console resources (workspaces, apps, feedback inbox, features, changelog, imports, billing) directly from the terminal. | Command Line / CI / Agent scripts |
-| **`cupthread-api`** | OpenAPI 3.1 schema and endpoint reference for CupThread console management APIs and public application feedback endpoints. | Custom API integrations & backend webhooks |
+| **`cupthread-api`** | OpenAPI 3.1 schema and interactive documentation (`https://cupthread.com/api`) for CupThread console management APIs and public feedback endpoints. | Custom API integrations & backend webhooks |
 
 ---
 
