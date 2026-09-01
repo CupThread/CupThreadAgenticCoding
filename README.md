@@ -2,6 +2,51 @@
 
 AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.com](https://cupthread.com) platform.
 
+## 🤖 Install AI Skills via `npx skills`
+
+Install the official CupThread skills directly into your workspace for **Claude Code, Cursor, Windsurf, Gemini CLI, Codex, Copilot, Antigravity**, and any Agentic Coding environment:
+
+### Install all CupThread Skills
+```sh
+npx skills add CupThread/CupThreadAgenticCoding
+```
+
+### Or Install Specific Skills by Target SDK / Use Case
+```sh
+# Flutter & Dart SDK
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-flutter-sdk
+
+# React Native & Expo SDK
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-react-native-sdk
+
+# Apple Platform (Swift & SwiftUI) SDK
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-swift-sdk
+
+# Android Platform (Kotlin & Jetpack Compose) SDK
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-android-sdk
+
+# CupThread CLI & Console Management
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-cli
+
+# CupThread Public & Backend API Reference
+npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-api
+```
+
+---
+
+## 📚 Available Skills Reference
+
+| Skill Name | Description | Target Surface |
+| :--- | :--- | :--- |
+| **`cupthread-flutter-sdk`** | Guide for integrating Flutter widgets (`RoadmapBoardScreen`, `FeatureRequestsScreen`, `WhatsNewScreen`, `ChangelogOverlay`, `FeedbackComposer`, `UserProfileView`), models, and client APIs. | Flutter apps (iOS, Android, macOS, Windows, Linux, Web) |
+| **`cupthread-react-native-sdk`** | Guide for integrating React Native / Expo screens (`<RoadmapBoardScreen />`, `<FeatureRequestsScreen />`, `<WhatsNewScreen />`, `<ChangelogOverlay />`, `<FeedbackComposer />`), ThemeProvider, and client APIs. | React Native & Expo apps (iOS, Android, Web) |
+| **`cupthread-swift-sdk`** | Guide for integrating SwiftUI views (`RoadmapBoardView`, `FeatureRequestsView`, `WhatsNewView`, `.changelogOverlay`, `FeedbackComposerView`), SPM packages, and client APIs. | Apple platforms (iOS, macOS, visionOS, tvOS) |
+| **`cupthread-android-sdk`** | Guide for integrating Jetpack Compose screens (`RoadmapBoardScreen`, `FeatureRequestsScreen`, `WhatsNewScreen`, `ChangelogOverlay`, `FeedbackComposer`), Maven dependencies, and client APIs. | Android apps (Kotlin / Material 3) |
+| **`cupthread-cli`** | Complete guide for using the `cupthread` Go CLI tool to manage Console resources (workspaces, apps, feedback inbox, features, changelog, imports, billing) directly from the terminal. | Command Line / CI / Agent scripts |
+| **`cupthread-api`** | OpenAPI 3.1 schema and endpoint reference for CupThread console management APIs and public application feedback endpoints. | Custom API integrations & backend webhooks |
+
+---
+
 ## CupThread Ecosystem
 - 🌐 [CupThread.com](https://cupthread.com) — Feedback SaaS platform, developer console, and API.
 - 🍏 [CupThread/CupThreadSwiftSDK](https://github.com/CupThread/CupThreadSwiftSDK) — Apple platform SDK (SwiftUI / SPM / XCFramework).
@@ -9,16 +54,6 @@ AI-friendly CLI, agent skills, and SDK synchronization tools for the [CupThread.
 - ⚛️ [CupThread/CupThreadReactNativeSDK](https://github.com/CupThread/CupThreadReactNativeSDK) — React Native & Expo SDK (TypeScript).
 - 💙 [CupThread/CupThreadFlutterSDK](https://github.com/CupThread/CupThreadFlutterSDK) — Flutter SDK (Dart).
 - 🧠 [CupThread/CupThreadAgenticCoding](https://github.com/CupThread/CupThreadAgenticCoding) — AI-friendly CLI & Skills for pair programming.
-
----
-
-## Agent Skills Included
-- `cupthread-cli`: Guide for using the `cupthread` CLI tool to manage Console resources and workflows.
-- `cupthread-api`: Reference for CupThread public and console backend API endpoints.
-- `cupthread-swift-sdk`: Guide for integrating and using the CupThread Swift SDK (iOS, macOS, visionOS, tvOS).
-- `cupthread-android-sdk`: Guide for integrating and using the CupThread Android SDK (Kotlin & Jetpack Compose).
-- `cupthread-react-native-sdk`: Guide for integrating and using the CupThread React Native SDK (TypeScript & Expo).
-- `cupthread-flutter-sdk`: Guide for integrating and using the CupThread Flutter SDK (Dart & Flutter).
 
 ---
 
