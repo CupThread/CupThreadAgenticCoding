@@ -43,31 +43,31 @@ npx skills add CupThread/CupThreadAgenticCoding --skill cupthread-api
 
 ## 📋 Quick-Start Prompts for AI Coding Agents
 
-After installing the desired skill, copy and paste the corresponding prompt to your coding agent:
+After installing the desired skill, copy and paste the corresponding prompt to your coding agent. The agent will integrate the SDK with a clean placeholder config and guide you on where to securely place your App Key:
 
 #### For Flutter Apps
 ```text
-Integrate the CupThread feedback roadmap and changelog screens into this Flutter app using appKey app_xxx.
+Integrate the CupThread SDK (feedback, roadmap, and changelog screens) into this Flutter app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via --dart-define or .env).
 ```
 
 #### For React Native & Expo Apps
 ```text
-Integrate the CupThread feedback roadmap and feature requests screens into this React Native app using appKey app_xxx.
+Integrate the CupThread SDK (feedback, roadmap, and feature requests screens) into this React Native app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via .env or EXPO_PUBLIC_CUPTHREAD_APP_KEY).
 ```
 
 #### For Apple (Swift / SwiftUI) Apps
 ```text
-Integrate the CupThread SwiftUI roadmap board and changelog overlay into this app using appKey app_xxx.
+Integrate the CupThread SwiftUI SDK (roadmap board, changelog overlay, and feedback composer) into this app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via xcconfig or local config).
 ```
 
 #### For Android (Kotlin / Compose) Apps
 ```text
-Integrate the CupThread feedback roadmap and changelog screens into this Android app using appKey app_xxx.
+Integrate the CupThread Android SDK (roadmap, changelog, and feedback screens) into this Compose app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via local.properties).
 ```
 
 #### For Custom API Integrations
 ```text
-Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com/api/v1/openapi.json and implement a type-safe API client for submitting user feedback and querying roadmaps.
+Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com/api/v1/openapi.json and implement a type-safe API client for submitting user feedback and querying roadmaps, using environment variables for the App Key.
 ```
 
 ---

@@ -16,7 +16,7 @@ The **CupThread React Native SDK** (`@cupthread/react-native`) provides cross-pl
 ## 🤖 Quick Prompt for Coding Agents
 
 ```text
-Integrate the CupThread feedback roadmap and feature requests screens into this React Native app using appKey app_xxx.
+Integrate the CupThread SDK (feedback, roadmap, and feature requests screens) into this React Native app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via .env or EXPO_PUBLIC_CUPTHREAD_APP_KEY).
 ```
 
 ---

@@ -16,7 +16,7 @@ The **CupThread Flutter SDK** (`cupthread_feedback`) provides native Flutter wid
 ## 🤖 Quick Prompt for Coding Agents
 
 ```text
-Integrate the CupThread feedback roadmap and changelog screens into this Flutter app using appKey app_xxx.
+Integrate the CupThread SDK (feedback, roadmap, and changelog screens) into this Flutter app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via --dart-define or .env).
 ```
 
 ---

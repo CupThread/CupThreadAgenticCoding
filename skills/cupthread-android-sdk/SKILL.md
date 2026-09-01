@@ -16,7 +16,7 @@ The **CupThread Android SDK** (`dev.cupthread:feedback`) provides native Jetpack
 ## 🤖 Quick Prompt for Coding Agents
 
 ```text
-Integrate the CupThread feedback roadmap and changelog screens into this Android app using appKey app_xxx.
+Integrate the CupThread Android SDK (roadmap, changelog, and feedback screens) into this Compose app. Scaffold a dedicated configuration helper with a placeholder for the App Key, and at the end, remind me with step-by-step instructions on how to set my App Key safely (e.g. via local.properties).
 ```
 
 ---
