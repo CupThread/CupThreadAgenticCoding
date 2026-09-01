@@ -20,6 +20,10 @@ type Client struct {
 	HTTP    *http.Client
 	// WorkspaceID, when set, is sent as X-Workspace-Id on every request.
 	WorkspaceID string
+	// AppKey, when set, is sent as X-App-Key on every request.
+	AppKey string
+	// UserToken, when set, is sent as X-User-Token on every request.
+	UserToken string
 	// Token returns the bearer credential. It is consulted per request so
 	// OAuth tokens can be refreshed transparently.
 	Token func(ctx context.Context) (string, error)
@@ -55,6 +59,11 @@ func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequi
 // non-nil the response body is decoded into it (*json.RawMessage receives
 // the undecoded bytes).
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.DoWithHeaders(ctx, method, path, query, nil, body, out)
+}
+
+// DoWithHeaders performs an API request with optional extra request headers.
+func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -74,6 +83,17 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	}
 	if c.WorkspaceID != "" {
 		req.Header.Set("X-Workspace-Id", c.WorkspaceID)
+	}
+	if c.AppKey != "" {
+		req.Header.Set("X-App-Key", c.AppKey)
+	}
+	if c.UserToken != "" {
+		req.Header.Set("X-User-Token", c.UserToken)
+	}
+	for k, v := range headers {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
 	}
 	if c.Token != nil {
 		token, err := c.Token(ctx)

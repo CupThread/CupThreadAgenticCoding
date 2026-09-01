@@ -13,9 +13,9 @@ import (
 func TestCommandTreeComplete(t *testing.T) {
 	root := newRootCmd()
 	want := []string{
-		"api", "apps", "auth", "billing", "changelog", "columns", "features",
+		"api", "apps", "auth", "billing", "changelog", "columns", "comments", "features",
 		"imports", "inbox", "integrations", "me", "notifications", "search",
-		"skills", "status", "versions", "workspaces",
+		"skills", "status", "users", "versions", "workspaces",
 	}
 	got := map[string]bool{}
 	for _, sub := range root.Commands() {
@@ -35,6 +35,7 @@ func TestSubcommandTreesComplete(t *testing.T) {
 		"apps":          {"list", "create", "get", "update", "use", "settings"},
 		"inbox":         {"list", "priority", "retry", "deliveries"},
 		"features":      {"list", "get", "create", "update", "approve", "delete", "forward"},
+		"comments":      {"list", "create"},
 		"columns":       {"list", "create", "update", "delete"},
 		"versions":      {"list", "create", "update", "delete"},
 		"changelog":     {"list", "create", "update", "delete", "publish", "unpublish"},
@@ -42,6 +43,7 @@ func TestSubcommandTreesComplete(t *testing.T) {
 		"integrations":  {"status", "github", "linear", "notion", "slack"},
 		"notifications": {"list", "read", "read-all", "prefs"},
 		"billing":       {"show", "checkout", "portal", "addons"},
+		"users":         {"profile"},
 		"api":           {"request"},
 		"skills":        {"list", "link"},
 	}

@@ -101,9 +101,21 @@ cupthread inbox update <feedback-id> --status resolved
 ```sh
 cupthread features list                    # List feature requests
 cupthread features list --sort revenue     # Sort by user ARR/MRR (Pro plan)
+cupthread features get <request-id>        # View feature request details (requester info, commenters)
 cupthread features create --title "Dark mode" --description "Add dark theme support"
 cupthread columns list                     # List public roadmap columns
 cupthread versions list                    # List release milestones / versions
+```
+
+### Comments & @Replies
+```sh
+cupthread comments list <featureRequestId> # List comments on a feature request
+cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
+```
+
+### User Profiles
+```sh
+cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
 ```
 
 ### Changelog & Releases

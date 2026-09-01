@@ -121,3 +121,47 @@ func TestDoTokenProviderErrorPropagates(t *testing.T) {
 		t.Fatalf("expected token provider error, got %v", err)
 	}
 }
+
+func TestDoSendsClientIdentificationHeaders(t *testing.T) {
+	var gotAppKey, gotUserToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAppKey = r.Header.Get("X-App-Key")
+		gotUserToken = r.Header.Get("X-User-Token")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.AppKey = "app_key_123"
+	client.UserToken = "usr_tok_456"
+
+	if err := client.Do(context.Background(), "GET", "/api/v1/feature-requests/req_1/comments", nil, nil, nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotAppKey != "app_key_123" {
+		t.Errorf("X-App-Key = %q, want %q", gotAppKey, "app_key_123")
+	}
+	if gotUserToken != "usr_tok_456" {
+		t.Errorf("X-User-Token = %q, want %q", gotUserToken, "usr_tok_456")
+	}
+}
+
+func TestDoWithCustomHeaders(t *testing.T) {
+	var gotCustom string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCustom = r.Header.Get("X-Custom-Header")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	headers := map[string]string{"X-Custom-Header": "custom-value"}
+	if err := client.DoWithHeaders(context.Background(), "GET", "/x", nil, headers, nil, nil); err != nil {
+		t.Fatalf("DoWithHeaders: %v", err)
+	}
+	if gotCustom != "custom-value" {
+		t.Errorf("X-Custom-Header = %q, want %q", gotCustom, "custom-value")
+	}
+}

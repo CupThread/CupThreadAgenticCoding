@@ -160,6 +160,8 @@ func newFeaturesGetCmd() *cobra.Command {
 				{"Votes", strconv.Itoa(r.VoteCount)},
 				{"Requester", orDash(deref(r.RequesterName))},
 				{"Email", orDash(deref(r.RequesterEmail))},
+				{"Avatar", orDash(deref(r.RequesterAvatarUrl))},
+				{"Clerk ID", orDash(deref(r.RequesterClerkId))},
 				{"Revenue", fmt.Sprintf("%.0f", r.RevenueTotal)},
 				{"Paying voters", strconv.Itoa(r.PayingVoters)},
 				{"GitHub discussion", orDash(deref(r.GithubDiscussionURL))},

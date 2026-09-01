@@ -170,11 +170,14 @@ type AdminFeatureRequest struct {
 	ColumnColor      *string `json:"columnColor"`
 	VersionID        *string `json:"versionId"`
 	VersionLabel     *string `json:"versionLabel"`
-	ReleasedVersion  *string `json:"releasedVersion"`
-	RequesterName    *string `json:"requesterName"`
-	RequesterEmail   *string `json:"requesterEmail"`
-	Approved         bool    `json:"approved"`
-	ApprovedAt       *string `json:"approvedAt"`
+	ReleasedVersion    *string           `json:"releasedVersion"`
+	RequesterName      *string           `json:"requesterName"`
+	RequesterEmail     *string           `json:"requesterEmail"`
+	RequesterAvatarUrl *string           `json:"requesterAvatarUrl"`
+	RequesterClerkId   *string           `json:"requesterClerkId"`
+	RecentCommenters   []RecentCommenter `json:"recentCommenters"`
+	Approved           bool              `json:"approved"`
+	ApprovedAt         *string           `json:"approvedAt"`
 	CreatedByAdmin   bool    `json:"createdByAdmin"`
 	VoteCount        int     `json:"voteCount"`
 	RevenueTotal     float64 `json:"revenueTotal"`
@@ -189,6 +192,42 @@ type AdminFeatureRequest struct {
 type AdminListFeatureRequestsResponse struct {
 	Requests []AdminFeatureRequest `json:"requests"`
 	Total    int                   `json:"total"`
+}
+
+type RecentCommenter struct {
+	AuthorName  *string `json:"authorName"`
+	ClerkUserID *string `json:"clerkUserId"`
+	AvatarURL   *string `json:"avatarUrl"`
+}
+
+// ─── Feature request comments ────────────────────────────────────────────────
+
+type FeatureRequestComment struct {
+	ID                 string  `json:"id"`
+	FeatureRequestID   string  `json:"featureRequestId"`
+	AuthorName         *string `json:"authorName"`
+	AuthorEmail        *string `json:"authorEmail"`
+	AuthorAvatarURL    *string `json:"authorAvatarUrl"`
+	Body               string  `json:"body"`
+	ParentID           *string `json:"parentId"`
+	ReplyToClerkID     *string `json:"replyToClerkId"`
+	ReplyToAuthorName  *string `json:"replyToAuthorName"`
+	IsHidden           bool    `json:"isHidden"`
+	CreatedAt          string  `json:"createdAt"`
+}
+
+type ListCommentsResponse struct {
+	Comments []FeatureRequestComment `json:"comments"`
+}
+
+type CreateCommentInput struct {
+	Body              string  `json:"body"`
+	AuthorName        *string `json:"authorName,omitempty"`
+	AuthorEmail       *string `json:"authorEmail,omitempty"`
+	AuthorAvatarURL   *string `json:"authorAvatarUrl,omitempty"`
+	ParentID          *string `json:"parentId,omitempty"`
+	ReplyToClerkID    *string `json:"replyToClerkId,omitempty"`
+	ReplyToAuthorName *string `json:"replyToAuthorName,omitempty"`
 }
 
 // ─── Columns & versions ──────────────────────────────────────────────────────
@@ -480,6 +519,45 @@ type AddMemberResponse struct {
 type CreateWorkspaceResponse struct {
 	Workspace  Workspace       `json:"workspace"`
 	Membership WorkspaceMember `json:"membership"`
+}
+
+// ─── Public user profiles ────────────────────────────────────────────────────
+
+type UserProfile struct {
+	ClerkUserID  string  `json:"clerkUserId"`
+	DisplayName  *string `json:"displayName"`
+	AvatarURL    *string `json:"avatarUrl"`
+	Bio          *string `json:"bio"`
+	WebsiteURL   *string `json:"websiteUrl"`
+	HideComments bool    `json:"hideComments"`
+	CreatedAt    string  `json:"createdAt"`
+	UpdatedAt    string  `json:"updatedAt"`
+}
+
+type PublicAppSummary struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Slug         string  `json:"slug"`
+	IconURL      *string `json:"iconUrl"`
+	Description  *string `json:"description"`
+	RequestCount int     `json:"requestCount"`
+}
+
+type UserProfileComment struct {
+	ID                  string `json:"id"`
+	Body                string `json:"body"`
+	CreatedAt           string `json:"createdAt"`
+	FeatureRequestID    string `json:"featureRequestId"`
+	FeatureRequestTitle string `json:"featureRequestTitle"`
+	AppID               string `json:"appId"`
+	AppName             string `json:"appName"`
+}
+
+type PublicUserProfileResponse struct {
+	Profile        UserProfile          `json:"profile"`
+	Apps           []PublicAppSummary   `json:"apps"`
+	RecentComments []UserProfileComment `json:"recentComments"`
+	HideComments   bool                 `json:"hideComments"`
 }
 
 // ─── Generic envelopes ───────────────────────────────────────────────────────
