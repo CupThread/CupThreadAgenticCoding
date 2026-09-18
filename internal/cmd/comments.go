@@ -12,8 +12,137 @@ func newCommentsCmd() *cobra.Command {
 		Use:   "comments",
 		Short: "Manage feature-request comments",
 	}
-	cmd.AddCommand(newCommentsListCmd(), newCommentsCreateCmd())
+	cmd.AddCommand(newCommentsListCmd(), newCommentsCreateCmd(), newCommentsModerationCmd())
 	return cmd
+}
+
+// newCommentsModerationCmd groups the Console Moderation endpoints
+// (workspace-scoped, bearer-token authenticated) as opposed to the public
+// portal list/create commands above.
+func newCommentsModerationCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "moderation",
+		Short: "Moderate comments in a workspace (Console Moderation API)",
+	}
+	cmd.AddCommand(newCommentsModerationListCmd(), newCommentsModerationHideCmd(true), newCommentsModerationHideCmd(false), newCommentsModerationDeleteCmd())
+	return cmd
+}
+
+// notFoundErr converts an API 404 into an explicit message naming the
+// workspace, since moderation endpoints answer 404 (not success:false) when
+// the comment or feature request is missing from the workspace.
+func notFoundErr(kind, id, ws string) error {
+	return fmt.Errorf("%s %q not found in workspace %s", kind, id, ws)
+}
+
+func newCommentsModerationListCmd() *cobra.Command {
+	list := &cobra.Command{
+		Use:   "list <feature-request-id>",
+		Short: "List all comments on a feature request, including hidden ones",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, err := workspaceClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var resp api.ListCommentsResponse
+			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/feature-requests/"+args[0]+"/comments"), nil, nil, &resp); err != nil {
+				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+					return notFoundErr("feature request", args[0], ws)
+				}
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(resp)
+			}
+			rows := make([][]string, 0, len(resp.Comments))
+			for _, c := range resp.Comments {
+				id := c.ID
+				if len(id) > 12 {
+					id = id[:12]
+				}
+				hidden := ""
+				if c.IsHidden {
+					hidden = "yes"
+				}
+				rows = append(rows, []string{
+					id,
+					orDash(deref(c.AuthorName)),
+					truncate(c.Body, 60),
+					orDash(deref(c.ReplyToAuthorName)),
+					hidden,
+					cutDate(c.CreatedAt),
+				})
+			}
+			A.out.Table([]string{"ID", "Author", "Body", "Reply To", "Hidden", "Created"}, rows)
+			A.out.Printf("(%d comments)", len(resp.Comments))
+			return nil
+		},
+	}
+	return list
+}
+
+// newCommentsModerationHideCmd builds the hide (isHidden=true) and unhide
+// (isHidden=false) variants of PATCH .../comments/{commentId}/hide.
+func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
+	use, short := "hide", "Hide a comment from public portals (kept for moderation)"
+	if !hidden {
+		use, short = "unhide", "Make a hidden comment visible again"
+	}
+	return &cobra.Command{
+		Use:   use + " <comment-id>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, err := workspaceClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var resp api.SuccessResponse
+			body := api.HideCommentInput{IsHidden: hidden}
+			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+args[0]+"/hide"), nil, body, &resp); err != nil {
+				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+					return notFoundErr("comment", args[0], ws)
+				}
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(resp)
+			}
+			if hidden {
+				A.out.Printf("✓ Comment %s hidden", args[0])
+			} else {
+				A.out.Printf("✓ Comment %s unhidden", args[0])
+			}
+			return nil
+		},
+	}
+}
+
+func newCommentsModerationDeleteCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <comment-id>",
+		Short: "Permanently delete a comment",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, err := workspaceClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var resp api.SuccessResponse
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+args[0]), nil, nil, &resp); err != nil {
+				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+					return notFoundErr("comment", args[0], ws)
+				}
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(resp)
+			}
+			A.out.Printf("✓ Comment %s deleted", args[0])
+			return nil
+		},
+	}
 }
 
 func newCommentsListCmd() *cobra.Command {

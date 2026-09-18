@@ -294,6 +294,17 @@ type ListCommentsResponse struct {
 	Comments []FeatureRequestComment `json:"comments"`
 }
 
+// HideCommentInput is the body of PATCH .../comments/{commentId}/hide.
+type HideCommentInput struct {
+	IsHidden bool `json:"isHidden"`
+}
+
+// SuccessResponse is the body of successful moderation writes (comment
+// hide/delete); a missing target answers 404 instead of {"success": false}.
+type SuccessResponse struct {
+	Success bool `json:"success"`
+}
+
 type CreateCommentInput struct {
 	Body              string  `json:"body"`
 	AuthorName        *string `json:"authorName,omitempty"`

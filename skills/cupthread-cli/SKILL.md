@@ -124,6 +124,14 @@ cupthread comments list <featureRequestId> # List comments on a feature request
 cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
 ```
 
+### Comment Moderation (workspace)
+```sh
+cupthread comments moderation list <featureRequestId>  # All comments incl. hidden ones (404 if not in workspace)
+cupthread comments moderation hide <commentId>         # Hide a comment from public portals
+cupthread comments moderation unhide <commentId>       # Restore a hidden comment
+cupthread comments moderation delete <commentId>       # Permanently delete a comment (404 if not in workspace)
+```
+
 ### User Profiles
 ```sh
 cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
