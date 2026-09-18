@@ -274,6 +274,35 @@ type RecentCommenter struct {
 	AvatarURL   *string `json:"avatarUrl"`
 }
 
+// PublicFeatureRequest is one row of the unauthenticated public
+// feature-request feed served by GET /api/v1/feature-requests (a subset of
+// the wire record; the decoder ignores the remaining fields).
+type PublicFeatureRequest struct {
+	ID           string  `json:"id"`
+	Title        string  `json:"title"`
+	Description  string  `json:"description"`
+	Status       string  `json:"status"`
+	ColumnName   *string `json:"columnName"`
+	VersionLabel *string `json:"versionLabel"`
+	VoteCount    int     `json:"voteCount"`
+	HasVoted     bool    `json:"hasVoted"`
+	CommentCount int     `json:"commentCount"`
+	CreatedAt    string  `json:"createdAt"`
+	UpdatedAt    string  `json:"updatedAt"`
+}
+
+// ListPublicFeatureRequestsResponse is the public feature-request feed
+// (DATA-01). hasMore is exact — the server fetches one extra row — and
+// NextCursor is nil on the last page; pass it back as the `cursor` query
+// parameter. `hasMore`/`nextCursor` are always present on the wire, even
+// for plain offset listings.
+type ListPublicFeatureRequestsResponse struct {
+	Requests   []PublicFeatureRequest `json:"requests"`
+	Total      int                    `json:"total"`
+	HasMore    bool                   `json:"hasMore"`
+	NextCursor *string                `json:"nextCursor"`
+}
+
 // ─── Feature request comments ────────────────────────────────────────────────
 
 type FeatureRequestComment struct {

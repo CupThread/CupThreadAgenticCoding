@@ -32,7 +32,7 @@ func TestSubcommandTreesComplete(t *testing.T) {
 	cases := map[string][]string{
 		"auth":          {"login", "logout", "status"},
 		"workspaces":    {"list", "create", "use", "members", "invitations"},
-		"apps":          {"list", "create", "get", "update", "use", "settings", "public-config", "public-changelog"},
+		"apps":          {"list", "create", "get", "update", "use", "settings", "public-config", "public-changelog", "public-feature-requests"},
 		"inbox":         {"list", "priority", "retry", "deliveries"},
 		"features":      {"list", "get", "create", "update", "approve", "delete", "forward"},
 		"comments":      {"list", "create", "moderation"},

@@ -95,6 +95,9 @@ cupthread apps public-config <app-key>     # Show the public portal config (no l
                                            # private apps fail with 404 like unknown keys (fail-closed)
 cupthread apps public-changelog <app-key>  # Fetch the public changelog feed (no login required);
                                            # cursor-paginated: follow --cursor <nextCursor> until hasMore=false
+cupthread apps public-feature-requests <app-key>  # Fetch the public feature-request feed (no login required);
+                                           # keyset-cursor-paginated (DATA-01): follow --cursor <nextCursor> until
+                                           # hasMore=false; --offset is ignored when --cursor is set; --q filters
 ```
 
 ### Feedback Inbox Triage
@@ -123,6 +126,13 @@ cupthread features create --title "Dark mode" --description "Add dark theme supp
 cupthread columns list                     # List public roadmap columns
 cupthread versions list                    # List release milestones / versions
 ```
+`features list` reads the console (workspace-scoped) listing. To walk the
+**public** feed an end user would see, use
+`cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
+(DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
+until the table reports no more pages. `hasMore`/`nextCursor` are always
+present in the `--json` output (`nextCursor` is `null` on the last page), and
+`--offset` is ignored whenever `--cursor` is set.
 
 ### Comments & @Replies
 ```sh

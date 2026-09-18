@@ -134,6 +134,15 @@ Attachment uploads go through **pre-allocated upload sessions** — feedback sub
 
 Use the per-file `maxBytes` from the session response to pre-validate file sizes client-side, and reuse one session for all files of a single composer submission.
 
+## Feature-Request List Pagination (Cursor Keyset)
+
+The public feature-request feed — `GET /api/v1/feature-requests` — is keyset-cursor-paginated (DATA-01). Every response carries `requests`, `total`, `hasMore`, and `nextCursor`; walk large boards by echoing `nextCursor` back as the `cursor` query parameter until it returns `null`:
+
+- **Prefer `cursor` over incrementing `offset`** — offset pages scan and discard rows server-side, while the cursor jumps straight to the next key. A request that sends `cursor` ignores `offset`.
+- **Treat the cursor as opaque** — never parse, construct, or persist one beyond forwarding it back; malformed cursors fail with `400 {"error": "Invalid cursor"}`.
+- **`hasMore` is exact** (the server fetches one extra row) and `total` stays constant across pages; `limit` is clamped to 1–200 (default 50), and `q`/`versionId` filters compose with the cursor.
+- **The built-in roadmap/feedback screens need no changes** — the fields are additive; clients that only read `requests` keep working.
+
 ## Feature Request Vote Rate Limits (429 Too Many Requests)
 
 The public vote endpoints — `POST` / `DELETE /api/v1/feature-requests/{id}/vote` — are rate limited **per client IP** to **20 requests per minute**. Throttled calls fail with `429 {"error": "Too many votes. Please try again shortly."}` (a vote-specific body, distinct from the generic `Too many requests…` text). When building custom voting UI on top of the client:
