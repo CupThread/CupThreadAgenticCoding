@@ -23,8 +23,12 @@ func newMeCmd() *cobra.Command {
 				email = *me.Email
 			}
 			A.out.Printf("User: %s (%s)", orDash(email), me.ClerkUserID)
+			owned := 0
 			rows := make([][]string, 0, len(me.Workspaces))
 			for _, entry := range me.Workspaces {
+				if entry.Membership.Role == "owner" {
+					owned++
+				}
 				tier := "—"
 				if entry.Subscription != nil {
 					tier = entry.Subscription.Tier
@@ -40,6 +44,9 @@ func newMeCmd() *cobra.Command {
 					entry.Membership.Role,
 					tier,
 				})
+			}
+			if me.MaxWorkspaces != nil {
+				A.out.Printf("Owned workspaces: %d of %d", owned, *me.MaxWorkspaces)
 			}
 			A.out.Table([]string{"ID", "Name", "Slug", "Role", "Tier"}, rows)
 			return nil
