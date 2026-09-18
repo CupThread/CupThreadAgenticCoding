@@ -194,6 +194,17 @@ bin/cupthread skills list
 bin/cupthread skills link /path/to/target/project
 ```
 
+### SDK Payment-Attribute Signing Helper
+Bodies sent to `PUT /api/v1/public/apps/{appKey}/user` that report payment attributes (`isPaying`, `mrr`, `plan` — an explicit `null` counts) must carry an HMAC-SHA256 `signature` + `timestamp` (contract: API skill, "SDK Payment-Attribute Signing (DATA-03)"). The CLI computes reference signatures so coding agents can cross-check platform implementations:
+
+```sh
+cupthread api sign-user-attrs --app-key app_demo12345 --secret cpt_sk_... \
+  --user-token 3fa85f64-5717-4562-b3fc-2c963f66afa6 \
+  --input ./user-attrs.json
+```
+
+`--input` takes the **exact JSON body you plan to send** (`"-"` or `"@"` reads stdin); `--user-token` is the `X-User-Token` header value used only when the body carries no `userToken`. Output: the canonical string, the lowercase-hex signature, and the epoch timestamp (pin with `--timestamp <epoch>` for reproducible vectors; `--json` emits `{appKey, userToken, timestamp, canonical, signature}`). Add the returned `signature` and `timestamp` fields to the body without changing the signed values, and send within ±300 seconds of the timestamp. A body with no payment attributes prints a note that it may be sent unsigned.
+
 ---
 
 ## 5. Agent Best Practices

@@ -228,6 +228,11 @@ directly:
 
 ```sh
 cupthread api request GET /api/v1/console/me
+
+# Compute the HMAC signature that PUT /api/v1/public/apps/{appKey}/user
+# requires for payment-attribute bodies (isPaying/mrr/plan):
+cupthread api sign-user-attrs --app-key app_demo12345 --secret cpt_sk_... \
+  --input ./user-attrs.json
 ```
 
 ### Repo tooling
