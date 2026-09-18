@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -33,7 +34,8 @@ func newAppsCmd() *cobra.Command {
 
 // newAppsPublicConfigCmd shows the PublicAppConfig served to the public web
 // portal and SDKs. The endpoints are unauthenticated, so this works before
-// 'auth login'.
+// 'auth login'. Private apps fail closed with the same 404 as unknown app
+// keys (SEC-37), so a 404 here means "not found or not public".
 func newAppsPublicConfigCmd() *cobra.Command {
 	var workspaceSlug, appSlug string
 	publicConfig := &cobra.Command{
@@ -43,7 +45,10 @@ func newAppsPublicConfigCmd() *cobra.Command {
 
 Resolve the app by its public app key, or by workspace and app slugs:
   cupthread apps public-config <app-key>
-  cupthread apps public-config --workspace-slug <slug> --app-slug <slug>`,
+  cupthread apps public-config --workspace-slug <slug> --app-slug <slug>
+
+Private apps fail closed: both routes return 404 {"error": "App not found"},
+identical to an unknown app key. Only public apps return a 200 body.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var path string
@@ -61,6 +66,10 @@ Resolve the app by its public app key, or by workspace and app slugs:
 			}
 			var config api.PublicAppConfig
 			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", path, nil, nil, &config); err != nil {
+				var apiErr *api.APIError
+				if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+					return fmt.Errorf("app not found or not public: %w", err)
+				}
 				return err
 			}
 			if A.structured() {
