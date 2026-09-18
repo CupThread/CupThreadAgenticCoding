@@ -56,8 +56,9 @@ func (e *APIError) Error() string {
 func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequired }
 
 // RateLimited returns true when the API throttled the request (429). Public
-// write endpoints are budgeted per client IP: changelog subscribe/unsubscribe
-// and the PUT /api/v1/public/apps/{appKey}/user attribute upsert.
+// endpoints budgeted per client IP include the changelog subscribe/unsubscribe
+// flows, the PUT /api/v1/public/apps/{appKey}/user attribute upsert, and —
+// sharing that same 60/minute bucket — GET /api/v1/users/{userId}/profile.
 func (e *APIError) RateLimited() bool { return e.Status == http.StatusTooManyRequests }
 
 // tierLimitHints maps known 402 error codes to actionable remediation for

@@ -136,4 +136,12 @@ The public vote endpoints — `POST` / `DELETE /api/v1/feature-requests/{id}/vot
 - **Never auto-retry `429` in a tight loop** — if you retry at all, back off for the remainder of the 60-second rate-limit window.
 - **The built-in roadmap/voting screens need no changes** — normal usage (voting on a handful of feature requests) stays well under the limit.
 
+## Public Profile Rate Limits & Unknown-User 404 (SEC-34)
+
+The public profile page / hovercard reads `GET /api/v1/users/{userId}/profile`, which is rate limited **per client IP** to **60 requests per minute** — one bucket shared with the `PUT /api/v1/public/apps/{appKey}/user` attribute sync. Throttled calls fail with the generic `429 {"error": "Too many requests. Please try again shortly."}`. An unknown app-scoped `u_*` id (or a `u_*` id sent without `appKey`) returns `404 {"error": "User profile not found"}` instead of a placeholder:
+
+- **Cache profile lookups client-side** and reuse them across renders. A card list resolving many users behind one shared IP (office NAT, CI farm) can exhaust the 60/minute budget — which also throttles attribute syncs from the same IP.
+- **Handle `429` with exponential backoff** and render a friendly "try again shortly" state; never retry in a tight loop.
+- **Treat `404` on a `u_*` id as "no public profile for this id"** and fall back to the placeholder UI — the server no longer scans for unmatched ids, so retrying cannot change the answer. Raw `user_*` ids from old `/u/` links keep the opt-in placeholder behavior.
+
 For complete method signatures, customization options, and advanced architecture, consult the [KDoc API Documentation](https://cupthread.github.io/CupThreadAndroidSDK/).

@@ -60,7 +60,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
-| `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
+| `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. Unknown `u_*` ids return `404` without a reverse-lookup scan (SEC-34). Rate limited per client IP: 60 requests/minute in the same bucket as the `PUT .../user` upsert, `429` on bursts. |
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
 | `/api/v1/uploads/:uploadId` | `PUT` | Upload one reserved session slot's bytes. `Authorization: Bearer <sessionToken>` (or `X-Upload-Session-Token`); raw binary body or `multipart/form-data` with a `file` field. `POST` is accepted as an alias. |
@@ -91,15 +91,15 @@ Agents and SDK clients should parse the `code` field, treat `402` as a determini
 
 ## Rate Limiting (`429 Too Many Requests`)
 
-Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}` — except the feature-request vote endpoints, which return a vote-specific body: `429 {"error": "Too many votes. Please try again shortly."}`:
+Public write endpoints — and, since SEC-34, the unauthenticated profile read — are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}` — except the feature-request vote endpoints, which return a vote-specific body: `429 {"error": "Too many votes. Please try again shortly."}`:
 
 | Endpoints | Budget | Why |
 |---|---|---|
 | `POST .../changelog/subscribe`, `GET`/`POST .../changelog/unsubscribe`, `GET`/`POST .../public/digest/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and unsubscribe writes preferences, so the budget is tight. The changelog and digest unsubscribe flows **share one per-IP bucket** (`PUBLIC_WRITE_RATE_LIMITER`). |
-| `PUT /api/v1/public/apps/{appKey}/user` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row; rotating-token bursts are the throttled case. |
+| `PUT /api/v1/public/apps/{appKey}/user`, `GET /api/v1/users/{userId}/profile` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row, and the unauthenticated profile GET resolves `u_*` ids; both share one per-IP bucket (`PUBLIC_USER_RATE_LIMITER`, SEC-14/SEC-34), so a profile-heavy hovercard can exhaust the attribute-sync budget and vice versa. |
 | `POST`/`DELETE /api/v1/feature-requests/{id}/vote` | 20 requests / 60 s | The anonymous voter identity is a client-minted `userToken` UUID, so votes get their own per-IP cap (SEC-09) — one IP minting fresh tokens must not be able to inflate vote counts. |
 
-Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter, never in a tight loop. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs. For votes, `429` is a recoverable user-facing condition: surface a friendly "you're voting too fast, try again in a minute" message instead of auto-retrying; normal tapping across a roadmap stays well under the 20/minute budget.
+Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter, never in a tight loop. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs. Profile/hovercard rendering draws from the same 60/minute bucket: cache profile responses client-side instead of refetching per render. For votes, `429` is a recoverable user-facing condition: surface a friendly "you're voting too fast, try again in a minute" message instead of auto-retrying; normal tapping across a roadmap stays well under the 20/minute budget.
 
 ---
 
@@ -262,7 +262,7 @@ Contract:
 
 - Values are `u_` followed by 32 lowercase hex chars (e.g. `u_9f2c…`). Field names are unchanged — only the value format changed. Legacy `user_*` Clerk ids may still appear in old cached payloads, so **never validate or assume a `user_` prefix** on user id strings.
 - Ids are stable for a given (app, user) pair, so reply threading (`replyToClerkId`) and author attribution keep working **within one app**. They are **unlinkable across apps**: never join, deduplicate, or correlate user ids between two different `appKey`s.
-- `GET /api/v1/users/:userId/profile` accepts `u_*` ids **only together with the `appKey` query parameter** (the id can only be reversed within its app). Without `appKey`, a `u_*` request returns `404`. Legacy `user_*` ids remain accepted without `appKey` for existing `/u/` links.
+- `GET /api/v1/users/:userId/profile` accepts `u_*` ids **only together with the `appKey` query parameter** (the id can only be reversed within its app). Without `appKey`, a `u_*` request returns `404`, and an unknown (unmapped) `u_*` id returns the same `404 {"error": "User profile not found"}` — since SEC-34 the endpoint never runs the full-app candidate scan (unique unknown ids are cache-busting), so an indexed miss is terminal and retrying cannot change the answer. Legacy `user_*` ids remain accepted without `appKey` for existing `/u/` links, and the endpoint is additionally rate limited per client IP (see [Rate Limiting](#rate-limiting-429-too-many-requests)).
 - Public profiles are opt-in. A user who never created a public profile resolves to a placeholder — the requested id echoed back with `displayName: null` and empty `publicApps` / `recentComments` — and there is no existence oracle for raw ids. `publicApps` lists only apps of workspaces where the user is an **owner**; the response has no top-level `hideComments` (comment visibility is applied server-side).
 
 ---
