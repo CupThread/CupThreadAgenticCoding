@@ -58,8 +58,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. |
-| `/api/v1/uploads/images` | `POST` | Multipart upload for images to Cloudflare Images. |
-| `/api/v1/uploads/r2` | `POST` | Multipart upload for logs / non-image attachments to Cloudflare R2. |
+| `/api/v1/uploads/images` | `POST` | Multipart upload for feedback images. PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
+| `/api/v1/uploads/r2` | `POST` | Removed tombstone: always responds `410 Gone` (create an upload session at `/api/v1/uploads/sessions` instead). |
 
 > **Changelog double opt-in flow (SEC-14, as shipped):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, and on the current API **GET itself performs the confirmation** — it consumes the token and flips the subscription to *confirmed* (browsers see an HTML page; JSON clients get `{"confirmed": true}`). Because a plain GET mutates state, email-scanner URL detonation (SafeLinks/Proofpoint) can consume confirmation tokens: treat confirmation links as single-shot and never pre-fetch them to "validate". Unsubscribe is the opposite pattern: `GET .../unsubscribe?token=` is a safe interstitial, and only `POST` with the token unsubscribes. Responses on both flows are uniform (no membership oracle), and these public writes are rate limited per client IP — retry `429`s with exponential backoff.
 
@@ -120,3 +120,22 @@ Workspace-scoped comment moderation (OpenAPI tag `Console Moderation`), authenti
 | `/api/v1/console/workspaces/:wsId/comments/:commentId` | `DELETE` | Permanently delete a comment. Returns `404` when the comment is not in the workspace, `200 {"success": true}` on success. |
 
 **Workspace id semantics**: on all `/api/v1/console/workspaces/{wsId}/...` endpoints the path id is authoritative. The `X-Workspace-Id` header is optional; when sent it must match the path id, otherwise the API answers `400`. Prefer omitting the header on these routes.
+
+---
+
+## Feedback Image Media-Type Policy (415 Unsupported Media Type)
+
+`POST /api/v1/uploads/images` (end-user feedback image upload) enforces a strict media-type policy:
+
+- **Accepted types**: `image/png`, `image/jpeg`, `image/webp`, `image/gif` only. Any other declared type fails earlier with `400 {"error": "Only PNG, JPEG, WebP, and GIF images are supported."}`; empty files also fail with `400`, and files over 10 MB with `413`.
+- **SVG is rejected with `415`** — when the upload declares `image/svg+xml`, or when a `.svg` filename falls through the server's extension fallback (clients that send no per-part content type). SVG executes script in browsers and is never stored from end-user uploads: `415 {"error": "SVG images are not supported. Upload a PNG, JPEG, WebP, or GIF image."}`
+- **Declared MIME must match the file content.** The server sniffs magic bytes (PNG, JPEG, GIF87a/GIF89a, WebP/RIFF). An unrecognized signature, or a mismatch with the declared type (e.g. HTML or SVG bytes named `.png`), fails with `415 {"error": "File content does not match declared image type (<declared>)."}`
+
+The `415` bodies carry no `code` field — match on the status, not on an error code.
+
+Client guidance:
+
+- Restrict client-side image pickers / file-type allowlists to PNG, JPEG, WebP, and GIF (drop SVG for feedback screenshots).
+- Treat `415` as a deterministic client error: surface a user-facing "unsupported image type" message and let the user pick a different file; never retry automatically.
+
+**Console-configured app icons are exempt.** `POST /api/v1/console/workspaces/{wsId}/apps/{appId}/icon` (capability `app.configure`, so workspace admin/owner; `cpt_` API tokens are accepted) still accepts SVG icons, but screens them for active content — markers like `<script`, `javascript:`, `onload`/`onerror`/`onclick` handlers, `<!entity`, and `<foreignObject` fail with `415 {"error": "SVG contains prohibited active scripts or external entity references"}` — and applies the same magic-byte check. The endpoint stores the image and updates the app record (`iconUrl`) in the same request, returning the updated `AppRecord`.

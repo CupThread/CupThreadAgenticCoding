@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -232,5 +233,132 @@ func TestAppsPublicConfigMissingAppKeepsPathEscaped(t *testing.T) {
 	}
 	if gotRequestURI != "/api/v1/public/config/weird%2Fkey%20with%20spaces" {
 		t.Errorf("request target = %q", gotRequestURI)
+	}
+}
+
+// appListFixture answers lookupApp's GET /apps for the update-icon tests.
+const appListFixture = `{"apps":[{"appId":"app_1","appKey":"key_live_1","slug":"ios","name":"Acme iOS","allowPublic":true,"allowedPlatforms":["ios"],"maxAttachmentBytes":10485760}],"total":1}`
+
+// TestAppsUpdateIconUploadsToConsoleEndpoint verifies `apps update --icon`
+// uploads via the console app-icon endpoint (not the public feedback image
+// endpoint), declares the part content type from the filename, skips the
+// follow-up metadata PUT when only --icon changed, and prints the icon URL.
+func TestAppsUpdateIconUploadsToConsoleEndpoint(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotIconPath, gotIconMethod, gotPartType string
+	var gotPUT int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPost &&
+			r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/icon":
+			gotIconMethod, gotIconPath = r.Method, r.URL.Path
+			file, header, err := r.FormFile("file")
+			if err != nil {
+				t.Errorf("file field: %v", err)
+				return
+			}
+			defer file.Close()
+			gotPartType = header.Header.Get("Content-Type")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Acme iOS","iconUrl":"https://cdn.example.com/icon.png"}`))
+		default:
+			if r.Method == http.MethodPut {
+				gotPUT++
+			}
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "update", "app_1", "--icon", iconPath, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("apps update --icon: %v", err)
+	}
+	if gotIconMethod != http.MethodPost ||
+		gotIconPath != "/api/v1/console/workspaces/ws_1/apps/app_1/icon" {
+		t.Errorf("icon request = %s %s", gotIconMethod, gotIconPath)
+	}
+	if gotPartType != "image/png" {
+		t.Errorf("part content-type = %q, want image/png", gotPartType)
+	}
+	if gotPUT != 0 {
+		t.Errorf("metadata PUT count = %d, want 0 (icon endpoint updates the record)", gotPUT)
+	}
+	for _, want := range []string{"Updated app app_1", "https://cdn.example.com/icon.png"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestAppsUpdateIcon415SurfacesUnsupportedType verifies the CLI maps a 415
+// from the upload to the actionable "unsupported image type" failure instead
+// of a generic error.
+func TestAppsUpdateIcon415SurfacesUnsupportedType(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "logo.svg")
+	if err := os.WriteFile(iconPath, []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/icon":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			_, _ = w.Write([]byte(`{"error":"SVG images are not supported. Upload a PNG, JPEG, WebP, or GIF image."}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "update", "app_1", "--icon", iconPath, "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("apps update --icon: want error")
+	}
+	for _, want := range []string{"unsupported image type", "SVG images are not supported", "415"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+}
+
+// TestAppsUpdateIconClearStillUsesPUT verifies `--icon ""` keeps the old
+// clearing semantics (iconUrl: null via the metadata PUT, no upload).
+func TestAppsUpdateIconClearStillUsesPUT(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var gotPUTBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPut &&
+			r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1":
+			_ = json.NewDecoder(r.Body).Decode(&gotPUTBody)
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Acme iOS"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "update", "app_1", "--icon", "", "--workspace", "ws_1"); err != nil {
+		t.Fatalf("apps update --icon '': %v", err)
+	}
+	if gotPUTBody["iconUrl"] != nil {
+		t.Errorf("PUT body = %v, want iconUrl null", gotPUTBody)
 	}
 }

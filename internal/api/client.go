@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -199,42 +200,88 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	return nil
 }
 
-// UploadAppIcon uploads an image (falling back to R2 storage) and returns its
-// public URL, mirroring the Console's uploadAppIcon behavior.
-func (c *Client) UploadAppIcon(ctx context.Context, appKey, filename string, data []byte) (string, error) {
-	u, err := c.uploadFile(ctx, "/api/v1/uploads/images", appKey, filename, data)
-	if err == nil {
-		return u, nil
+// UploadAppIcon uploads an app icon through the console app-icon endpoint,
+// which validates the image (SVG allowed for developer-configured icons,
+// screened for active content) and updates the app record in the same
+// request. It requires the app.configure capability (workspace admin or
+// owner). The public feedback image endpoint cannot be used here: it expects
+// an upload-session token rather than a console credential, and rejects SVG
+// with 415.
+func (c *Client) UploadAppIcon(ctx context.Context, workspaceID, appID, filename string, data []byte) (*AppRecord, error) {
+	endpoint := fmt.Sprintf("/api/v1/console/workspaces/%s/apps/%s/icon",
+		url.PathEscape(workspaceID), url.PathEscape(appID))
+	var rec AppRecord
+	if err := c.postMultipartFile(ctx, endpoint, filename, data, &rec); err != nil {
+		return nil, err
 	}
-	return c.uploadFile(ctx, "/api/v1/uploads/r2", appKey, filename, data)
+	return &rec, nil
 }
 
-func (c *Client) uploadFile(ctx context.Context, endpoint, appKey, filename string, data []byte) (string, error) {
+// mimeTypeForFilename mirrors the server's extension→MIME fallback so the
+// multipart part declares the type the magic-byte check expects; Go's
+// CreateFormFile would label every part application/octet-stream, which the
+// API rejects with 400 "Only PNG, JPEG, WebP, and GIF images are supported."
+func mimeTypeForFilename(filename string) string {
+	ext := strings.ToLower(filename)
+	i := strings.LastIndexByte(ext, '.')
+	if i < 0 {
+		return "application/octet-stream"
+	}
+	switch ext[i+1:] {
+	case "png":
+		return "image/png"
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	case "svg":
+		return "image/svg+xml"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func escapeQuotes(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '"':
+			b.WriteRune('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename string, data []byte, out any) error {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	if err := mw.WriteField("appKey", appKey); err != nil {
-		return "", err
-	}
-	part, err := mw.CreateFormFile("file", filename)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeQuotes(filename)))
+	header.Set("Content-Type", mimeTypeForFilename(filename))
+	part, err := mw.CreatePart(header)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if _, err := part.Write(data); err != nil {
-		return "", err
+		return err
 	}
 	if err := mw.Close(); err != nil {
-		return "", err
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+endpoint, &buf)
 	if err != nil {
-		return "", err
+		return err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if c.Token != nil {
 		token, err := c.Token(ctx)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
@@ -243,16 +290,36 @@ func (c *Client) uploadFile(ctx context.Context, endpoint, appKey, filename stri
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("upload %s: %w", endpoint, err)
+		return fmt.Errorf("upload %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("upload %s: read response: %w", endpoint, err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", &APIError{Status: resp.StatusCode, Message: strings.TrimSpace(string(body))}
+		apiErr := &APIError{
+			Status:  resp.StatusCode,
+			Message: strings.TrimSpace(string(body)),
+		}
+		var parsed struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if json.Unmarshal(body, &parsed) == nil && parsed.Error != "" {
+			apiErr.Message = parsed.Error
+			apiErr.Code = parsed.Code
+		}
+		if resp.StatusCode == http.StatusUnsupportedMediaType {
+			return fmt.Errorf("unsupported image type: %w", apiErr)
+		}
+		return apiErr
 	}
-	var out UploadImageResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("upload %s: decode response: %w", endpoint, err)
+	if out == nil {
+		return nil
 	}
-	return out.URL, nil
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("upload %s: decode response: %w", endpoint, err)
+	}
+	return nil
 }

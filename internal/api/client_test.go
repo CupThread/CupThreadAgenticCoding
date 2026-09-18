@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -330,6 +331,131 @@ func TestDoWithCustomHeaders(t *testing.T) {
 	}
 	if gotCustom != "custom-value" {
 		t.Errorf("X-Custom-Header = %q, want %q", gotCustom, "custom-value")
+	}
+}
+
+func TestMimeTypeForFilename(t *testing.T) {
+	cases := map[string]string{
+		"icon.png":       "image/png",
+		"icon.PNG":       "image/png",
+		"photo.jpg":      "image/jpeg",
+		"photo.jpeg":     "image/jpeg",
+		"anim.gif":       "image/gif",
+		"pic.webp":       "image/webp",
+		"logo.svg":       "image/svg+xml",
+		"archive.zip":    "application/octet-stream",
+		"noextension":    "application/octet-stream",
+		"trailing.dots.": "application/octet-stream",
+	}
+	for name, want := range cases {
+		if got := mimeTypeForFilename(name); got != want {
+			t.Errorf("mimeTypeForFilename(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestUploadAppIconHitsConsoleEndpoint verifies the icon upload targets the
+// console app-icon endpoint (the public feedback image endpoint requires an
+// upload-session token and rejects SVG), declares the part content type from
+// the filename, and returns the updated app record.
+func TestUploadAppIconHitsConsoleEndpoint(t *testing.T) {
+	var gotPath, gotMethod, gotPartType, gotFilename string
+	var gotBytes []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("file field: %v", err)
+			return
+		}
+		defer file.Close()
+		gotPartType = header.Header.Get("Content-Type")
+		gotFilename = header.Filename
+		gotBytes, _ = io.ReadAll(file)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"appId":"app_1","iconUrl":"https://cdn.example.com/icon.png"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.Token = func(context.Context) (string, error) { return "cpt_tok", nil }
+
+	rec, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("UploadAppIcon: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1/console/workspaces/ws_1/apps/app_1/icon" {
+		t.Errorf("request = %s %s", gotMethod, gotPath)
+	}
+	if gotPartType != "image/png" || gotFilename != "icon.png" {
+		t.Errorf("part content-type/filename = %q/%q", gotPartType, gotFilename)
+	}
+	if string(gotBytes) != "png-bytes" {
+		t.Errorf("part body = %q", gotBytes)
+	}
+	if rec.IconURL == nil || *rec.IconURL != "https://cdn.example.com/icon.png" {
+		t.Errorf("IconURL = %v", rec.IconURL)
+	}
+}
+
+// TestUploadAppIcon415Message pins the SEC-13 rejection contract: the 415
+// bodies carry only an error message (no code), and the CLI surfaces them as
+// an "unsupported image type" failure.
+func TestUploadAppIcon415Message(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		_, _ = w.Write([]byte(`{"error":"SVG images are not supported. Upload a PNG, JPEG, WebP, or GIF image."}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.svg", []byte("<svg/>"))
+	if err == nil {
+		t.Fatal("UploadAppIcon: want error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnsupportedMediaType {
+		t.Fatalf("error = %v, want *APIError with status 415", err)
+	}
+	if apiErr.Code != "" {
+		t.Errorf("Code = %q, want empty (415 bodies carry no code)", apiErr.Code)
+	}
+	if !strings.Contains(err.Error(), "unsupported image type") ||
+		!strings.Contains(err.Error(), "SVG images are not supported") {
+		t.Errorf("error = %v, want unsupported-image-type prefix plus server message", err)
+	}
+}
+
+// TestUploadAppIconOtherErrorsKeptRaw verifies non-415 upload failures are
+// not relabeled: the JSON error body is parsed into Message/Code untouched.
+func TestUploadAppIconOtherErrorsKeptRaw(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Access denied: your workspace role does not include the 'app.configure' capability","code":"capability_required"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("png"))
+	if err == nil {
+		t.Fatal("UploadAppIcon: want error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
+		t.Fatalf("error = %v, want *APIError with status 403", err)
+	}
+	if apiErr.Code != "capability_required" {
+		t.Errorf("Code = %q, want capability_required", apiErr.Code)
+	}
+	if strings.Contains(err.Error(), "unsupported image type") {
+		t.Errorf("error = %v, want no unsupported-image-type relabeling on 403", err)
 	}
 }
 
