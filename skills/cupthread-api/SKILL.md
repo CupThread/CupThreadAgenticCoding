@@ -46,12 +46,11 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/columns/:appKey` | `GET` | Roadmap Kanban columns sorted by position. |
 | `/api/v1/public/versions/:appKey` | `GET` | Release versions sorted by position. |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published release notes and changelog items. |
-| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Subscribe email to changelog updates (double opt-in; sends a confirmation email). |
-| `/api/v1/public/apps/:appKey/changelog/confirm` | `GET` | **Non-destructive.** Renders the HTML "Confirm subscription" interstitial whose form POSTs the token; JSON-only clients (`Accept: application/json`) get `405` with `Allow: POST`. Never confirms anything — safe for email scanners and link prefetchers. Missing/invalid/expired tokens fail uniformly with `400`. |
-| `/api/v1/public/apps/:appKey/changelog/confirm` | `POST` | The only mutating confirmation path: consumes the single-use emailed token (via `token` query parameter, JSON body `{"token": "..."}`, or form field) and confirms the subscription. Returns `{"confirmed": true}`, or an HTML landing page for browser form submissions (`Accept: text/html`). Invalid/expired/already-used tokens fail uniformly with `400` (no oracle). |
-| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET` | **Non-destructive.** Renders the HTML "Confirm unsubscribe" interstitial whose form POSTs the token to the same URL; JSON-only clients (`Accept: application/json` without `text/html`) get `405` with `Allow: POST` and `{"error": "GET does not unsubscribe. POST the token to this endpoint to unsubscribe."}`. Never unsubscribes anything — safe for email scanners and link prefetchers (the URL appears in blast email footers and `List-Unsubscribe` headers). Missing/invalid/expired tokens fail uniformly with `400`. |
-| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive unsubscribe path (RFC 8058 one-click lands here): accepts the signed per-subscriber token via `token` query parameter, JSON body `{"token": "..."}`, or form field `token` (`application/x-www-form-urlencoded` / `multipart/form-data`). Returns `{"unsubscribed": true}`, or an HTML landing page for browser form submissions (`Accept: text/html`). Invalid/missing tokens fail uniformly with `400`, and the response is uniform regardless of whether the subscription still existed (no oracle). Bare-email unsubscribe remains unavailable (SEC-14). |
-| `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). |
+| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Subscribe an email to changelog updates (double opt-in). Always `201 {"subscribed": true}` — the former `alreadySubscribed` field was removed, so the response never reveals prior state. The address starts *pending* and a single-use confirmation email is sent (resends within a 15-minute cooldown return `201` without dispatching a duplicate email). Rate limited per client IP (`429`). |
+| `/api/v1/public/apps/:appKey/changelog/confirm` | `GET` | **The mutating double-opt-in confirmation:** consumes the single-use emailed token (`?token=...`) and flips the subscription to *confirmed*. Browsers get an HTML confirmation page; JSON clients (`Accept: application/json` without `text/html`) get `{"confirmed": true}`. Missing token → `400 {"error": "Missing confirmation token"}`; unknown/expired/already-used tokens → `400 {"error": "Invalid or expired confirmation token"}` (uniform, no oracle). Upstream SaaS#250 (SEC-35) plans to move mutation to a POST interstitial, but that change is **not shipped yet** — today GET itself confirms. |
+| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET` | **Non-destructive** confirmation interstitial (PROD-20): renders an HTML form that POSTs the token; the subscription is never modified. Email security gateways and link prefetchers that GET this URL cause no side effect. JSON-only clients (`Accept: application/json`) get `405` with `Allow: POST`. Missing/invalid tokens fail uniformly with `400`. Rate limited per client IP (`429`). |
+| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive path (also serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string, JSON body `{"token": "..."}`, or form field. The bare-email unsubscribe (`{"email": "..."}`) was **removed**. Always `{"unsubscribed": true}` whether or not the subscription existed; `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Browser form submissions (`Accept: text/html`) get an HTML landing page. Rate limited per client IP (`429`). |
+| `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
 | `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). |
 | `/api/v1/feature-requests` | `POST` | Submit a new feature request. |
 | `/api/v1/feature-requests/:id/vote` | `POST` | Upvote / remove vote on a feature request. |
@@ -62,9 +61,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/uploads/images` | `POST` | Multipart upload for images to Cloudflare Images. |
 | `/api/v1/uploads/r2` | `POST` | Multipart upload for logs / non-image attachments to Cloudflare R2. |
 
-> **Changelog double opt-in flow (SEC-14/SEC-35):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, which is **non-destructive** — email security scanners (SafeLinks/Proofpoint URL detonation) and link prefetchers that fetch it cause no side effect. Actual confirmation happens only when the interstitial form (or any client) **POSTs** the token to `/changelog/confirm`.
->
-> The same GET-interstitial/POST-mutates pattern applies to **unsubscribe** (PROD-20): `GET /changelog/unsubscribe?token=...` only renders the confirmation page (or `405` + `Allow: POST` for JSON-only clients) and performs no side effect; the destructive step is **POSTing** the token to `/changelog/unsubscribe`. When building custom clients, never rely on GET to perform the confirmation or the unsubscribe.
+> **Changelog double opt-in flow (SEC-14, as shipped):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, and on the current API **GET itself performs the confirmation** — it consumes the token and flips the subscription to *confirmed* (browsers see an HTML page; JSON clients get `{"confirmed": true}`). Because a plain GET mutates state, email-scanner URL detonation (SafeLinks/Proofpoint) can consume confirmation tokens: treat confirmation links as single-shot and never pre-fetch them to "validate". Unsubscribe is the opposite pattern: `GET .../unsubscribe?token=` is a safe interstitial, and only `POST` with the token unsubscribes. Responses on both flows are uniform (no membership oracle), and these public writes are rate limited per client IP — retry `429`s with exponential backoff.
 
 ---
 
@@ -78,6 +75,19 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `subscription_inactive` | The workspace subscription is inactive or canceled. | Do not retry automatically. Tell the user to renew/reactivate the subscription (Console → Billing); submissions keep failing until then. |
 
 Agents and SDK clients should parse the `code` field, treat `402` as a deterministic business rule (never a transient error), and surface the guidance above to the end user.
+
+---
+
+## Rate Limiting (`429 Too Many Requests`)
+
+Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}`:
+
+| Endpoints | Budget | Why |
+|---|---|---|
+| `POST .../changelog/subscribe`, `GET`/`POST .../changelog/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and unsubscribe deletes subscriber rows, so the budget is tight. |
+| `PUT /api/v1/public/apps/{appKey}/user` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row; rotating-token bursts are the throttled case. |
+
+Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs.
 
 ---
 

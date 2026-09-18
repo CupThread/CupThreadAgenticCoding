@@ -104,6 +104,6 @@ struct MyFeedbackView: View {
 2. **Feature Request Voting**: Real-time optimistic upvoting, search, and submission for user-driven features.
 3. **Roadmap & Kanban**: Visualize planned, in-progress, and completed roadmap milestones.
 4. **Changelog & "What's New"**: Display rich Markdown release notes with email update subscription.
-5. **User Attributes Sync**: Synchronize paying status, plan, MRR, and currency via `client.updateUserAttributes(...)`.
+5. **User Attributes Sync**: Synchronize paying status, plan, MRR, and currency via `client.updateUserAttributes(...)`. The underlying `PUT /api/v1/public/apps/{appKey}/user` endpoint is rate limited per client IP (60 requests/minute, HTTP `429`) — syncs of many users behind one shared IP must retry with exponential backoff.
 
 For complete method signatures, customization options, and advanced architecture, consult the [DocC API Documentation](https://cupthread.github.io/CupThreadSwiftSDK/).
