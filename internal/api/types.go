@@ -523,24 +523,28 @@ type CreateWorkspaceResponse struct {
 
 // ─── Public user profiles ────────────────────────────────────────────────────
 
+// UserProfile is the profile sub-object of the public profile response.
+// Publication is opt-in (PRIV-06): users without a public profile resolve to
+// null display fields with the requested identifier echoed back.
 type UserProfile struct {
-	ClerkUserID  string  `json:"clerkUserId"`
-	DisplayName  *string `json:"displayName"`
-	AvatarURL    *string `json:"avatarUrl"`
-	Bio          *string `json:"bio"`
-	WebsiteURL   *string `json:"websiteUrl"`
-	HideComments bool    `json:"hideComments"`
-	CreatedAt    string  `json:"createdAt"`
-	UpdatedAt    string  `json:"updatedAt"`
+	ClerkUserID string  `json:"clerkUserId"`
+	DisplayName *string `json:"displayName"`
+	AvatarURL   *string `json:"avatarUrl"`
+	Bio         *string `json:"bio"`
+	WebsiteURL  *string `json:"websiteUrl"`
+	CreatedAt   string  `json:"createdAt"`
 }
 
-type PublicAppSummary struct {
-	ID           string  `json:"id"`
-	Name         string  `json:"name"`
-	Slug         string  `json:"slug"`
-	IconURL      *string `json:"iconUrl"`
-	Description  *string `json:"description"`
-	RequestCount int     `json:"requestCount"`
+// PublicUserProfileApp is one entry of the publicApps list. PRIV-06 restricts
+// it to apps of workspaces where the user is an owner.
+type PublicUserProfileApp struct {
+	ID            string  `json:"id"`
+	WorkspaceSlug string  `json:"workspaceSlug"`
+	WorkspaceName string  `json:"workspaceName"`
+	AppSlug       string  `json:"appSlug"`
+	Name          string  `json:"name"`
+	Description   *string `json:"description"`
+	IconURL       *string `json:"iconUrl"`
 }
 
 type UserProfileComment struct {
@@ -549,15 +553,15 @@ type UserProfileComment struct {
 	CreatedAt           string `json:"createdAt"`
 	FeatureRequestID    string `json:"featureRequestId"`
 	FeatureRequestTitle string `json:"featureRequestTitle"`
-	AppID               string `json:"appId"`
+	WorkspaceSlug       string `json:"workspaceSlug"`
+	AppSlug             string `json:"appSlug"`
 	AppName             string `json:"appName"`
 }
 
 type PublicUserProfileResponse struct {
-	Profile        UserProfile          `json:"profile"`
-	Apps           []PublicAppSummary   `json:"apps"`
-	RecentComments []UserProfileComment `json:"recentComments"`
-	HideComments   bool                 `json:"hideComments"`
+	Profile        UserProfile            `json:"profile"`
+	PublicApps     []PublicUserProfileApp `json:"publicApps"`
+	RecentComments []UserProfileComment   `json:"recentComments"`
 }
 
 // ─── Public app config ───────────────────────────────────────────────────────

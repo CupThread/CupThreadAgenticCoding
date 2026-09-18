@@ -118,7 +118,9 @@ cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <c
 ### User Profiles
 ```sh
 cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
+cupthread users profile u_9f2c… --app-key key_live_…  # App-scoped u_* ids from board/comment payloads need --app-key
 ```
+User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it.
 
 ### Changelog & Releases
 ```sh
