@@ -54,6 +54,27 @@ func (e *APIError) Error() string {
 // TierLimit returns true when the error is a subscription tier limit (402).
 func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequired }
 
+// tierLimitHints maps known 402 error codes from submission endpoints
+// (POST /api/v1/feature-requests, POST /api/v1/feedback) to actionable
+// remediation for CLI users and agents.
+var tierLimitHints = map[string]string{
+	"tier_limit_submissions": "the workspace reached its monthly submission quota; upgrade the plan (cupthread billing show / Console → Billing) or wait for the quota to reset, then retry",
+	"subscription_inactive":  "the workspace subscription is inactive or canceled; renew it in Console → Billing before submitting",
+}
+
+// Hint returns actionable remediation for known API error codes, e.g. 402
+// tier-limit responses on submission endpoints. It returns "" when there is
+// no specific guidance.
+func (e *APIError) Hint() string {
+	if !e.TierLimit() {
+		return ""
+	}
+	if hint, ok := tierLimitHints[e.Code]; ok {
+		return hint
+	}
+	return "check the workspace subscription and plan quotas (cupthread billing show / Console → Billing)"
+}
+
 // Do performs an API request. Path must start with "/" and is appended to
 // BaseURL verbatim. When body is non-nil it is JSON-encoded; when out is
 // non-nil the response body is decoded into it (*json.RawMessage receives
@@ -133,6 +154,9 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 			apiErr.Code = parsed.Code
 		}
 		if apiErr.TierLimit() {
+			if hint := apiErr.Hint(); hint != "" {
+				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
+			}
 			return fmt.Errorf("tier limit: %w", apiErr)
 		}
 		return apiErr

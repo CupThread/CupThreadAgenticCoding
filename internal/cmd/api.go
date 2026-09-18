@@ -57,12 +57,19 @@ the CLI does not wrap yet.`,
 			var raw json.RawMessage
 			if err := A.client.Do(cmd.Context(), method, path, nil, body, &raw); err != nil {
 				// Still surface structured API errors as JSON when in JSON mode.
-				if apiErr, ok := err.(*api.APIError); ok && A.structured() {
-					return A.out.Structured(map[string]any{
-						"error":   apiErr.Message,
-						"code":    apiErr.Code,
-						"status":  apiErr.Status,
-					})
+				// errors.As is required because tier-limit (402) errors are
+				// wrapped by the client.
+				var apiErr *api.APIError
+				if errors.As(err, &apiErr) && A.structured() {
+					payload := map[string]any{
+						"error":  apiErr.Message,
+						"code":   apiErr.Code,
+						"status": apiErr.Status,
+					}
+					if hint := apiErr.Hint(); hint != "" {
+						payload["hint"] = hint
+					}
+					return A.out.Structured(payload)
 				}
 				return err
 			}

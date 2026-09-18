@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,74 @@ func TestDoTierLimitFlag(t *testing.T) {
 	}
 	if apiErr.Code != "tier_limit_apps" {
 		t.Errorf("code = %q", apiErr.Code)
+	}
+}
+
+// TestDoFeatureRequestQuotaHints covers the 402 contract from issue #21:
+// POST /api/v1/feature-requests (and POST /api/v1/feedback) respond with an
+// ErrorResponse whose code distinguishes the monthly submission quota
+// (tier_limit_submissions) from an inactive subscription
+// (subscription_inactive). The wrapped error must stay an *APIError and carry
+// an actionable hint.
+func TestDoFeatureRequestQuotaHints(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		wantHint string
+	}{
+		{
+			name:     "tier_limit_submissions",
+			body:     `{"error":"Monthly submission quota reached","code":"tier_limit_submissions"}`,
+			wantHint: "monthly submission quota",
+		},
+		{
+			name:     "subscription_inactive",
+			body:     `{"error":"Subscription inactive","code":"subscription_inactive"}`,
+			wantHint: "inactive or canceled",
+		},
+		{
+			name:     "unknown 402 code falls back to generic hint",
+			body:     `{"error":"Plan limit","code":"tier_limit_other"}`,
+			wantHint: "check the workspace subscription and plan quotas",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusPaymentRequired)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			err := client.Do(context.Background(), "POST", "/api/v1/feature-requests", nil, nil, nil)
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("expected *APIError, got %v", err)
+			}
+			if apiErr.Status != http.StatusPaymentRequired {
+				t.Errorf("status = %d", apiErr.Status)
+			}
+			if hint := apiErr.Hint(); !strings.Contains(hint, tc.wantHint) {
+				t.Errorf("Hint() = %q, want it to contain %q", hint, tc.wantHint)
+			}
+			if hint := apiErr.Hint(); hint == "" {
+				t.Error("Hint() is empty for a 402 response")
+			}
+			// The actionable hint must be part of the rendered error text.
+			if !strings.Contains(err.Error(), tc.wantHint) {
+				t.Errorf("err = %q, want it to contain the hint %q", err, tc.wantHint)
+			}
+		})
+	}
+}
+
+// TestHintEmptyForNonTierLimitErrors guards the Hint helper returning no
+// guidance for ordinary errors.
+func TestHintEmptyForNonTierLimitErrors(t *testing.T) {
+	apiErr := &APIError{Status: http.StatusForbidden, Message: "Access denied"}
+	if hint := apiErr.Hint(); hint != "" {
+		t.Errorf("Hint() = %q for a non-402 error, want \"\"", hint)
 	}
 }
 

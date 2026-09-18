@@ -154,3 +154,4 @@ bin/cupthread skills link /path/to/target/project
 1. **Always use `--json`**: When calling CLI commands from automated tools, subagents, or scripts, append `--json` for predictable, parseable output.
 2. **Set context once**: Use `cupthread workspaces use <id>` and `cupthread apps use <id>` to avoid repeating `-w` and `-a` on every command.
 3. **Use `$CUPTHREAD_TOKEN` in CI**: Inject credentials via environment variable rather than storing them in config files.
+4. **Handle `402 Payment Required`**: Submission endpoints reject writes when the workspace hits its plan limits. The CLI appends an actionable hint to the error (e.g. `tier_limit_submissions` → upgrade the plan in Console → Billing; `subscription_inactive` → renew the subscription). In `--json` mode, the `api request` escape hatch returns the same guidance as `{error, code, status, hint}`. Treat 402 as a deterministic business rule — do not retry automatically.
