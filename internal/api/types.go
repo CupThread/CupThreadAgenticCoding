@@ -119,6 +119,10 @@ type SubmissionRecord struct {
 	BuildNumber        *string `json:"buildNumber"`
 	Priority           string  `json:"priority"`
 	Status             string  `json:"status"`
+	TriageStatus       string  `json:"triageStatus"`
+	AssignedTo         *string `json:"assignedTo"`
+	FirstTriagedAt     *string `json:"firstTriagedAt"`
+	ResolvedAt         *string `json:"resolvedAt"`
 	GithubDiscussionID *string `json:"githubDiscussionId"`
 	GithubDiscussionURL *string `json:"githubDiscussionUrl"`
 	GithubError        *string `json:"githubError"`
@@ -129,6 +133,72 @@ type SubmissionRecord struct {
 type ListSubmissionsResponse struct {
 	Submissions []SubmissionRecord `json:"submissions"`
 	Total       int                `json:"total"`
+}
+
+// SubmissionEvent is one activity-log entry on a submission's triage detail
+// (kinds: priority_changed, triage_status_changed, assigned, unassigned,
+// delivery_retried).
+type SubmissionEvent struct {
+	ID           string         `json:"id"`
+	SubmissionID string         `json:"submissionId"`
+	WorkspaceID  string         `json:"workspaceId"`
+	ActorID      string         `json:"actorId"`
+	ActorType    string         `json:"actorType"`
+	Kind         string         `json:"kind"`
+	Payload      map[string]any `json:"payload"`
+	CreatedAt    string         `json:"createdAt"`
+}
+
+type SubmissionAppRef struct {
+	AppID string `json:"appId"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug"`
+}
+
+// SubmissionMetadataEntry is one sanitized reporter-metadata entry; values are
+// pre-rendered strings, redacted/truncated server-side.
+type SubmissionMetadataEntry struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Redacted  bool   `json:"redacted"`
+	Truncated bool   `json:"truncated"`
+}
+
+type SubmissionAttachment struct {
+	AttachmentID string  `json:"attachmentId"`
+	Kind         string  `json:"kind"`
+	Filename     *string `json:"filename"`
+	MimeType     *string `json:"mimeType"`
+	SizeBytes    *int64  `json:"sizeBytes"`
+	CreatedAt    string  `json:"createdAt"`
+}
+
+type SubmissionDeliveryAttempt struct {
+	AttemptID           string  `json:"attemptId"`
+	SubmissionID        string  `json:"submissionId"`
+	AttemptedAt         string  `json:"attemptedAt"`
+	Status              string  `json:"status"`
+	GithubDiscussionID  *string `json:"githubDiscussionId"`
+	GithubDiscussionURL *string `json:"githubDiscussionUrl"`
+	ErrorMessage        *string `json:"errorMessage"`
+}
+
+// SubmissionDetail is the triage detail payload returned by
+// GET /console/workspaces/{id}/submissions/{submissionId}.
+type SubmissionDetail struct {
+	Submission       SubmissionRecord            `json:"submission"`
+	App              *SubmissionAppRef           `json:"app"`
+	Metadata         []SubmissionMetadataEntry   `json:"metadata"`
+	Attachments      []SubmissionAttachment      `json:"attachments"`
+	DeliveryAttempts []SubmissionDeliveryAttempt `json:"deliveryAttempts"`
+	Activity         []SubmissionEvent           `json:"activity"`
+}
+
+// BulkSubmissionTriageResponse reports which submissions a bulk operation
+// actually touched (IDs outside the workspace are skipped by the API).
+type BulkSubmissionTriageResponse struct {
+	UpdatedCount int      `json:"updatedCount"`
+	UpdatedIds   []string `json:"updatedIds"`
 }
 
 type RetrySubmissionResponse struct {
