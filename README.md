@@ -211,6 +211,7 @@ cupthread workspaces list
 cupthread workspaces use ws_abc123          # set the default workspace
 cupthread apps list
 cupthread apps use my-app                   # set the default app
+cupthread apps public-config key_live_abc   # public portal config (no login needed)
 cupthread inbox list                        # triage feedback
 cupthread features list --sort revenue      # Pro-gated revenue view
 cupthread changelog create --title "v1.2" --body-file notes.md --publish-now

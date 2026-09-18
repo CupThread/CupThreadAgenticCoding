@@ -1,0 +1,170 @@
+package cmd
+
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// publicConfigFixture is a PublicAppConfig payload exercising the fields from
+// issue #2 (websiteUrl, hideSiteBranding).
+const publicConfigFixture = `{
+	"appId": "app_1",
+	"appKey": "key_live_1",
+	"workspaceSlug": "acme",
+	"slug": "ios",
+	"name": "Acme iOS",
+	"storeUrl": null,
+	"storeKind": null,
+	"appStoreUrl": null,
+	"googlePlayUrl": null,
+	"websiteUrl": "https://acme.example.com",
+	"iconUrl": null,
+	"allowPublic": true,
+	"hideSiteBranding": true,
+	"allowedPlatforms": ["ios", "universal"],
+	"maxAttachmentBytes": 10485760
+}`
+
+// runRoot executes the CLI against serverURL with a throwaway config and
+// returns everything the command printed to stdout.
+func runRoot(t *testing.T, serverURL string, args ...string) (string, error) {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+
+	root := newRootCmd()
+	full := append(append([]string{}, args...), "--base-url", serverURL, "--config", filepath.Join(t.TempDir(), "config.json"))
+	root.SetArgs(full)
+	execErr := root.Execute()
+
+	os.Stdout = oldStdout
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return string(out), execErr
+}
+
+// TestAppsPublicConfigByAppKey covers the app-key variant of the public
+// config endpoint and verifies the new websiteUrl/hideSiteBranding fields
+// surface in table output.
+func TestAppsPublicConfigByAppKey(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(publicConfigFixture))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "public-config", "key_live_1")
+	if err != nil {
+		t.Fatalf("public-config: %v", err)
+	}
+	if gotPath != "/api/v1/public/config/key_live_1" {
+		t.Errorf("request path = %s", gotPath)
+	}
+	for _, want := range []string{"Website URL", "https://acme.example.com", "Hide site branding", "yes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestAppsPublicConfigBySlugs covers the workspace/app slug variant.
+func TestAppsPublicConfigBySlugs(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(publicConfigFixture))
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "public-config",
+		"--workspace-slug", "acme", "--app-slug", "ios"); err != nil {
+		t.Fatalf("public-config: %v", err)
+	}
+	if gotPath != "/api/v1/public/workspaces/acme/apps/ios/config" {
+		t.Errorf("request path = %s", gotPath)
+	}
+}
+
+// TestAppsPublicConfigJSON verifies machine-readable output keeps the raw
+// field names from the API contract.
+func TestAppsPublicConfigJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(publicConfigFixture))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "public-config", "key_live_1", "--json")
+	if err != nil {
+		t.Fatalf("public-config: %v", err)
+	}
+	for _, want := range []string{`"websiteUrl": "https://acme.example.com"`, `"hideSiteBranding": true`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("JSON output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestAppsPublicConfigRequiresSelector verifies argument validation: exactly
+// one of (positional app key) or (both slug flags) must be given.
+func TestAppsPublicConfigRequiresSelector(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be made for invalid arguments")
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"no arguments", []string{"apps", "public-config"}, "pass an app key"},
+		{"key and slugs mixed", []string{"apps", "public-config", "key_live_1", "--workspace-slug", "acme", "--app-slug", "ios"}, "not both"},
+		{"only workspace slug", []string{"apps", "public-config", "--workspace-slug", "acme"}, "pass an app key"},
+		{"only app slug", []string{"apps", "public-config", "--app-slug", "ios"}, "pass an app key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runRoot(t, server.URL, tc.args...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestAppsPublicConfigMissingAppKeepsPathEscaped checks that user input is
+// URL-escaped when building the request path and that API 404s surface.
+func TestAppsPublicConfigMissingAppKeepsPathEscaped(t *testing.T) {
+	var gotRequestURI string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequestURI = r.RequestURI
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"App not found"}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "public-config", "weird/key with spaces")
+	if err == nil || !strings.Contains(err.Error(), "App not found") {
+		t.Fatalf("error = %v, want API 404 message", err)
+	}
+	if gotRequestURI != "/api/v1/public/config/weird%2Fkey%20with%20spaces" {
+		t.Errorf("request target = %q", gotRequestURI)
+	}
+}
