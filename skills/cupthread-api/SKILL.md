@@ -33,7 +33,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 
 ## Roles & Authentication
 - **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`).
-- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID v4) for anonymous user voting and comment tracking (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`).
+- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28).
 
 ---
 
@@ -57,7 +57,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
-| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. |
+| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). |
+| `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + presigned upload URLs) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). |
 | `/api/v1/uploads/images` | `POST` | Multipart upload for feedback images. PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
 | `/api/v1/uploads/r2` | `POST` | Removed tombstone: always responds `410 Gone` (create an upload session at `/api/v1/uploads/sessions` instead). |
 
@@ -114,6 +115,39 @@ Contract:
 - Rejection is deterministic — the same file fails again on retry, so never retry automatically. Tell the end user that the referenced attachment could not be uploaded because content inspection rejected it, and let them remove or replace the file before resubmitting.
 
 The OpenAPI document exposes this `422` response on `POST /api/v1/feedback`.
+
+---
+
+## Uploader Identity Binding on Upload Sessions (SEC-28)
+
+Every upload session is bound to an uploader identity at creation time, and feedback submission must present the **same identity**. Unbound sessions can no longer be created (fail-closed).
+
+**Session creation — `POST /api/v1/uploads/sessions`:**
+
+- **Anonymous callers** must send a valid `X-User-Token` UUID header (any UUID version, case-insensitive, surrounding whitespace ignored). Missing or malformed tokens are rejected with `400`:
+
+```json
+{ "error": "A valid X-User-Token UUID is required to create an upload session when not signed in", "code": "uploader_identity_required" }
+```
+
+- **Signed-in Clerk callers** are bound to their Clerk user id; `X-User-Token` is optional for them and ignored for identity resolution.
+
+**Feedback submission — `POST /api/v1/feedback`:**
+
+- Requests referencing `uploadId`s must present the identity that created the session: the same `X-User-Token`, or the same Clerk session. The check is **fail-closed** — a session that stored an identity plus a submitter with no identity is also a mismatch. Failures return `400`:
+
+```json
+{ "error": "Upload session was created by a different uploader", "code": "uploader_mismatch" }
+```
+
+- The referenced file is **not** attached and is left unfinalized, so a corrected resubmission (with the matching identity) can succeed without re-uploading.
+
+Contract for clients and SDKs:
+
+1. When creating an upload session for an anonymous end user, send the **same** `X-User-Token` already used for feedback submit and voting — never create sessions without an identity.
+2. Never submit feedback with a different token (or a Clerk session) than the one used at session create.
+3. Parse the `code` field and surface `uploader_identity_required` and `uploader_mismatch` as deterministic client errors (fix the identity, then retry), never as generic retryable `400`s.
+4. The OpenAPI document exposes the `X-User-Token` header parameter on `POST /api/v1/uploads/sessions`.
 
 ---
 
