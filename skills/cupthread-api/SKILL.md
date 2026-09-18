@@ -41,8 +41,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/v1/public/config/:appKey` | `GET` | Fetches the `PublicAppConfig`: app metadata, store/website links (`websiteUrl`), branding flags (`hideSiteBranding`), enabled platforms, and anonymous-access settings. |
-| `/api/v1/public/workspaces/:workspaceSlug/apps/:appSlug/config` | `GET` | Same `PublicAppConfig` resolved by workspace and app slugs instead of app key. |
+| `/api/v1/public/config/:appKey` | `GET` | Fetches the `PublicAppConfig`: app metadata, store/website links (`websiteUrl`), branding flags (`hideSiteBranding`), enabled platforms, and anonymous-access settings. Private apps and unknown keys both fail closed with `404 {"error": "App not found"}` (SEC-37). |
+| `/api/v1/public/workspaces/:workspaceSlug/apps/:appSlug/config` | `GET` | Same `PublicAppConfig` resolved by workspace and app slugs instead of app key; the same fail-closed `404` applies to private apps. |
 | `/api/v1/public/columns/:appKey` | `GET` | Roadmap Kanban columns sorted by position. |
 | `/api/v1/public/versions/:appKey` | `GET` | Release versions sorted by position. |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published release notes and changelog items. |
@@ -65,6 +65,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 > **Changelog double opt-in flow (SEC-14/SEC-35):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, which is **non-destructive** — email security scanners (SafeLinks/Proofpoint URL detonation) and link prefetchers that fetch it cause no side effect. Actual confirmation happens only when the interstitial form (or any client) **POSTs** the token to `/changelog/confirm`.
 >
 > The same GET-interstitial/POST-mutates pattern applies to **unsubscribe** (PROD-20): `GET /changelog/unsubscribe?token=...` only renders the confirmation page (or `405` + `Allow: POST` for JSON-only clients) and performs no side effect; the destructive step is **POSTing** the token to `/changelog/unsubscribe`. When building custom clients, never rely on GET to perform the confirmation or the unsubscribe.
+
+> **Private-app config fail-closed (SEC-37):** both config routes return `404 {"error": "App not found"}` for private apps (`allowPublic = false`) — identical to the unknown-key response, so callers cannot distinguish the two and must treat 404 as "not found or not public". Do not expect a `200` body with `allowPublic: false`; only public apps get a `200 PublicAppConfig` (with `allowPublic: true`, schema unchanged). Other public data endpoints (columns, versions, feature requests, changelog, feedback, uploads) already reject private apps with `403`.
 
 ---
 

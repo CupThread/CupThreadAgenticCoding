@@ -654,7 +654,9 @@ type PublicUserProfileResponse struct {
 // PublicAppConfig is the portal configuration served by the unauthenticated
 // public config endpoints (GET /api/v1/public/config/{appKey} and
 // GET /api/v1/public/workspaces/{workspaceSlug}/apps/{appSlug}/config). It
-// mirrors the OpenAPI PublicAppConfig schema.
+// mirrors the OpenAPI PublicAppConfig schema. A 200 body is only returned
+// for public apps; private apps fail closed with the same 404 ErrorResponse
+// as unknown app keys (SEC-37).
 type PublicAppConfig struct {
 	AppID                   string   `json:"appId"`
 	AppKey                  string   `json:"appKey"`

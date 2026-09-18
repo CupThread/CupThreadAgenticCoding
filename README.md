@@ -211,7 +211,7 @@ cupthread workspaces list
 cupthread workspaces use ws_abc123          # set the default workspace
 cupthread apps list
 cupthread apps use my-app                   # set the default app
-cupthread apps public-config key_live_abc   # public portal config (no login needed)
+cupthread apps public-config key_live_abc   # public portal config (no login needed); private apps 404
 cupthread inbox list                        # triage feedback
 cupthread features list --sort revenue      # Pro-gated revenue view
 cupthread comments moderation hide cmt_abc  # moderate comments in a workspace

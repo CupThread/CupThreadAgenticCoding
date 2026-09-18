@@ -121,6 +121,72 @@ func TestAppsPublicConfigJSON(t *testing.T) {
 	}
 }
 
+// TestAppsPublicConfigPrivateApp404 covers issue #33 (SEC-37): private apps
+// fail closed with the same 404 {"error": "App not found"} as unknown app
+// keys on both config routes, and the CLI interprets that 404 as
+// "not found or not public" instead of a 200 body with allowPublic: false.
+func TestAppsPublicConfigPrivateApp404(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error": "App not found"}`))
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name     string
+		args     []string
+		wantPath string
+	}{
+		{"by app key", []string{"apps", "public-config", "key_live_private"}, "/api/v1/public/config/key_live_private"},
+		{"by slugs", []string{"apps", "public-config", "--workspace-slug", "acme", "--app-slug", "ios"}, "/api/v1/public/workspaces/acme/apps/ios/config"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := runRoot(t, server.URL, tc.args...)
+			if err == nil {
+				t.Fatal("private app config should fail, got nil error")
+			}
+			if gotPath != tc.wantPath {
+				t.Errorf("request path = %s, want %s", gotPath, tc.wantPath)
+			}
+			for _, want := range []string{"not found or not public", "HTTP 404"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if strings.Contains(out, "Acme iOS") {
+				t.Errorf("no config table should print on 404, got:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestAppsPublicConfigOtherErrorsNotRelabeled keeps the fail-closed 404
+// interpretation scoped to 404: other statuses surface the raw API error
+// untouched.
+func TestAppsPublicConfigOtherErrorsNotRelabeled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error": "Public feature requests are disabled for this app"}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "public-config", "key_live_private")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), "not found or not public") {
+		t.Errorf("403 should not be relabeled as not-found/not-public: %v", err)
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error = %v, want HTTP 403", err)
+	}
+}
+
 // TestAppsPublicConfigRequiresSelector verifies argument validation: exactly
 // one of (positional app key) or (both slug flags) must be given.
 func TestAppsPublicConfigRequiresSelector(t *testing.T) {
