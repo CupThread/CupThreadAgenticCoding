@@ -46,7 +46,9 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/columns/:appKey` | `GET` | Roadmap Kanban columns sorted by position. |
 | `/api/v1/public/versions/:appKey` | `GET` | Release versions sorted by position. |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published release notes and changelog items. |
-| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Subscribe email to changelog updates. |
+| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Subscribe email to changelog updates (double opt-in; sends a confirmation email). |
+| `/api/v1/public/apps/:appKey/changelog/confirm` | `GET` | **Non-destructive.** Renders the HTML "Confirm subscription" interstitial whose form POSTs the token; JSON-only clients (`Accept: application/json`) get `405` with `Allow: POST`. Never confirms anything — safe for email scanners and link prefetchers. Missing/invalid/expired tokens fail uniformly with `400`. |
+| `/api/v1/public/apps/:appKey/changelog/confirm` | `POST` | The only mutating confirmation path: consumes the single-use emailed token (via `token` query parameter, JSON body `{"token": "..."}`, or form field) and confirms the subscription. Returns `{"confirmed": true}`, or an HTML landing page for browser form submissions (`Accept: text/html`). Invalid/expired/already-used tokens fail uniformly with `400` (no oracle). |
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | Unsubscribe email from changelog. |
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). |
 | `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). |
@@ -58,6 +60,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. |
 | `/api/v1/uploads/images` | `POST` | Multipart upload for images to Cloudflare Images. |
 | `/api/v1/uploads/r2` | `POST` | Multipart upload for logs / non-image attachments to Cloudflare R2. |
+
+> **Changelog double opt-in flow (SEC-14/SEC-35):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, which is **non-destructive** — email security scanners (SafeLinks/Proofpoint URL detonation) and link prefetchers that fetch it cause no side effect. Actual confirmation happens only when the interstitial form (or any client) **POSTs** the token to `/changelog/confirm`. When building custom clients, never rely on GET to perform the confirmation (or the unsubscribe, which follows the same GET-interstitial/POST-mutates pattern).
 
 ---
 
