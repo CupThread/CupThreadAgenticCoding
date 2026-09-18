@@ -57,7 +57,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
-| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. |
+| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. |
 | `/api/v1/uploads/images` | `POST` | Multipart upload for feedback images. PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
 | `/api/v1/uploads/r2` | `POST` | Removed tombstone: always responds `410 Gone` (create an upload session at `/api/v1/uploads/sessions` instead). |
 
@@ -90,6 +90,28 @@ Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-I
 | `PUT /api/v1/public/apps/{appKey}/user` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row; rotating-token bursts are the throttled case. |
 
 Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs.
+
+---
+
+## Attachment Content-Scan Rejections (`422 Unprocessable Entity`)
+
+`POST /api/v1/feedback` requires every referenced `uploadId` to have **passed content inspection** at submission time (SEC-25). If an attachment was rejected during upload inspection (prohibited file type, malware signature, …), the whole submission fails with `422 Unprocessable Entity` instead of binding the invalid file:
+
+```json
+{
+  "error": "Upload object <uploadId> was rejected by content scan: <reason>",
+  "code": "scan_rejected"
+}
+```
+
+Contract:
+
+- The `: <reason>` suffix is present only when the scanner recorded a reason. Parse the `code` field, never the message text.
+- `422` is reserved for `scan_rejected`; every other attachment-validation failure (unknown `uploadId`, object from another workspace or app, non-`uploaded` state, already finalized into another submission, expired session, uploader mismatch, more than 8 attachments) remains `400` with the same `{"error": string, "code"?: string}` shape.
+- All attachments are validated before any is bound, so a scan-rejected submission binds none of its attachments — the scan-passing `uploadId`s stay unbound and reusable for a corrected resubmission.
+- Rejection is deterministic — the same file fails again on retry, so never retry automatically. Tell the end user that the referenced attachment could not be uploaded because content inspection rejected it, and let them remove or replace the file before resubmitting.
+
+The OpenAPI document exposes this `422` response on `POST /api/v1/feedback`.
 
 ---
 
