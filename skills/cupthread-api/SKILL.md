@@ -58,8 +58,10 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). |
-| `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + presigned upload URLs) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). |
-| `/api/v1/uploads/images` | `POST` | Multipart upload for feedback images. PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
+| `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
+| `/api/v1/uploads/:uploadId` | `PUT` | Upload one reserved session slot's bytes. `Authorization: Bearer <sessionToken>` (or `X-Upload-Session-Token`); raw binary body or `multipart/form-data` with a `file` field. `POST` is accepted as an alias. |
+| `/api/v1/uploads/images` | `POST` | Legacy multipart image upload — **now requires an upload session** (`401` `upload_session_required` without one; `Authorization` header or `sessionToken`/`sessionId` form field). PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
+| `/api/v1/feedback/attachments/:id/download` | `GET` | Private attachment download (authorized). Signed `?token=` link or workspace-member auth; anonymous callers without a valid token get `403`. |
 | `/api/v1/uploads/r2` | `POST` | Removed tombstone: always responds `410 Gone` (create an upload session at `/api/v1/uploads/sessions` instead). |
 
 > **Changelog double opt-in flow (SEC-14, as shipped):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, and on the current API **GET itself performs the confirmation** — it consumes the token and flips the subscription to *confirmed* (browsers see an HTML page; JSON clients get `{"confirmed": true}`). Because a plain GET mutates state, email-scanner URL detonation (SafeLinks/Proofpoint) can consume confirmation tokens: treat confirmation links as single-shot and never pre-fetch them to "validate". Unsubscribe is the opposite pattern: `GET .../unsubscribe?token=` is a safe interstitial, and only `POST` with the token unsubscribes. Responses on both flows are uniform (no membership oracle), and these public writes are rate limited per client IP — retry `429`s with exponential backoff.
@@ -148,6 +150,59 @@ Contract for clients and SDKs:
 2. Never submit feedback with a different token (or a Clerk session) than the one used at session create.
 3. Parse the `code` field and surface `uploader_identity_required` and `uploader_mismatch` as deterministic client errors (fix the identity, then retry), never as generic retryable `400`s.
 4. The OpenAPI document exposes the `X-User-Token` header parameter on `POST /api/v1/uploads/sessions`.
+
+---
+
+## Feedback Attachment Upload Lifecycle (Upload Sessions)
+
+Feedback attachments are uploaded through **pre-allocated upload sessions**; direct external URLs and raw storage keys are rejected at submission time. The flow is always: **create session → upload each reserved slot → submit feedback referencing the `uploadId`s**. Agents and automated tools must create the session first — there is no un-sessioned upload path left on the API.
+
+**Step 1 — create the session: `POST /api/v1/uploads/sessions`** (JSON body):
+
+```json
+{
+  "appKey": "app_xxx",
+  "files": [
+    { "clientFileId": "local-file-1", "filename": "screenshot.png", "mimeType": "image/png", "size": 102400 }
+  ]
+}
+```
+
+- 1–8 `files` per session. Each entry takes an optional `clientFileId` (echoed back for client-side correlation), a `filename`, and MIME/size in either the `mimeType`/`size` or the legacy `contentType`/`sizeBytes` spelling. An optional `purpose` field selects `feedback_attachment` (default) or `branding`; `turnstileToken` is optional and only checked when the app has Turnstile configured.
+- `201` response: `{ "sessionId", "sessionToken", "expiresAt", "uploads": [...] }`. The `sessionToken` (prefix `cpt_up_`) authorizes the uploads and expires in about **1 hour**; each `uploads[]` item is `{ "clientFileId", "uploadId", "uploadUrl", "filename", "mimeType", "maxBytes" }` with `uploadId`s shaped `upl_<32hex>` and `uploadUrl` the relative `PUT` path. Treat `maxBytes` as the per-file cap.
+- Per-file policy failures surface at creation: `413` `file_too_large` (over the app's configured attachment limit), `400` `executable_extension_prohibited`, `400` `unsupported_mime_type`, and `429` `daily_storage_quota_exceeded` (workspace daily upload bytes). Shared submission-endpoint errors also apply (`402` quotas, `403` Turnstile, `404` unknown app, `401` when the app disables anonymous feedback).
+
+**Step 2 — fill each reserved slot: `PUT /api/v1/uploads/{uploadId}`** (`POST` works too). Send the raw bytes with `Content-Type: <file mime>` and a binary body, or `multipart/form-data` with a `file` field. Authorize with `Authorization: Bearer <sessionToken>` (an `X-Upload-Session-Token` header is also accepted).
+
+- Success `200`: `{ "uploadId", "status": "uploaded", "stored": true, "filename", "mimeType", "size", "sha256" }`.
+- Uploads are bounded streams: an over-cap body fails with `413` `file_too_large` (the `Content-Length` header is checked before a byte is read).
+- Content inspection (magic bytes, malware sniffing) runs on the stored bytes: a rejected file is marked scan-rejected and answers `415` with the inspection reason. Deterministic — never retry; drop or replace the file.
+- Session/slot errors: `401` `unauthorized` (no token), `401` `session_invalid_or_expired`, `401` `session_expired`, `404` `upload_not_found` (that `uploadId` is not in this session), `409` `already_uploaded` (slots are single-shot), `409` `session_not_pending` (the session was already finalized into a submission). The item write is metered per client IP like session creation, so `429` can occur.
+
+**Step 3 — submit feedback with the finalized ids: `POST /api/v1/feedback`**:
+
+```json
+{
+  "appKey": "app_xxx",
+  "title": "Issue title",
+  "description": "Issue description",
+  "platform": "universal",
+  "uploadIds": ["upl_xxx"]
+}
+```
+
+- Up to 8 `uploadIds`. The legacy `attachments` array is still accepted when every entry carries an `uploadId`; an attachment supplying a raw `url` or storage `key` instead is rejected with `400` `{"error": "Direct attachment URLs and keys are forbidden. Attachments must reference verified upload sessions via uploadId.", "code": "direct_attachment_forbidden"}`.
+- Every referenced upload must be in `uploaded` state, unbound to another submission, belong to the same app/workspace, have passed content scan (`422` `scan_rejected`, SEC-25), and come from a session created by the **same identity** (`400` `uploader_mismatch`, SEC-28). All validation happens before anything binds, so a failed submission leaves its good `uploadId`s reusable for a corrected resubmission.
+- A successful submission finalizes the uploads (they can never be re-bound) and answers `201` (or `202` when GitHub delivery is queued, `200` when forwarded inline) with `{ "submissionId", "forwardedToGithub", … }` — no attachment payloads. Download links are issued separately through the workspace Console; when the workspace lacks signing configured the API logs a warning and omits the links.
+
+**Private attachment download — `GET /api/v1/feedback/attachments/{id}/download`** (`GET …/attachments/{id}` is an alias). Authorized by either a signed download token (`?token=<HMAC>`; tokens are bounded, at most 30 days) or workspace-member auth (`workspace.read`, e.g. a `cpt_` token in the owning workspace). Without either: `403` `{"error": "Authentication or valid download token required", "code": "unauthorized"}`. Unknown attachment → `404` `attachment_not_found`; missing storage object → `404` `file_not_found`. Responses are `Content-Disposition: attachment` with `private, no-store` caching — do not proxy or pre-fetch these URLs.
+
+Client guidance:
+
+1. Create the session **before** uploading anything, and reuse one session for all files of a single composer submission (1–8 slots).
+2. Present the **same identity** on session creation and feedback submission — for anonymous users that means the same `X-User-Token` on both calls (SEC-28).
+3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user.
+4. Never fabricate, guess, or pre-assign `uploadId`s, and never send raw attachment URLs or storage keys — `direct_attachment_forbidden` is a hard rejection.
 
 ---
 
