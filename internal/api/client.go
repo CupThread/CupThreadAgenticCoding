@@ -77,6 +77,15 @@ func (e *APIError) Hint() string {
 	return "check the workspace subscription and plan quotas (cupthread billing show / Console → Billing)"
 }
 
+// NotFound returns true when the API answered 404 for the targeted resource,
+// e.g. a comment that does not exist in the workspace.
+func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
+
+// workspaceScopedPrefix marks paths that already carry the workspace id. For
+// these the API treats the path id as authoritative: X-Workspace-Id is
+// optional and rejected with 400 when it disagrees with the path.
+const workspaceScopedPrefix = "/api/v1/console/workspaces/"
+
 // Do performs an API request. Path must start with "/" and is appended to
 // BaseURL verbatim. When body is non-nil it is JSON-encoded; when out is
 // non-nil the response body is decoded into it (*json.RawMessage receives
@@ -104,7 +113,9 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.WorkspaceID != "" {
+	// The path id is authoritative on workspace-scoped endpoints; the
+	// redundant header is dropped so a mismatch can never trigger a 400.
+	if c.WorkspaceID != "" && !strings.HasPrefix(path, workspaceScopedPrefix) {
 		req.Header.Set("X-Workspace-Id", c.WorkspaceID)
 	}
 	if c.AppKey != "" {

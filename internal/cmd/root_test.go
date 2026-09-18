@@ -35,7 +35,7 @@ func TestSubcommandTreesComplete(t *testing.T) {
 		"apps":          {"list", "create", "get", "update", "use", "settings", "public-config"},
 		"inbox":         {"list", "priority", "retry", "deliveries"},
 		"features":      {"list", "get", "create", "update", "approve", "delete", "forward"},
-		"comments":      {"list", "create"},
+		"comments":      {"list", "create", "moderation"},
 		"columns":       {"list", "create", "update", "delete"},
 		"versions":      {"list", "create", "update", "delete"},
 		"changelog":     {"list", "create", "update", "delete", "publish", "unpublish"},
@@ -66,6 +66,38 @@ func TestSubcommandTreesComplete(t *testing.T) {
 			if !got[name] {
 				t.Errorf("%s is missing the %q subcommand", parentName, name)
 			}
+		}
+	}
+}
+
+// TestCommentsModerationTreeComplete guards the nested Console Moderation
+// command group under `cupthread comments moderation`.
+func TestCommentsModerationTreeComplete(t *testing.T) {
+	var comments, moderation *cobra.Command
+	root := newRootCmd()
+	for _, sub := range root.Commands() {
+		if sub.Name() == "comments" {
+			comments = sub
+		}
+	}
+	if comments == nil {
+		t.Fatal("missing comments command")
+	}
+	for _, sub := range comments.Commands() {
+		if sub.Name() == "moderation" {
+			moderation = sub
+		}
+	}
+	if moderation == nil {
+		t.Fatal("comments is missing the moderation subcommand")
+	}
+	got := map[string]bool{}
+	for _, sub := range moderation.Commands() {
+		got[sub.Name()] = true
+	}
+	for _, name := range []string{"list", "hide", "unhide", "delete"} {
+		if !got[name] {
+			t.Errorf("comments moderation is missing the %q subcommand", name)
 		}
 	}
 }

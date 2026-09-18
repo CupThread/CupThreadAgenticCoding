@@ -269,3 +269,64 @@ func TestDoWithCustomHeaders(t *testing.T) {
 		t.Errorf("X-Custom-Header = %q, want %q", gotCustom, "custom-value")
 	}
 }
+
+// TestDoDropsWorkspaceHeaderOnWorkspaceScopedPaths covers the issue #3 header
+// semantics: on /api/v1/console/workspaces/{id}/... routes the path id is
+// authoritative, so the client must not send X-Workspace-Id — a stale or
+// mismatched value would now be rejected with 400.
+func TestDoDropsWorkspaceHeaderOnWorkspaceScopedPaths(t *testing.T) {
+	cases := []struct {
+		path        string
+		wantHeader  bool
+		description string
+	}{
+		{path: "/api/v1/console/workspaces/ws_1/feature-requests/fr_1/comments", wantHeader: false, description: "moderation list"},
+		{path: "/api/v1/console/workspaces/ws_1/comments/c_1/hide", wantHeader: false, description: "comment hide"},
+		{path: "/api/v1/console/workspaces/ws_1/comments/c_1", wantHeader: false, description: "comment delete"},
+		{path: "/api/v1/console/me", wantHeader: true, description: "identity endpoint keeps the header"},
+		{path: "/api/v1/feature-requests/fr_1/comments", wantHeader: true, description: "public endpoints keep the header"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.description, func(t *testing.T) {
+			var gotWorkspace string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotWorkspace = r.Header.Get("X-Workspace-Id")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			client.WorkspaceID = "ws_1"
+			if err := client.Do(context.Background(), "GET", tc.path, nil, nil, nil); err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			if tc.wantHeader && gotWorkspace != "ws_1" {
+				t.Errorf("X-Workspace-Id = %q, want %q", gotWorkspace, "ws_1")
+			}
+			if !tc.wantHeader && gotWorkspace != "" {
+				t.Errorf("X-Workspace-Id = %q, want no header on workspace-scoped path", gotWorkspace)
+			}
+		})
+	}
+}
+
+func TestAPIErrorNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Comment not found in this workspace"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "DELETE", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !apiErr.NotFound() {
+		t.Errorf("NotFound() = false for %+v", apiErr)
+	}
+	if apiErr.Message != "Comment not found in this workspace" {
+		t.Errorf("message = %q", apiErr.Message)
+	}
+}
