@@ -112,6 +112,6 @@ export function MainScreen() {
 2. **Feature Request Voting & Ideation**: Community voting board with real-time optimistic state updates.
 3. **Roadmap & Kanban Visibility**: Keep users engaged with public status columns and release targets.
 4. **In-App Changelog & Announcements**: Present "What's New" release notes and let users subscribe for updates.
-5. **User Attributes Sync**: Sync user payment status, plan name, MRR, and currency via `client.updateUserAttributes(...)`.
+5. **User Attributes Sync**: Sync user payment status, plan name, MRR, and currency via `client.updateUserAttributes(...)`. The underlying `PUT /api/v1/public/apps/{appKey}/user` endpoint is rate limited per client IP (60 requests/minute, HTTP `429`) — syncs of many users behind one shared IP must retry with exponential backoff.
 
 For complete method signatures, customization options, and architecture details, consult the [GitHub Repository](https://github.com/CupThread/CupThreadReactNativeSDK).

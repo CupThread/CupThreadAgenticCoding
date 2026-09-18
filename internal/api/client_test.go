@@ -201,6 +201,69 @@ func TestDoWorkspaceLimitReachedHint(t *testing.T) {
 	}
 }
 
+// TestDoRateLimitHint covers the 429 contract from issue #14: public write
+// endpoints (changelog subscribe/unsubscribe, PUT /user attribute upsert) are
+// rate limited per client IP and respond with
+// {"error":"Too many requests. Please try again shortly."}. The wrapped error
+// must stay an *APIError and carry a backoff hint.
+func TestDoRateLimitHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"Too many requests. Please try again shortly."}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "PUT", "/api/v1/public/apps/app_key_123/user", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if apiErr.Status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", apiErr.Status)
+	}
+	if apiErr.Message != "Too many requests. Please try again shortly." {
+		t.Errorf("message = %q", apiErr.Message)
+	}
+	if !apiErr.RateLimited() {
+		t.Errorf("RateLimited() = false for %+v", apiErr)
+	}
+	hint := apiErr.Hint()
+	for _, want := range []string{"client IP", "back off exponentially"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("Hint() = %q, want it to contain %q", hint, want)
+		}
+	}
+	if !strings.Contains(err.Error(), "rate limited") || !strings.Contains(err.Error(), "back off exponentially") {
+		t.Errorf("err = %q, want the rendered error to carry the rate-limit hint", err)
+	}
+}
+
+// TestHintEmptyForOrdinary4xxErrors guards the Hint helper returning no
+// guidance for errors that are neither 402 tier limits nor 429 throttling,
+// and that RateLimited only matches 429.
+func TestHintEmptyForOrdinary4xxErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  *APIError
+	}{
+		{"forbidden", &APIError{Status: http.StatusForbidden, Message: "Access denied"}},
+		{"not-found", &APIError{Status: http.StatusNotFound, Message: "App not found"}},
+		{"payment-required", &APIError{Status: http.StatusPaymentRequired, Message: "Monthly submission quota reached"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.err.RateLimited() {
+				t.Errorf("RateLimited() = true for status %d", tc.err.Status)
+			}
+			if tc.err.Status != http.StatusPaymentRequired {
+				if hint := tc.err.Hint(); hint != "" {
+					t.Errorf("Hint() = %q for a plain %d error, want \"\"", hint, tc.err.Status)
+				}
+			}
+		})
+	}
+}
+
 func TestDoRawMessagePassthrough(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"items":[1,2,3],"extra":"kept"}`))

@@ -54,6 +54,11 @@ func (e *APIError) Error() string {
 // TierLimit returns true when the error is a subscription tier limit (402).
 func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequired }
 
+// RateLimited returns true when the API throttled the request (429). Public
+// write endpoints are budgeted per client IP: changelog subscribe/unsubscribe
+// and the PUT /api/v1/public/apps/{appKey}/user attribute upsert.
+func (e *APIError) RateLimited() bool { return e.Status == http.StatusTooManyRequests }
+
 // tierLimitHints maps known 402 error codes to actionable remediation for
 // CLI users and agents: submission endpoints (POST /api/v1/feature-requests,
 // POST /api/v1/feedback) and workspace creation (POST /api/v1/console/
@@ -65,9 +70,12 @@ var tierLimitHints = map[string]string{
 }
 
 // Hint returns actionable remediation for known API error codes, e.g. 402
-// tier-limit responses on submission endpoints. It returns "" when there is
-// no specific guidance.
+// tier-limit responses on submission endpoints and 429 throttling on public
+// write endpoints. It returns "" when there is no specific guidance.
 func (e *APIError) Hint() string {
+	if e.RateLimited() {
+		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
+	}
 	if !e.TierLimit() {
 		return ""
 	}
@@ -171,6 +179,9 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
 			}
 			return fmt.Errorf("tier limit: %w", apiErr)
+		}
+		if apiErr.RateLimited() {
+			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
 		}
 		return apiErr
 	}
