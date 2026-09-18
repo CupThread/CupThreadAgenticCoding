@@ -33,7 +33,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 
 ## Roles & Authentication
 - **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`).
-- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28).
+- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, roadmap personalization, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28). On `GET /api/v1/feature-requests` the header replaces the deprecated `?userToken=` query parameter, and `POST /api/v1/me/link` combines it with a Clerk session to confirm identity linking — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12).
 
 ---
 
@@ -51,11 +51,12 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET` | **Non-destructive** confirmation interstitial (PROD-20): renders an HTML form that POSTs the token; the subscription is never modified. Email security gateways and link prefetchers that GET this URL cause no side effect. JSON-only clients (`Accept: application/json`) get `405` with `Allow: POST`. Missing/invalid tokens fail uniformly with `400`. Rate limited per client IP (`429`). |
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive path (also serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string, JSON body `{"token": "..."}`, or form field. The bare-email unsubscribe (`{"email": "..."}`) was **removed**. Always `{"unsubscribed": true}` whether or not the subscription existed; `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Browser form submissions (`Accept: text/html`) get an HTML landing page. Rate limited per client IP (`429`). |
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
-| `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). |
+| `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). Personalize with the **`X-User-Token` header**; the legacy `?userToken=` query parameter is deprecated (see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)). |
 | `/api/v1/feature-requests` | `POST` | Submit a new feature request. |
 | `/api/v1/feature-requests/:id/vote` | `POST` | Upvote / remove vote on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
+| `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. |
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
@@ -154,7 +155,6 @@ Contract for clients and SDKs:
 ---
 
 ## Feedback Attachment Upload Lifecycle (Upload Sessions)
-
 Feedback attachments are uploaded through **pre-allocated upload sessions**; direct external URLs and raw storage keys are rejected at submission time. The flow is always: **create session → upload each reserved slot → submit feedback referencing the `uploadId`s**. Agents and automated tools must create the session first — there is no un-sessioned upload path left on the API.
 
 **Step 1 — create the session: `POST /api/v1/uploads/sessions`** (JSON body):
@@ -203,6 +203,47 @@ Client guidance:
 2. Present the **same identity** on session creation and feedback submission — for anonymous users that means the same `X-User-Token` on both calls (SEC-28).
 3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user.
 4. Never fabricate, guess, or pre-assign `uploadId`s, and never send raw attachment URLs or storage keys — `direct_attachment_forbidden` is a hard rejection.
+
+---
+
+## End-User Token Header & Identity Linking (SEC-12)
+
+### `X-User-Token` replaces the `userToken` query parameter
+
+`GET /api/v1/feature-requests` personalizes responses (own submissions, vote state) when an end-user token is presented. Send it as a request **header**:
+
+```
+X-User-Token: <uuid>
+```
+
+- The legacy `?userToken=<uuid>` query parameter still works but is **deprecated** — tokens in URLs leak into access logs, referrers, and network traces. Requests that rely on it succeed, but the response carries `Warning: 299 - "userToken query parameter is deprecated; send X-User-Token header instead"` and `X-Deprecated-Query-Token: deprecated`.
+- When both are sent, the **header takes precedence** and no deprecation headers are returned.
+- The token is honored only when it is a valid UUID (any version, case-insensitive, surrounding whitespace trimmed); anything else is treated as an anonymous request.
+- Search responses set `Vary: X-User-Token`; only fully anonymous searches are cache-shared, so never route token-authenticated searches through a shared URL-keyed cache.
+
+### `POST /api/v1/me/link` — confirm identity linking
+
+Explicitly binds an authenticated end-user identity to an anonymous profile (OpenAPI tag `Privacy`, "Link End-User Identity (Self-Service)"). Rate limited per client IP like other public writes: throttled calls get `429 {"error": "Too many submissions. Please try again shortly."}` — retry with exponential backoff.
+
+- **Headers**: `X-User-Token: <uuid>` (**required**, must be a valid UUID) and `Authorization: Bearer <Clerk session JWT>` (**required**). Developer `cpt_` API tokens are **not** accepted — the caller must be the signed-in end user.
+- **Body**: `{"appKey": "<8-128 chars>"}` — the app the profile belongs to.
+
+| Status | When | Body |
+|---|---|---|
+| `200` | Profile linked; also idempotent when already bound to the same identity | `{"linked": true, "endUserId": "…", "clerkUserId": "…"}` |
+| `400` | Missing/malformed `X-User-Token` (`{"error": "A valid X-User-Token header is required"}`), malformed body, or link failure | `{"error": string, "code"?: string}` |
+| `401` | No valid Clerk session | `{"error": "Authentication required", "code": "authentication_required"}` |
+| `404` | Unknown `appKey` | `{"error": "App not found"}` |
+| `409` | Profile already confirmed to a **different** account | `{"error": "End-user profile is already linked and confirmed to another account", "code": "already_linked"}` |
+
+Linking semantics:
+
+- No profile exists for (`appKey`, `X-User-Token`) yet → one is created already bound to the authenticated identity and marked confirmed. There is **no** `404` for a missing profile — `404` is reserved for an unknown `appKey`.
+- An **anonymous** row (created earlier by voting/feedback with only `X-User-Token`, no Clerk binding) is claimed by the authenticated user and marked confirmed — this is the recovery path for unclaimed profiles.
+- A row already bound to the **same** Clerk user resolves idempotently with `200` (the binding is re-confirmed).
+- A row already bound to a **different** Clerk user is never hijacked: `409 already_linked`, deterministic — never retry automatically.
+
+Client guidance: call this once when the end user signs in to the host app (at that moment the client holds both the anonymous `X-User-Token` and a Clerk session), then keep using the same `X-User-Token` for voting, feedback, comments, and upload sessions.
 
 ---
 
