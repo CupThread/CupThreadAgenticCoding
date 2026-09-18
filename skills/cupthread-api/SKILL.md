@@ -50,6 +50,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/apps/:appKey/changelog/confirm` | `GET` | **The mutating double-opt-in confirmation:** consumes the single-use emailed token (`?token=...`) and flips the subscription to *confirmed*. Browsers get an HTML confirmation page; JSON clients (`Accept: application/json` without `text/html`) get `{"confirmed": true}`. Missing token → `400 {"error": "Missing confirmation token"}`; unknown/expired/already-used tokens → `400 {"error": "Invalid or expired confirmation token"}` (uniform, no oracle). Upstream SaaS#250 (SEC-35) plans to move mutation to a POST interstitial, but that change is **not shipped yet** — today GET itself confirms. |
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET` | **Non-destructive** confirmation interstitial (PROD-20): renders an HTML form that POSTs the token; the subscription is never modified. Email security gateways and link prefetchers that GET this URL cause no side effect. JSON-only clients (`Accept: application/json`) get `405` with `Allow: POST`. Missing/invalid tokens fail uniformly with `400`. Rate limited per client IP (`429`). |
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive path (also serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string, JSON body `{"token": "..."}`, or form field. The bare-email unsubscribe (`{"email": "..."}`) was **removed**. Always `{"unsubscribed": true}` whether or not the subscription existed; `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Browser form submissions (`Accept: text/html`) get an HTML landing page. Rate limited per client IP (`429`). |
+| `/api/v1/public/digest/unsubscribe` | `GET` | **Non-destructive** weekly-digest unsubscribe confirmation interstitial (PRIV-07): validates the signed token and renders an HTML form that POSTs it back; notification preferences are never modified by a GET. JSON-only clients (`Accept: application/json` without `text/html`) get `405` with `Allow: POST`. Missing token → `400 {"error": "Missing unsubscribe token"}`; invalid/expired → `400 {"error": "Invalid or expired unsubscribe token"}`. Rate limited per client IP (`429`, shared with the changelog unsubscribe budget). See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
+| `/api/v1/public/digest/unsubscribe` | `POST` | The only destructive digest path (serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string (takes precedence), JSON body `{"token": "..."}`, or a `token` form field. Success → `{"unsubscribed": true}` (HTML landing page when `Accept` includes `text/html`); replay is idempotent. `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Clears only the workspace `weekly.digest` **email** event — inbox notifications are unchanged. Rate limited per client IP (`429`). See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
 | `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). Personalize with the **`X-User-Token` header**; the legacy `?userToken=` query parameter is deprecated (see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)). |
 | `/api/v1/feature-requests` | `POST` | Submit a new feature request. |
@@ -92,7 +94,7 @@ Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-I
 
 | Endpoints | Budget | Why |
 |---|---|---|
-| `POST .../changelog/subscribe`, `GET`/`POST .../changelog/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and unsubscribe deletes subscriber rows, so the budget is tight. |
+| `POST .../changelog/subscribe`, `GET`/`POST .../changelog/unsubscribe`, `GET`/`POST .../public/digest/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and unsubscribe writes preferences, so the budget is tight. The changelog and digest unsubscribe flows **share one per-IP bucket** (`PUBLIC_WRITE_RATE_LIMITER`). |
 | `PUT /api/v1/public/apps/{appKey}/user` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row; rotating-token bursts are the throttled case. |
 
 Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs.
@@ -293,3 +295,38 @@ Client guidance:
 - Treat `415` as a deterministic client error: surface a user-facing "unsupported image type" message and let the user pick a different file; never retry automatically.
 
 **Console-configured app icons are exempt.** `POST /api/v1/console/workspaces/{wsId}/apps/{appId}/icon` (capability `app.configure`, so workspace admin/owner; `cpt_` API tokens are accepted) still accepts SVG icons, but screens them for active content — markers like `<script`, `javascript:`, `onload`/`onerror`/`onclick` handlers, `<!entity`, and `<foreignObject` fail with `415 {"error": "SVG contains prohibited active scripts or external entity references"}` — and applies the same magic-byte check. The endpoint stores the image and updates the app record (`iconUrl`) in the same request, returning the updated `AppRecord`.
+
+---
+
+## Weekly Digest Unsubscribe (PRIV-07)
+
+Weekly digest emails now carry RFC 8058 one-click unsubscribe: a `List-Unsubscribe: <https://api.cupthread.com/api/v1/public/digest/unsubscribe?token=…>` header, a `List-Unsubscribe-Post: List-Unsubscribe=One-Click` header, and an in-body footer link to the same URL. The path is driven from the email footer / mail client, **not** from in-app SDK session calls — OpenAPI-generated clients pick up the new route, but runtime SDK methods are not required unless a client wants to drive the flow itself.
+
+Both verbs live on `POST`/`GET /api/v1/public/digest/unsubscribe` (OpenAPI tag `Privacy`).
+
+### `GET` is strictly non-destructive (PROD-20)
+
+A browser GET validates the token and renders an interstitial confirmation page whose form POSTs the token to the same path. Email-security gateways and link prefetchers that GET the footer URL therefore cause **no side effect** — fetching never changes notification preferences.
+
+- JSON-only clients (`Accept: application/json` **without** `text/html`) get `405 {"error": "GET does not unsubscribe. POST the token to this endpoint to unsubscribe."}` with an `Allow: POST` header.
+- Missing token → `400 {"error": "Missing unsubscribe token"}`; invalid/expired token → `400 {"error": "Invalid or expired unsubscribe token"}` (uniform — token errors never reveal which case failed).
+
+### `POST` is the only destructive path
+
+Accepts the token from, in precedence order: query string (`?token=…`, what RFC 8058 one-click mail clients hit), JSON body `{"token": "…"}`, or a `token` field of an `application/x-www-form-urlencoded`/`multipart/form-data` body (what the GET confirmation form submits).
+
+- Success → `200 {"unsubscribed": true}` (JSON), or an HTML landing page when `Accept` includes `text/html` (browser form submissions).
+- Replay is idempotent — re-POSTing a consumed token still returns the same `200`.
+- Missing token → `400 {"error": "An unsubscribe token is required"}`; invalid/expired → `400 {"error": "Invalid or expired unsubscribe token"}`.
+- Effect: removes only `weekly.digest` from the workspace **email** channel's event mask (an empty mask is materialized as "all events except `weekly.digest`"). The email channel, all other events, and **inbox notifications are unchanged** — this is not a global notification kill switch.
+
+Both verbs are rate limited per client IP with the same 10 requests / 60 s budget as the changelog subscribe/unsubscribe flow (`429 {"error": "Too many requests. Please try again shortly."}`).
+
+### Token contract
+
+- Shape: base64url(`payload`).base64url(`HMAC-SHA256 signature`) — exactly two dot-separated parts; the signature covers the purpose prefix `digest.unsubscribe.v1.` plus the payload, so tokens are domain-separated from changelog-unsubscribe and attachment-download tokens.
+- Payload: `{"workspaceId", "email", "exp"}` — the owner email is lowercased at mint time and `exp` is a Unix millisecond timestamp ~**90 days** out, so a delayed click on a recent weekly mail still works.
+- A token verifies only while the workspace still exists **and** its owner email still matches the payload — rotating the workspace owner invalidates outstanding tokens.
+- Signing secret resolution is fail-closed: `DIGEST_EMAIL_TOKEN_SECRET`, then `CHANGELOG_EMAIL_TOKEN_SECRET`, then `JWT_SECRET`. With no usable secret, verification fails (`400`) **and** the digest cron skips the email entirely — a digest whose unsubscribe token cannot be minted is never sent.
+
+Client guidance: never pre-fetch or "validate" footer URLs with a GET from automation (safe, but pointless — only POST mutates); don't fabricate, cache beyond 90 days, or attempt to parse tokens (they are opaque to clients); retry `429`s with exponential backoff.
