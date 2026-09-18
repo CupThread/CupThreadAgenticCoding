@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -35,7 +36,8 @@ func newChangelogCmd() *cobra.Command {
 }
 
 func newChangelogListCmd() *cobra.Command {
-	return &cobra.Command{
+	var limit, offset int
+	list := &cobra.Command{
 		Use:   "list",
 		Short: "List changelog entries of the app",
 		DisableFlagsInUseLine: true,
@@ -45,7 +47,11 @@ func newChangelogListCmd() *cobra.Command {
 				return err
 			}
 			var resp api.ListChangelogResponse
-			q := query(map[string]string{"appId": appID})
+			q := query(map[string]string{
+				"appId":  appID,
+				"limit":  strconv.Itoa(limit),
+				"offset": strconv.Itoa(offset),
+			})
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/changelog"), q, nil, &resp); err != nil {
 				return err
 			}
@@ -67,9 +73,16 @@ func newChangelogListCmd() *cobra.Command {
 				})
 			}
 			A.out.Table([]string{"ID", "Title", "Version", "State", "Linked", "Subscribers"}, rows)
+			if resp.HasMore {
+				A.out.Printf("Showing %d of %d entries — re-run with --offset %d for the next page.",
+					len(resp.Entries), resp.Total, offset+len(resp.Entries))
+			}
 			return nil
 		},
 	}
+	list.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server default 100)")
+	list.Flags().IntVar(&offset, "offset", 0, "Entries to skip for paging")
+	return list
 }
 
 func shortID(id string) string {
