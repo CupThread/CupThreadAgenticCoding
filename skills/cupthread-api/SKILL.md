@@ -32,7 +32,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 ---
 
 ## Roles & Authentication
-- **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`).
+- **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`). Console workspace routes additionally enforce role-based capabilities (AUTH-01), and high-impact ones reject `cpt_` tokens outright — see [Workspace Capability RBAC (AUTH-01)](#workspace-capability-rbac-auth-01).
 - **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, roadmap personalization, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28). On `GET /api/v1/feature-requests` the header replaces the deprecated `?userToken=` query parameter, and `POST /api/v1/me/link` combines it with a Clerk session to confirm identity linking — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12).
 
 ---
@@ -278,6 +278,34 @@ Workspace-scoped comment moderation (OpenAPI tag `Console Moderation`), authenti
 | `/api/v1/console/workspaces/:wsId/comments/:commentId` | `DELETE` | Permanently delete a comment. Returns `404` when the comment is not in the workspace, `200 {"success": true}` on success. |
 
 **Workspace id semantics**: on all `/api/v1/console/workspaces/{wsId}/...` endpoints the path id is authoritative. The `X-Workspace-Id` header is optional; when sent it must match the path id, otherwise the API answers `400`. Prefer omitting the header on these routes.
+
+---
+
+## Workspace Capability RBAC (AUTH-01)
+
+Every `/api/v1/console/workspaces/{wsId}/...` route declares one capability (upstream CupThread/SaaS#55, `apps/api/src/lib/capabilities.ts`), checked server-side against the caller's workspace role. Unknown or corrupted roles fail closed with no capabilities:
+
+| Capability | member | admin | owner |
+|---|---|---|---|
+| `workspace.read` (all read-only GET/list endpoints) | ✅ | ✅ | ✅ |
+| `triage` (submissions, feature requests, forwarding) | ✅ | ✅ | ✅ |
+| `content.manage` (changelog, columns, versions, imports, comment moderation, deletions) | ✅ | ✅ | ✅ |
+| `app.configure` (app create/update, icon, SDK settings, per-app repo link) | ❌ | ✅ | ✅ |
+| `integration.manage` (connect/disconnect integrations, manual tokens, sync) | ❌ | ✅ | ✅ |
+| `billing.manage` (checkout, portal, add-ons) | ❌ | ✅ | ✅ |
+| `members.manage` (member add/set-role/remove, invitation revoke) | ❌ | ✅ | ✅ |
+| `workspace.delete` | ❌ | ❌ | ✅ (declared; no route uses it yet) |
+
+Two structured 403 codes can come back from these routes (both with HTTP 403):
+
+- `capability_required` — the caller's role does not include the route's capability:
+  `{"error": "Access denied: your workspace role does not include the '<capability>' capability", "code": "capability_required"}`
+- `interactive_session_required` — the route's capability is in the interactive-only set (`members.manage`, `billing.manage`, `integration.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
+  `{"error": "This action requires an interactive session; API tokens are not permitted", "code": "interactive_session_required"}`
+
+The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk sessions (Console web UI or the CLI's `auth login` OAuth flow) never see `interactive_session_required`.
+
+Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage`, `app.configure`, and imports. Two GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`) and `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`). Public feedback/SDK endpoints are unchanged.
 
 ---
 

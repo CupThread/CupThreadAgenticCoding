@@ -150,7 +150,17 @@ func wsPath(ws, suffix string) string {
 }
 
 func newWorkspaceMembersCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "members", Short: "Manage workspace members"}
+	cmd := &cobra.Command{
+		Use:   "members",
+		Short: "Manage workspace members",
+		Long: `Manage workspace members.
+
+List works for every workspace role and with cpt_ API tokens. invite, add,
+set-role, and remove require a workspace admin or owner signed in
+interactively: with a cpt_ API token they fail with 403
+interactive_session_required (use 'cupthread auth login'), and for
+member-role callers they fail with 403 capability_required.`,
+	}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
@@ -312,7 +322,15 @@ func newMembersRemoveCmd() *cobra.Command {
 }
 
 func newWorkspaceInvitationsCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "invitations", Short: "Manage pending workspace invitations"}
+	cmd := &cobra.Command{
+		Use:   "invitations",
+		Short: "Manage pending workspace invitations",
+		Long: `Manage pending workspace invitations.
+
+List works for every workspace role and with cpt_ API tokens. Revoke
+requires a workspace admin or owner signed in interactively: cpt_ API
+tokens are rejected with 403 interactive_session_required.`,
+	}
 	cmd.AddCommand(
 		&cobra.Command{
 			Use:   "list",
