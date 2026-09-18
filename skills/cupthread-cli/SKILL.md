@@ -94,10 +94,19 @@ cupthread apps public-config <app-key>     # Show the public portal config (no l
 ### Feedback Inbox Triage
 ```sh
 cupthread inbox list                       # List recent feedback submissions
-cupthread inbox list --status open --json  # List open feedback in JSON
-cupthread inbox get <feedback-id>          # View feedback details and attachments
-cupthread inbox update <feedback-id> --status resolved
+cupthread inbox list --triage-status open --json  # Filter: open | in_progress | resolved | archived | active
+cupthread inbox list --assigned-to unassigned --q "crash"  # Assignee filter + title search
+cupthread inbox get <feedback-id>          # Triage detail: attachments, delivery attempts, activity log
+cupthread inbox priority <feedback-id> !!! # Raise priority (! / !! / !!!)
+cupthread inbox triage <feedback-id> in_progress   # Set triage status: open | in_progress | resolved | archived
+cupthread inbox assign <feedback-id> <clerk-user-id>  # Assign to a workspace member (omit ID to unassign)
+cupthread inbox bulk-triage <id1> <id2> --triage-status resolved  # Bulk update 1-50 submissions (also --assignee / --unassign)
+cupthread inbox retry <feedback-id>        # Retry GitHub forwarding for a failed delivery
 ```
+
+> Delivery `status` (`received` / `forwarded` / `forward_failed`) is managed by
+> the platform and is separate from the triage lifecycle — use `inbox triage`
+> (never a `--status` flag) to change triage state.
 
 ### Feature Requests & Roadmap
 ```sh
