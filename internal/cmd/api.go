@@ -32,7 +32,11 @@ Path must start with "/" and is appended to the base URL, e.g.
 Authentication, the X-Workspace-Id header (when a workspace is resolved) and
 JSON output are handled the same as the high-level commands. Pass a JSON body
 with --input @file (or "-" for stdin). This is the escape hatch for endpoints
-the CLI does not wrap yet.`,
+the CLI does not wrap yet.
+
+Every invocation sends an X-Request-Id correlation header (cli-<uuid>); the
+API echoes it on the response and CLI errors quote it as request-id=… —
+include that value in bug reports and support requests.`,
 		Args:                  cobra.ExactArgs(2),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,8 +58,14 @@ the CLI does not wrap yet.`,
 				}
 			}
 
+			// One correlation ID per invocation (OPS-01): sending our own
+			// valid value means the API echoes it back verbatim, so the ID
+			// shown below is always the one the server logged.
+			requestID := api.NewRequestID()
 			var raw json.RawMessage
-			if err := A.client.Do(cmd.Context(), method, path, nil, body, &raw); err != nil {
+			err := A.client.DoWithHeaders(cmd.Context(), method, path, nil,
+				map[string]string{"X-Request-Id": requestID}, body, &raw)
+			if err != nil {
 				// Still surface structured API errors as JSON when in JSON mode.
 				// errors.As is required because tier-limit (402) errors are
 				// wrapped by the client.
@@ -65,6 +75,9 @@ the CLI does not wrap yet.`,
 						"error":  apiErr.Message,
 						"code":   apiErr.Code,
 						"status": apiErr.Status,
+					}
+					if apiErr.RequestID != "" {
+						payload["requestId"] = apiErr.RequestID
 					}
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
@@ -78,10 +91,10 @@ the CLI does not wrap yet.`,
 				return A.out.Structured(raw)
 			}
 			if len(raw) == 0 {
-				A.out.Printf("✓ %s %s succeeded (no response body)", method, path)
+				A.out.Printf("✓ %s %s succeeded (no response body, request-id %s)", method, path, requestID)
 				return nil
 			}
-			A.out.Printf("✓ %s %s", method, path)
+			A.out.Printf("✓ %s %s (request-id %s)", method, path, requestID)
 			A.out.Printf("%s", raw)
 			return nil
 		},

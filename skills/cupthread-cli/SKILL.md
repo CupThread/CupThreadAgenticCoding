@@ -166,6 +166,8 @@ Agents can invoke any API endpoint directly:
 cupthread api request GET /api/v1/console/me --json
 ```
 
+Every CLI request carries an `X-Request-Id` correlation header (`cli-<uuid>`; the API echoes it on every response). CLI errors quote the server-echoed value as `request-id=…`, and `api request` prints it on success lines — include that value verbatim in bug reports and support requests so the exact request can be found server-side.
+
 ### Repository & Skills Management
 ```sh
 # Inspect git status of local CupThread repositories
