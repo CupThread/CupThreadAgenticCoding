@@ -560,6 +560,34 @@ type PublicUserProfileResponse struct {
 	HideComments   bool                 `json:"hideComments"`
 }
 
+// ─── Public app config ───────────────────────────────────────────────────────
+
+// PublicAppConfig is the portal configuration served by the unauthenticated
+// public config endpoints (GET /api/v1/public/config/{appKey} and
+// GET /api/v1/public/workspaces/{workspaceSlug}/apps/{appSlug}/config). It
+// mirrors the OpenAPI PublicAppConfig schema.
+type PublicAppConfig struct {
+	AppID                   string   `json:"appId"`
+	AppKey                  string   `json:"appKey"`
+	WorkspaceSlug           string   `json:"workspaceSlug"`
+	Slug                    string   `json:"slug"`
+	Name                    string   `json:"name"`
+	StoreURL                *string  `json:"storeUrl"`
+	StoreKind               *string  `json:"storeKind"`
+	AppStoreURL             *string  `json:"appStoreUrl"`
+	GooglePlayURL           *string  `json:"googlePlayUrl"`
+	WebsiteURL              *string  `json:"websiteUrl"`
+	IconURL                 *string  `json:"iconUrl"`
+	AllowPublic             bool     `json:"allowPublic"`
+	HideSiteBranding        bool     `json:"hideSiteBranding"`
+	AllowedPlatforms        []string `json:"allowedPlatforms"`
+	MaxAttachmentBytes      int      `json:"maxAttachmentBytes"`
+	AllowAnonymousRoadmap   bool     `json:"allowAnonymousRoadmap"`
+	AllowAnonymousVote      bool     `json:"allowAnonymousVote"`
+	AllowAnonymousFeedback  bool     `json:"allowAnonymousFeedback"`
+	AllowAnonymousChangelog bool     `json:"allowAnonymousChangelog"`
+}
+
 // ─── Generic envelopes ───────────────────────────────────────────────────────
 
 type UploadImageResponse struct {

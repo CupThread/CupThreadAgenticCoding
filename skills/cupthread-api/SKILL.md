@@ -41,7 +41,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/v1/public/config/:appKey` | `GET` | Fetches app metadata, SDK skin/appearance, enabled platforms, changelog copy. |
+| `/api/v1/public/config/:appKey` | `GET` | Fetches the `PublicAppConfig`: app metadata, store/website links (`websiteUrl`), branding flags (`hideSiteBranding`), enabled platforms, and anonymous-access settings. |
+| `/api/v1/public/workspaces/:workspaceSlug/apps/:appSlug/config` | `GET` | Same `PublicAppConfig` resolved by workspace and app slugs instead of app key. |
 | `/api/v1/public/columns/:appKey` | `GET` | Roadmap Kanban columns sorted by position. |
 | `/api/v1/public/versions/:appKey` | `GET` | Release versions sorted by position. |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published release notes and changelog items. |

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -24,8 +26,72 @@ func newAppsCmd() *cobra.Command {
 		newAppsUpdateCmd(),
 		newAppsUseCmd(),
 		newAppSettingsCmd(),
+		newAppsPublicConfigCmd(),
 	)
 	return cmd
+}
+
+// newAppsPublicConfigCmd shows the PublicAppConfig served to the public web
+// portal and SDKs. The endpoints are unauthenticated, so this works before
+// 'auth login'.
+func newAppsPublicConfigCmd() *cobra.Command {
+	var workspaceSlug, appSlug string
+	publicConfig := &cobra.Command{
+		Use:   "public-config [app-key]",
+		Short: "Show an app's public portal config (no login required)",
+		Long: `Show the PublicAppConfig served to the public web portal and SDKs.
+
+Resolve the app by its public app key, or by workspace and app slugs:
+  cupthread apps public-config <app-key>
+  cupthread apps public-config --workspace-slug <slug> --app-slug <slug>`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var path string
+			switch {
+			case len(args) == 1:
+				if workspaceSlug != "" || appSlug != "" {
+					return errors.New("pass either an app key or --workspace-slug/--app-slug, not both")
+				}
+				path = "/api/v1/public/config/" + url.PathEscape(args[0])
+			case workspaceSlug != "" && appSlug != "":
+				path = fmt.Sprintf("/api/v1/public/workspaces/%s/apps/%s/config",
+					url.PathEscape(workspaceSlug), url.PathEscape(appSlug))
+			default:
+				return errors.New("pass an app key, or both --workspace-slug and --app-slug")
+			}
+			var config api.PublicAppConfig
+			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", path, nil, nil, &config); err != nil {
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(config)
+			}
+			A.out.Table([]string{"Field", "Value"}, [][]string{
+				{"App ID", config.AppID},
+				{"App key", config.AppKey},
+				{"Workspace", config.WorkspaceSlug},
+				{"Slug", config.Slug},
+				{"Name", config.Name},
+				{"Public", boolYesNo(config.AllowPublic)},
+				{"Platforms", strings.Join(config.AllowedPlatforms, ", ")},
+				{"Website URL", orDash(deref(config.WebsiteURL))},
+				{"Hide site branding", boolYesNo(config.HideSiteBranding)},
+				{"Store URL", orDash(deref(config.StoreURL))},
+				{"App Store URL", orDash(deref(config.AppStoreURL))},
+				{"Google Play URL", orDash(deref(config.GooglePlayURL))},
+				{"Icon", orDash(deref(config.IconURL))},
+				{"Max attachment bytes", strconv.Itoa(config.MaxAttachmentBytes)},
+				{"Anonymous roadmap", boolYesNo(config.AllowAnonymousRoadmap)},
+				{"Anonymous vote", boolYesNo(config.AllowAnonymousVote)},
+				{"Anonymous feedback", boolYesNo(config.AllowAnonymousFeedback)},
+				{"Anonymous changelog", boolYesNo(config.AllowAnonymousChangelog)},
+			})
+			return nil
+		},
+	}
+	publicConfig.Flags().StringVar(&workspaceSlug, "workspace-slug", "", "Workspace slug (resolve the config by slugs)")
+	publicConfig.Flags().StringVar(&appSlug, "app-slug", "", "App slug (requires --workspace-slug)")
+	return publicConfig
 }
 
 func newAppsListCmd() *cobra.Command {

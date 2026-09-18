@@ -87,6 +87,8 @@ cupthread apps list                        # List apps in current workspace
 cupthread apps use <app-id>                # Set active app context
 cupthread apps get <app-id>                # Show app details and configuration
 cupthread apps create --name "My App"      # Create a new app
+cupthread apps public-config <app-key>     # Show the public portal config (no login required);
+                                           # also accepts --workspace-slug <slug> --app-slug <slug>
 ```
 
 ### Feedback Inbox Triage
