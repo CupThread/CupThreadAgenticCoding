@@ -166,6 +166,41 @@ func TestHintEmptyForNonTierLimitErrors(t *testing.T) {
 	}
 }
 
+// TestDoWorkspaceLimitReachedHint covers the 402 contract from issue #18:
+// POST /api/v1/console/workspaces responds with code workspace_limit_reached
+// when the developer already owns the cap of workspaces. The hint must point
+// at deleting/transferring an owned workspace, not at the subscription
+// fallback used for unknown codes.
+func TestDoWorkspaceLimitReachedHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"error":"Workspace limit reached (maximum 3 workspaces per developer account)","code":"workspace_limit_reached"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/api/v1/console/workspaces", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if apiErr.Status != http.StatusPaymentRequired || apiErr.Code != "workspace_limit_reached" {
+		t.Fatalf("apiErr = %+v", apiErr)
+	}
+	hint := apiErr.Hint()
+	for _, want := range []string{"already owns the maximum number of workspaces", "delete one you own or transfer its ownership", "do not count toward the cap"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("Hint() = %q, want it to contain %q", hint, want)
+		}
+	}
+	if strings.Contains(hint, "check the workspace subscription") {
+		t.Errorf("Hint() = %q, want the workspace-specific guidance rather than the generic subscription fallback", hint)
+	}
+	if !strings.Contains(err.Error(), "already owns the maximum number of workspaces") {
+		t.Errorf("err = %q, want the rendered error to carry the hint", err)
+	}
+}
+
 func TestDoRawMessagePassthrough(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"items":[1,2,3],"extra":"kept"}`))

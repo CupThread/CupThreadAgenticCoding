@@ -54,12 +54,14 @@ func (e *APIError) Error() string {
 // TierLimit returns true when the error is a subscription tier limit (402).
 func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequired }
 
-// tierLimitHints maps known 402 error codes from submission endpoints
-// (POST /api/v1/feature-requests, POST /api/v1/feedback) to actionable
-// remediation for CLI users and agents.
+// tierLimitHints maps known 402 error codes to actionable remediation for
+// CLI users and agents: submission endpoints (POST /api/v1/feature-requests,
+// POST /api/v1/feedback) and workspace creation (POST /api/v1/console/
+// workspaces, capped per developer account).
 var tierLimitHints = map[string]string{
-	"tier_limit_submissions": "the workspace reached its monthly submission quota; upgrade the plan (cupthread billing show / Console → Billing) or wait for the quota to reset, then retry",
-	"subscription_inactive":  "the workspace subscription is inactive or canceled; renew it in Console → Billing before submitting",
+	"tier_limit_submissions":  "the workspace reached its monthly submission quota; upgrade the plan (cupthread billing show / Console → Billing) or wait for the quota to reset, then retry",
+	"subscription_inactive":   "the workspace subscription is inactive or canceled; renew it in Console → Billing before submitting",
+	"workspace_limit_reached": "the developer account already owns the maximum number of workspaces; delete one you own or transfer its ownership (Console → Workspaces), then retry — member/admin seats in other workspaces do not count toward the cap",
 }
 
 // Hint returns actionable remediation for known API error codes, e.g. 402

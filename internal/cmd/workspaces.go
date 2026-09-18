@@ -78,7 +78,7 @@ func newWorkspacesCreateCmd() *cobra.Command {
 			var resp api.CreateWorkspaceResponse
 			body := map[string]string{"name": name, "slug": slug}
 			if err := A.client.Do(cmd.Context(), "POST", "/api/v1/console/workspaces", nil, body, &resp); err != nil {
-				return err
+				return workspaceCreateError(err)
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
@@ -101,6 +101,18 @@ func slugify(name string) string {
 		s = s[:64]
 	}
 	return s
+}
+
+// workspaceCreateError translates the 402 workspace_limit_reached response
+// from POST /api/v1/console/workspaces into an explicit error instead of the
+// generic tier-limit one: the cap is per developer account on owned
+// workspaces, not a workspace subscription limit. Other errors pass through.
+func workspaceCreateError(err error) error {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.TierLimit() && apiErr.Code == "workspace_limit_reached" {
+		return fmt.Errorf("%s — delete a workspace you own or transfer its ownership (Console → Workspaces), then retry (member/admin seats in other workspaces do not count toward the cap)", apiErr.Message)
+	}
+	return err
 }
 
 func newWorkspacesUseCmd() *cobra.Command {

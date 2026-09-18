@@ -44,9 +44,13 @@ type MeWorkspaceEntry struct {
 }
 
 type MeResponse struct {
-	ClerkUserID string              `json:"clerkUserId"`
-	Email       *string             `json:"email"`
-	Workspaces  []MeWorkspaceEntry  `json:"workspaces"`
+	ClerkUserID string  `json:"clerkUserId"`
+	Email       *string `json:"email"`
+	// MaxWorkspaces, when present, is the per-developer cap on owned
+	// workspaces enforced by POST /api/v1/console/workspaces (BILL-02).
+	// It is additive and optional; only owner-role memberships count.
+	MaxWorkspaces *int               `json:"maxWorkspaces,omitempty"`
+	Workspaces    []MeWorkspaceEntry `json:"workspaces"`
 }
 
 // ─── Apps ────────────────────────────────────────────────────────────────────
