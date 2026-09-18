@@ -114,6 +114,23 @@ The feedback image upload endpoint accepts only **PNG, JPEG, WebP, and GIF**. Wh
 
 Console-configured app icons (developer-facing) are unaffected and may still use screened SVG.
 
+## Self-Service Data Erasure (PRIV-01)
+
+`POST /api/v1/me/erase` lets end users erase their own profile for one app (PRIV-01). Call it with a `{"appKey": "…"}` JSON body and the user's `X-User-Token: <uuid>` header (a Clerk session also works for signed-in users; developer `cpt_` tokens are not an identity here):
+
+- **Effect**: the anonymous token is rotated immediately (the old token stops working; replays return `404`), stored PII (display name, email, IP, user agent) is cleared, and the user's feature requests, votes, and comments survive **without personal attribution** — aggregate counts are preserved.
+- `200 {"erased": true, "endUserId": "…"}` on success — discard the stored `X-User-Token` locally and mint a fresh one for any further activity.
+- `400` `{"error": "appKey is required"}` without `appKey`; `401` without any identity; `404 {"erased": false, "error": "…"}` when the app is unknown, no profile matches, or the profile was already erased; `429` when rate limited (first a per-IP budget of 10 requests/60 s answering `Too many submissions…`, then a per-token budget answering `Too many erasure requests for this token…`).
+- Erasure is immediate and **irreversible** — confirm with the user in UI (e.g. a settings/"delete my data" action) before calling. Never retry `404`; retry `429` with exponential backoff.
+
+## Feedback Metadata Redaction (PRIV-01)
+
+The `metadata` map attached to feedback submissions is **sanitized server-side before storage** — oversized or credential-looking payloads are shrunk, **never rejected**, so existing integrations keep working unchanged. Pre-sanitizing client-side with the same rules is encouraged so users get local feedback:
+
+- Keys must match `[A-Za-z0-9_.:-]{1,64}` (max **24** keys); non-conforming or surplus keys are silently dropped.
+- Values under credential-looking keys — `token`, `secret`, `password`, `apiKey`, `authorization`, `cookie`, `session`, … (camelCase-aware, so `github_token`, `api-key`, and `sessionCookie` all hit) — are replaced with the literal `"[redacted]"`.
+- Strings are truncated to 512 chars (suffixed `…[truncated]`), nesting is capped at depth 4 (deeper objects/arrays become `null`), and the serialized object is capped at **8 KB** (whole keys dropped in sorted order until it fits — never sliced mid-value).
+
 ## Feedback Attachment Upload Flow (Upload Sessions)
 
 Attachment uploads go through **pre-allocated upload sessions** — feedback submissions referencing raw attachment URLs or storage keys are rejected (`400` `direct_attachment_forbidden`). For custom integrations outside the SDK composer, drive the three-step lifecycle directly:
