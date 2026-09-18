@@ -53,7 +53,8 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
 | `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit`, `offset`, `versionId`, `q`). Personalize with the **`X-User-Token` header**; the legacy `?userToken=` query parameter is deprecated (see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)). |
 | `/api/v1/feature-requests` | `POST` | Submit a new feature request. |
-| `/api/v1/feature-requests/:id/vote` | `POST` | Upvote / remove vote on a feature request. |
+| `/api/v1/feature-requests/:id/vote` | `POST` | Toggle (upvote / un-upvote) the caller's vote; body `{appKey, userToken}` (or an authenticated Clerk session), returns `{voted, voteCount}`. Rate limited per client IP — 20 requests/minute with a vote-specific `429` body (see [Rate Limiting](#rate-limiting-429-too-many-requests)). |
+| `/api/v1/feature-requests/:id/vote` | `DELETE` | Explicitly remove the caller's vote, returns `{voted: false, voteCount}`. Same per-client-IP vote rate limit applies (`429`). |
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
@@ -88,14 +89,15 @@ Agents and SDK clients should parse the `code` field, treat `402` as a determini
 
 ## Rate Limiting (`429 Too Many Requests`)
 
-Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}`:
+Public write endpoints are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}` — except the feature-request vote endpoints, which return a vote-specific body: `429 {"error": "Too many votes. Please try again shortly."}`:
 
 | Endpoints | Budget | Why |
 |---|---|---|
 | `POST .../changelog/subscribe`, `GET`/`POST .../changelog/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and unsubscribe deletes subscriber rows, so the budget is tight. |
 | `PUT /api/v1/public/apps/{appKey}/user` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row; rotating-token bursts are the throttled case. |
+| `POST`/`DELETE /api/v1/feature-requests/{id}/vote` | 20 requests / 60 s | The anonymous voter identity is a client-minted `userToken` UUID, so votes get their own per-IP cap (SEC-09) — one IP minting fresh tokens must not be able to inflate vote counts. |
 
-Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs.
+Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter, never in a tight loop. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs. For votes, `429` is a recoverable user-facing condition: surface a friendly "you're voting too fast, try again in a minute" message instead of auto-retrying; normal tapping across a roadmap stays well under the 20/minute budget.
 
 ---
 
