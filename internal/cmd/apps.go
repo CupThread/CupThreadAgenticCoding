@@ -265,6 +265,7 @@ func newAppsUpdateCmd() *cobra.Command {
 				return err
 			}
 
+			var iconRec *api.AppRecord
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
 				body["name"] = name
@@ -287,30 +288,37 @@ func newAppsUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("platforms") {
 				body["allowedPlatforms"] = platforms
 			}
-			if cmd.Flags().Changed("icon") {
-				if iconPath == "" {
-					body["iconUrl"] = nil
-				} else {
-					iconURL, err := uploadIcon(cmd.Context(), appRec.AppKey, iconPath)
-					if err != nil {
-						return err
-					}
-					body["iconUrl"] = iconURL
+			if cmd.Flags().Changed("icon") && iconPath != "" {
+				// The console icon endpoint validates the image and updates
+				// the app record in the same request, so no iconUrl PUT here.
+				iconRec, err = uploadIcon(cmd.Context(), ws, appRec.AppID, iconPath)
+				if err != nil {
+					return err
 				}
 			}
-			if len(body) == 0 {
+			if cmd.Flags().Changed("icon") && iconPath == "" {
+				body["iconUrl"] = nil
+			}
+			if len(body) == 0 && iconRec == nil {
 				return errors.New("nothing to update: pass at least one flag")
 			}
 
-			var updated api.AppRecord
-			if err := A.client.Do(cmd.Context(), "PUT",
-				fmt.Sprintf("%s/apps/%s", wsPath(ws, ""), appRec.AppID), nil, body, &updated); err != nil {
-				return err
+			updated := iconRec
+			if len(body) > 0 {
+				var rec api.AppRecord
+				if err := A.client.Do(cmd.Context(), "PUT",
+					fmt.Sprintf("%s/apps/%s", wsPath(ws, ""), appRec.AppID), nil, body, &rec); err != nil {
+					return err
+				}
+				updated = &rec
 			}
 			if A.structured() {
-				return A.out.Structured(updated)
+				return A.out.Structured(*updated)
 			}
 			A.out.Printf("✓ Updated app %s", updated.AppID)
+			if iconRec != nil {
+				A.out.Printf("  Icon: %s", deref(updated.IconURL))
+			}
 			return nil
 		},
 	}
@@ -319,7 +327,7 @@ func newAppsUpdateCmd() *cobra.Command {
 	update.Flags().StringVar(&storeURL, "store-url", "", "Legacy store URL (\"\" clears it)")
 	update.Flags().StringVar(&appStoreURL, "app-store-url", "", "App Store URL (\"\" clears it)")
 	update.Flags().StringVar(&googlePlayURL, "google-play-url", "", "Google Play URL (\"\" clears it)")
-	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon")
+	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon (PNG, JPEG, WebP, GIF, or screened SVG; a declared type that does not match the file content fails with 415)")
 	update.Flags().BoolVar(&public, "public", false, "Show the app on the public showcase (Pro feature)")
 	update.Flags().StringSliceVar(&platforms, "platforms", nil, "Allowed platforms: ios,macos,android,universal")
 	return update
@@ -332,12 +340,12 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
-func uploadIcon(ctx context.Context, appKey, path string) (string, error) {
+func uploadIcon(ctx context.Context, wsID, appID, path string) (*api.AppRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read icon file: %w", err)
+		return nil, fmt.Errorf("read icon file: %w", err)
 	}
-	return A.client.UploadAppIcon(ctx, appKey, fileName(path), data)
+	return A.client.UploadAppIcon(ctx, wsID, appID, fileName(path), data)
 }
 
 func fileName(path string) string {

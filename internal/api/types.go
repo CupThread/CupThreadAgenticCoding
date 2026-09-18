@@ -678,7 +678,3 @@ type PublicAppConfig struct {
 }
 
 // ─── Generic envelopes ───────────────────────────────────────────────────────
-
-type UploadImageResponse struct {
-	URL string `json:"url"`
-}
