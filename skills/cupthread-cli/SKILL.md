@@ -93,6 +93,8 @@ cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPE
 cupthread apps public-config <app-key>     # Show the public portal config (no login required);
                                            # also accepts --workspace-slug <slug> --app-slug <slug>;
                                            # private apps fail with 404 like unknown keys (fail-closed)
+cupthread apps public-changelog <app-key>  # Fetch the public changelog feed (no login required);
+                                           # cursor-paginated: follow --cursor <nextCursor> until hasMore=false
 ```
 
 ### Feedback Inbox Triage
@@ -146,8 +148,12 @@ User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`);
 ### Changelog & Releases
 ```sh
 cupthread changelog list                   # List published and draft changelogs
+cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (server default: 100/page)
 cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --publish-now
 ```
+`changelog list` (console) is offset/limit-paginated and reports `total` +
+`hasMore`; the table view prints the next `--offset` when more pages remain.
+The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
 ### Search
 ```sh

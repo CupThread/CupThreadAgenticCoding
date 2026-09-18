@@ -376,6 +376,29 @@ type ChangelogEntry struct {
 
 type ListChangelogResponse struct {
 	Entries []ChangelogEntry `json:"entries"`
+	Total   int              `json:"total"`
+	HasMore bool             `json:"hasMore"`
+}
+
+// PublicChangelogEntry is one published entry of the public changelog feed
+// (GET /api/v1/public/apps/{appKey}/changelog), mirroring the OpenAPI
+// PublicChangelogEntry schema.
+type PublicChangelogEntry struct {
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Body           string          `json:"body"`
+	VersionLabel   *string         `json:"versionLabel"`
+	PublishedAt    string          `json:"publishedAt"`
+	LinkedRequests []LinkedRequest `json:"linkedRequests"`
+}
+
+// ListPublicChangelogResponse is the cursor-paginated public changelog feed
+// (PROD-28). NextCursor is nil on the last page; pass it back as the
+// `cursor` query parameter to fetch the next page.
+type ListPublicChangelogResponse struct {
+	Entries    []PublicChangelogEntry `json:"entries"`
+	HasMore    bool                   `json:"hasMore"`
+	NextCursor *string                `json:"nextCursor"`
 }
 
 // ─── Imports ─────────────────────────────────────────────────────────────────

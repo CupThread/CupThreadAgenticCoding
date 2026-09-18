@@ -28,8 +28,58 @@ func newAppsCmd() *cobra.Command {
 		newAppsUseCmd(),
 		newAppSettingsCmd(),
 		newAppsPublicConfigCmd(),
+		newAppsPublicChangelogCmd(),
 	)
 	return cmd
+}
+
+// newAppsPublicChangelogCmd fetches the public changelog feed served to the
+// web portal and SDKs. The endpoint is unauthenticated and cursor-paginated
+// (PROD-28): pass the previous page's nextCursor back via --cursor until
+// hasMore is false.
+func newAppsPublicChangelogCmd() *cobra.Command {
+	var limit int
+	var cursor string
+	publicChangelog := &cobra.Command{
+		Use:   "public-changelog <app-key>",
+		Short: "Fetch an app's public changelog feed (no login required)",
+		Long: `Fetch the published changelog feed served to the public web portal and SDKs.
+
+Cursor-paginated: pass --cursor with the nextCursor value from the previous
+page until the response reports hasMore=false:
+  cupthread apps public-changelog <app-key>
+  cupthread apps public-changelog <app-key> --limit 50
+  cupthread apps public-changelog <app-key> --cursor <nextCursor>`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q := url.Values{"limit": {strconv.Itoa(limit)}}
+			if cursor != "" {
+				q.Set("cursor", cursor)
+			}
+			path := "/api/v1/public/apps/" + url.PathEscape(args[0]) + "/changelog"
+			var resp api.ListPublicChangelogResponse
+			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", path, q, nil, &resp); err != nil {
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(resp)
+			}
+			rows := make([][]string, 0, len(resp.Entries))
+			for _, e := range resp.Entries {
+				rows = append(rows, []string{
+					shortID(e.ID), truncate(e.Title, 44), orDash(deref(e.VersionLabel)), cutDate(e.PublishedAt),
+				})
+			}
+			A.out.Table([]string{"ID", "Title", "Version", "Published"}, rows)
+			if resp.NextCursor != nil {
+				A.out.Printf("More entries available. Next page: --cursor %s", *resp.NextCursor)
+			}
+			return nil
+		},
+	}
+	publicChangelog.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server default 100)")
+	publicChangelog.Flags().StringVar(&cursor, "cursor", "", "Opaque keyset cursor from the previous page's nextCursor")
+	return publicChangelog
 }
 
 // newAppsPublicConfigCmd shows the PublicAppConfig served to the public web
