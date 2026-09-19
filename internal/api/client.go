@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -38,18 +40,58 @@ func New(baseURL string) *Client {
 	}
 }
 
+// requestIDHeader is the OPS-01 correlation header: every API response
+// echoes it, and the API accepts a caller-supplied value only when it
+// matches ^[A-Za-z0-9._-]{8,64}$ (anything else is ignored and replaced).
+const requestIDHeader = "X-Request-Id"
+
+// NewRequestID returns a fresh correlation ID in the cli-<uuid> form the API
+// accepts — 40 characters within the 8–64 charset budget. The time+pid
+// fallback stays inside the same charset in case crypto/rand ever fails.
+func NewRequestID() string {
+	var b [16]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return fmt.Sprintf("cli-%d%d", time.Now().UnixNano(), os.Getpid())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("cli-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// hasRequestIDHeader reports whether the caller already supplied an
+// X-Request-Id in the extra-headers map (key case-insensitive).
+func hasRequestIDHeader(headers map[string]string) bool {
+	for k := range headers {
+		if http.CanonicalHeaderKey(k) == requestIDHeader {
+			return true
+		}
+	}
+	return false
+}
+
 // APIError is a non-2xx API response.
 type APIError struct {
 	Status  int
 	Message string
 	Code    string
+	// RequestID is the X-Request-Id correlation value the API echoed on the
+	// failing response (OPS-01): the caller's ID when it was format-valid,
+	// otherwise a server-generated UUID. Quote it in bug reports and support
+	// requests so the server side can find the exact request.
+	RequestID string
 }
 
 func (e *APIError) Error() string {
-	if e.Code != "" {
+	switch {
+	case e.Code != "" && e.RequestID != "":
+		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)", e.Message, e.Status, e.Code, e.RequestID)
+	case e.Code != "":
 		return fmt.Sprintf("%s (HTTP %d, code=%s)", e.Message, e.Status, e.Code)
+	case e.RequestID != "":
+		return fmt.Sprintf("%s (HTTP %d, request-id=%s)", e.Message, e.Status, e.RequestID)
+	default:
+		return fmt.Sprintf("%s (HTTP %d)", e.Message, e.Status)
 	}
-	return fmt.Sprintf("%s (HTTP %d)", e.Message, e.Status)
 }
 
 // TierLimit returns true when the error is a subscription tier limit (402).
@@ -154,6 +196,11 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	if c.UserToken != "" {
 		req.Header.Set("X-User-Token", c.UserToken)
 	}
+	// OPS-01: send a fresh correlation ID unless the caller supplied one; the
+	// server echoes the valid value back so any error can be traced.
+	if !hasRequestIDHeader(headers) {
+		req.Header.Set(requestIDHeader, NewRequestID())
+	}
 	for k, v := range headers {
 		if v != "" {
 			req.Header.Set(k, v)
@@ -196,6 +243,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 			apiErr.Message = parsed.Error
 			apiErr.Code = parsed.Code
 		}
+		apiErr.RequestID = resp.Header.Get(requestIDHeader)
 		if apiErr.TierLimit() {
 			if hint := apiErr.Hint(); hint != "" {
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
@@ -305,6 +353,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 		return err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set(requestIDHeader, NewRequestID())
 	if c.Token != nil {
 		token, err := c.Token(ctx)
 		if err != nil {
@@ -337,6 +386,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			apiErr.Message = parsed.Error
 			apiErr.Code = parsed.Code
 		}
+		apiErr.RequestID = resp.Header.Get(requestIDHeader)
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
 			return fmt.Errorf("unsupported image type: %w", apiErr)
 		}

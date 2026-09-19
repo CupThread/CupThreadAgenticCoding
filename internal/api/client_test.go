@@ -7,9 +7,127 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// requestIDPattern mirrors the API's accepted correlation-ID charset and
+// length (OPS-01): ^[A-Za-z0-9._-]{8,64}$.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
+
+// cliRequestIDPattern pins the CLI's own cli-<uuid v4> generator shape.
+var cliRequestIDPattern = regexp.MustCompile(
+	`^cli-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestNewRequestIDFormat(t *testing.T) {
+	seen := make(map[string]bool, 100)
+	for i := 0; i < 100; i++ {
+		id := NewRequestID()
+		if !cliRequestIDPattern.MatchString(id) {
+			t.Fatalf("NewRequestID() = %q, want cli-<uuid v4>", id)
+		}
+		if !requestIDPattern.MatchString(id) {
+			t.Fatalf("NewRequestID() = %q violates the API charset/length contract", id)
+		}
+		if seen[id] {
+			t.Fatalf("NewRequestID() repeated %q across %d generations", id, i+1)
+		}
+		seen[id] = true
+	}
+}
+
+func TestDoSendsRequestIDHeader(t *testing.T) {
+	var ids []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids = append(ids, r.Header.Get("X-Request-Id"))
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	for i := 0; i < 2; i++ {
+		if err := client.Do(context.Background(), "GET", "/x", nil, nil, nil); err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+	}
+	if len(ids) != 2 {
+		t.Fatalf("got %d requests, want 2", len(ids))
+	}
+	for i, id := range ids {
+		if !cliRequestIDPattern.MatchString(id) {
+			t.Errorf("request %d X-Request-Id = %q, want cli-<uuid v4>", i, id)
+		}
+	}
+	if ids[0] == ids[1] {
+		t.Errorf("both requests reused request id %q; want a fresh ID per request", ids[0])
+	}
+}
+
+func TestDoRespectsCallerRequestID(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Request-Id")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.DoWithHeaders(context.Background(), "GET", "/x", nil,
+		map[string]string{"X-Request-Id": "agent-correlation-1"}, nil, nil)
+	if err != nil {
+		t.Fatalf("DoWithHeaders: %v", err)
+	}
+	if got != "agent-correlation-1" {
+		t.Errorf("X-Request-Id = %q, want the caller-supplied value verbatim", got)
+	}
+}
+
+func TestAPIErrorCarriesEchoedRequestID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-Id", "srv-generated-uuid")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Comment not found in this workspace"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if apiErr.RequestID != "srv-generated-uuid" {
+		t.Errorf("RequestID = %q, want the echoed response header", apiErr.RequestID)
+	}
+	if !strings.Contains(apiErr.Error(), "request-id=srv-generated-uuid") {
+		t.Errorf("Error() = %q, want it to quote the correlation ID", apiErr.Error())
+	}
+}
+
+func TestUploadAppIconSendsAndEchoesRequestID(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Request-Id")
+		w.Header().Set("X-Request-Id", got)
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+		_, _ = w.Write([]byte(`{"error":"Only PNG, JPEG, WebP, and GIF images are supported.","code":"unsupported_media_type"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("not an image"))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !cliRequestIDPattern.MatchString(got) {
+		t.Errorf("multipart X-Request-Id = %q, want cli-<uuid v4>", got)
+	}
+	if apiErr.RequestID != got {
+		t.Errorf("RequestID = %q, want the echoed %q", apiErr.RequestID, got)
+	}
+}
 
 func TestDoSendsAuthAndWorkspaceHeaders(t *testing.T) {
 	var gotAuth, gotWorkspace, gotPath, gotQuery string

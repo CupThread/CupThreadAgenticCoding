@@ -106,6 +106,10 @@ struct MyFeedbackView: View {
 4. **Changelog & "What's New"**: Display rich Markdown release notes with email update subscription.
 5. **User Attributes Sync**: Synchronize paying status, plan, MRR, and currency via `client.updateUserAttributes(...)`. The underlying `PUT /api/v1/public/apps/{appKey}/user` endpoint is rate limited per client IP (60 requests/minute, HTTP `429`) — syncs of many users behind one shared IP must retry with exponential backoff.
 
+## Request Correlation IDs (X-Request-Id)
+
+Every CupThread API response carries an `X-Request-Id` header (OPS-01): your ID when the request supplied a format-valid one (`^[A-Za-z0-9._-]{8,64}$`, e.g. a UUID), otherwise a server-generated UUID. Quote it verbatim in bug reports and support requests — it lets CupThread locate the exact request in server logs. When driving the API with a raw `URLSession` call instead of the SDK, send your own `X-Request-Id` per request; values outside that charset/length budget are silently ignored and replaced. CORS exposes the header, so browser-based integrations can read it too.
+
 ## Feedback Image Restrictions (415 Unsupported Media Type)
 
 The feedback image upload endpoint accepts only **PNG, JPEG, WebP, and GIF**. When integrating the attachment picker:

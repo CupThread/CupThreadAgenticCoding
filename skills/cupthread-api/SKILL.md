@@ -330,6 +330,18 @@ Client guidance:
 
 ---
 
+## Request Correlation IDs (`X-Request-Id`, OPS-01)
+
+**Every response — all endpoints, all status codes — carries an `X-Request-Id` response header** (OpenAPI shared component `XRequestId`): the caller's ID when the request supplied a format-valid one, otherwise a server-generated UUID. It is a correlation handle for server logs, telemetry, and support flows — never an authentication or authorization primitive.
+
+Contract:
+
+- Callers MAY send an `X-Request-Id` request header on any endpoint. It is honored only when it matches `^[A-Za-z0-9._-]{8,64}$` (a UUID qualifies); any other value is ignored and replaced server-side, and the response always echoes the effective value.
+- CORS exposes the header to cross-origin browsers on every route class (`Access-Control-Expose-Headers: X-Request-Id`) and allowlists it as a request header on console and public preflights.
+- Quote the response's `X-Request-Id` verbatim in bug reports and support requests so the exact request can be found server-side. The `cupthread` CLI does this for you: it sends `cli-<uuid>` per request and quotes the echoed value as `request-id=…` on errors (and on `api request` success lines).
+
+---
+
 ## Weekly Digest Unsubscribe (PRIV-07)
 
 Weekly digest emails now carry RFC 8058 one-click unsubscribe: a `List-Unsubscribe: <https://api.cupthread.com/api/v1/public/digest/unsubscribe?token=…>` header, a `List-Unsubscribe-Post: List-Unsubscribe=One-Click` header, and an in-body footer link to the same URL. The path is driven from the email footer / mail client, **not** from in-app SDK session calls — OpenAPI-generated clients pick up the new route, but runtime SDK methods are not required unless a client wants to drive the flow itself.
