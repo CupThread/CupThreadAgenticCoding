@@ -52,7 +52,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive path (also serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string, JSON body `{"token": "..."}`, or form field. The bare-email unsubscribe (`{"email": "..."}`) was **removed**. Always `{"unsubscribed": true}` whether or not the subscription existed; `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Browser form submissions (`Accept: text/html`) get an HTML landing page. Rate limited per client IP (`429`). |
 | `/api/v1/public/digest/unsubscribe` | `GET` | **Non-destructive** weekly-digest unsubscribe confirmation interstitial (PRIV-07): validates the signed token and renders an HTML form that POSTs it back; notification preferences are never modified by a GET. JSON-only clients (`Accept: application/json` without `text/html`) get `405` with `Allow: POST`. Missing token → `400 {"error": "Missing unsubscribe token"}`; invalid/expired → `400 {"error": "Invalid or expired unsubscribe token"}`. Rate limited per client IP (`429`, shared with the changelog unsubscribe budget). See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
 | `/api/v1/public/digest/unsubscribe` | `POST` | The only destructive digest path (serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string (takes precedence), JSON body `{"token": "..."}`, or a `token` form field. Success → `{"unsubscribed": true}` (HTML landing page when `Accept` includes `text/html`); replay is idempotent. `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Clears only the workspace `weekly.digest` **email** event — inbox notifications are unchanged. Rate limited per client IP (`429`). See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
-| `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
+| `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Bodies reporting any payment attribute (`isPaying`, `mrr`, `plan` — an explicit `null` counts) must carry an HMAC-signed `signature` + `timestamp`; see [SDK Payment-Attribute Signing (DATA-03)](#sdk-payment-attribute-signing-data-03). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
 | `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit` 1–200, default 50; legacy `offset`; `versionId`; `q`). Cursor-paginated (DATA-01): opaque `cursor` from the previous `nextCursor`; returns `{requests, total, hasMore, nextCursor}` with `nextCursor` `null` on the last page; malformed cursors fail with `400` `{"error": "Invalid cursor"}`. Boards with anonymous roadmap view disabled answer `401` `authentication_required` to unauthenticated reads. Personalize with the **`X-User-Token` header**; the legacy `?userToken=` query parameter is deprecated (see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)). |
 | `/api/v1/feature-requests` | `POST` | Submit a new feature request. |
 | `/api/v1/feature-requests/:id/vote` | `POST` | Toggle (upvote / un-upvote) the caller's vote; body `{appKey, userToken}` (or an authenticated Clerk session), returns `{voted, voteCount}`. Rate limited per client IP — 20 requests/minute with a vote-specific `429` body (see [Rate Limiting](#rate-limiting-429-too-many-requests)). |
@@ -267,6 +267,44 @@ Contract:
 - Ids are stable for a given (app, user) pair, so reply threading (`replyToClerkId`) and author attribution keep working **within one app**. They are **unlinkable across apps**: never join, deduplicate, or correlate user ids between two different `appKey`s.
 - `GET /api/v1/users/:userId/profile` accepts `u_*` ids **only together with the `appKey` query parameter** (the id can only be reversed within its app). Without `appKey`, a `u_*` request returns `404`, and an unknown (unmapped) `u_*` id returns the same `404 {"error": "User profile not found"}` — since SEC-34 the endpoint never runs the full-app candidate scan (unique unknown ids are cache-busting), so an indexed miss is terminal and retrying cannot change the answer. Legacy `user_*` ids remain accepted without `appKey` for existing `/u/` links, and the endpoint is additionally rate limited per client IP (see [Rate Limiting](#rate-limiting-429-too-many-requests)).
 - Public profiles are opt-in. A user who never created a public profile resolves to a placeholder — the requested id echoed back with `displayName: null` and empty `publicApps` / `recentComments` — and there is no existence oracle for raw ids. `publicApps` lists only apps of workspaces where the user is an **owner**; the response has no top-level `hideComments` (comment visibility is applied server-side).
+
+---
+
+## SDK Payment-Attribute Signing (DATA-03)
+
+`PUT /api/v1/public/apps/:appKey/user` is reachable with nothing but the public `appKey`, so self-declared payment attributes cannot be trusted: whenever the body contains any of `isPaying`, `mrr`, or `plan` (**an explicit JSON `null` counts too**), the request must also carry two extra body fields, `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch-seconds integer). Both are transport fields — they are never persisted. Verification runs before any `end_users` row is minted, so rejected requests leave no trace. Identity-only and `currency`-only writes keep working unchanged.
+
+The HMAC key is the app's **SDK signing secret**, generated by the developer in the console (*App Access → App Credentials → SDK signing secret*). Unsigned payment attributes fail as follows:
+
+| Status | `code` | Trigger |
+|---|---|---|
+| `422` | `payment_attributes_require_signature` | Payment attribute in the body without `signature` + `timestamp`. |
+| `422` | `sdk_signing_secret_not_configured` | The app has no SDK signing secret yet. |
+| `401` | `stale_signature` | `timestamp` more than ±300 seconds from the server clock. |
+| `401` | `invalid_signature` | Signature mismatch — wrong key or tampered values. |
+
+### Canonical string
+
+HMAC-SHA256-sign the exact bytes of this newline-joined string (no trailing newline) and hex-encode the digest:
+
+```
+cpt-user-attrs-v1
+<appKey>
+<userToken>
+<isPaying: true|false|unset>
+<plan: value|null|unset>
+<mrr: canonicalNumber|null|unset>
+<currency: valueAsSent|unset>
+<timestamp: epochSeconds>
+```
+
+- Absent fields sign as `unset`; explicit JSON `null` signs as `null`. Omitting `plan` and sending `"plan": null` produce different signatures.
+- `canonicalNumber`: render the raw JSON number with two-fraction-digit `toFixed(2)` semantics, then strip trailing `0`s and a trailing `.` (`1200.00 → "1200"`, `99.50 → "99.5"`). Ties pick the larger n on the exact binary value: `10.125 → "10.13"`, and `1200.005 → "1200.01"` because its binary double sits *above* the decimal value while `99.995` carries to `"100"`.
+- Values are signed **as sent**: `currency` before the server's uppercase normalization, `plan` verbatim including Unicode.
+- `userToken` is the resolved token — the body `userToken` when present, else the `X-User-Token` header value; sign whichever identifies the user in this request.
+- Sign immediately before sending: a `timestamp` older or newer than ±300 s from server time fails with `stale_signature`.
+
+Coding agents can generate reference signatures to cross-check platform implementations with `cupthread api sign-user-attrs` (see the `cupthread-cli` skill).
 
 ---
 

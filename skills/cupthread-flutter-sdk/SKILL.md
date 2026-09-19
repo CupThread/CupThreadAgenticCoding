@@ -92,6 +92,43 @@ void initState() {
 
 ---
 
+## Payment-Attribute Signing (HMAC-SHA256, DATA-03)
+
+`PUT /api/v1/public/apps/{appKey}/user` only persists paying status, plan, and MRR when the request is **signed with the app's SDK signing secret** (developer console: *App Access → App Credentials → SDK signing secret*). Whenever the body contains any of `isPaying`, `mrr`, or `plan` (an explicit JSON `null` counts), it must also carry `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch seconds) — both plain body fields. Identity-only and currency-only writes stay unsigned. Rejections happen before any profile row is created:
+
+- `422 payment_attributes_require_signature` — payment fields without `signature` + `timestamp`
+- `422 sdk_signing_secret_not_configured` — the app has no signing secret yet
+- `401 stale_signature` — `timestamp` more than ±300 s from server time
+- `401 invalid_signature` — wrong key or tampered values
+
+**Canonical string** — HMAC-SHA256-sign the exact bytes of this newline-joined string (no trailing newline) and hex-encode the digest:
+
+```
+cpt-user-attrs-v1
+<appKey>
+<userToken>
+<isPaying: true|false|unset>
+<plan: value|null|unset>
+<mrr: canonicalNumber|null|unset>
+<currency: valueAsSent|unset>
+<timestamp: epochSeconds>
+```
+
+- Absent fields sign as `unset`, explicit JSON `null` as `null` (omitting `plan` ≠ sending `"plan": null`). `userToken` is the body value when present, else the `X-User-Token` header value.
+- `canonicalNumber` follows JS `Number.prototype.toFixed(2)` with trailing zeros and a trailing `.` stripped (`1200.00 → "1200"`, `99.50 → "99.5"`); exact binary ties pick the larger n (`10.125 → "10.13"`). Compute it from the raw JSON value as sent — Dart's `toStringAsFixed` matches `toFixed(2)` for these values, but verify with the vector below.
+- Sign immediately before sending (±300 s freshness window) and don't mutate signed values when appending `signature`/`timestamp` to the body.
+
+```dart
+import 'package:crypto/crypto.dart';
+
+String userAttrsSignature(String canonical, String secret) =>
+    Hmac(sha256, utf8.encode(secret))
+        .convert(utf8.encode(canonical))
+        .toString(); // Digest.toString() is lowercase hex
+```
+
+**Cross-check your port** against this reference vector before shipping: secret `cpt_sk_test_secret_0123456789abcdef`, appKey `app_demo12345`, userToken `3fa85f64-5717-4562-b3fc-2c963f66afa6`, timestamp `1758000000`, body `{"isPaying":true,"plan":"pro","mrr":299.5,"currency":"USD"}` → canonical `cpt-user-attrs-v1\napp_demo12345\n3fa85f64-5717-4562-b3fc-2c963f66afa6\ntrue\npro\n299.5\nUSD\n1758000000` → signature `59bc1177751f4c36f9caeed8c763cde9ee18835196acd1b6d4ce3b1ea2dc0273`. `cupthread api sign-user-attrs` generates more vectors.
+
 ## Key Features Overview
 
 1. **Structured Feedback Submission**: Gather bug reports and feedback with automatic device/package metadata and image/log attachments.
