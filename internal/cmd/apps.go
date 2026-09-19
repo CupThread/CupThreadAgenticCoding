@@ -29,6 +29,7 @@ func newAppsCmd() *cobra.Command {
 		newAppSettingsCmd(),
 		newAppsPublicConfigCmd(),
 		newAppsPublicChangelogCmd(),
+		newAppsPublicFeatureRequestsCmd(),
 	)
 	return cmd
 }
@@ -80,6 +81,72 @@ page until the response reports hasMore=false:
 	publicChangelog.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server default 100)")
 	publicChangelog.Flags().StringVar(&cursor, "cursor", "", "Opaque keyset cursor from the previous page's nextCursor")
 	return publicChangelog
+}
+
+// newAppsPublicFeatureRequestsCmd pages the unauthenticated public
+// feature-request feed (DATA-01). Keyset cursor paging supersedes offset
+// paging: when --cursor is set the offset is not sent at all, so deep-page
+// walks stay cheap server-side.
+func newAppsPublicFeatureRequestsCmd() *cobra.Command {
+	var limit, offset int
+	var cursor, query string
+	publicRequests := &cobra.Command{
+		Use:   "public-feature-requests <app-key>",
+		Short: "Fetch an app's public feature-request feed (no login required)",
+		Long: `Fetch the feature-request feed served to the public web portal and SDKs.
+
+Keyset-cursor-paginated: pass --cursor with the nextCursor value from the
+previous page until the response reports hasMore=false. Requests are ordered
+newest-first and --offset is ignored whenever --cursor is set:
+  cupthread apps public-feature-requests <app-key>
+  cupthread apps public-feature-requests <app-key> --limit 100
+  cupthread apps public-feature-requests <app-key> --cursor <nextCursor>
+  cupthread apps public-feature-requests <app-key> --q "dark mode"
+
+Boards that require sign-in (anonymous roadmap view disabled) reject the
+unauthenticated feed with 401.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			q := url.Values{"appKey": {args[0]}, "limit": {strconv.Itoa(limit)}}
+			if cursor != "" {
+				q.Set("cursor", cursor)
+			} else if offset > 0 {
+				q.Set("offset", strconv.Itoa(offset))
+			}
+			if query != "" {
+				q.Set("q", query)
+			}
+			var resp api.ListPublicFeatureRequestsResponse
+			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", "/api/v1/feature-requests", q, nil, &resp); err != nil {
+				var apiErr *api.APIError
+				if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+					return fmt.Errorf("this board requires sign-in; the CLI reads the public feed unauthenticated: %w", err)
+				}
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(resp)
+			}
+			rows := make([][]string, 0, len(resp.Requests))
+			for _, r := range resp.Requests {
+				rows = append(rows, []string{
+					shortID(r.ID), truncate(r.Title, 44), r.Status, orDash(deref(r.ColumnName)),
+					strconv.Itoa(r.VoteCount), strconv.Itoa(r.CommentCount), cutDate(r.CreatedAt),
+				})
+			}
+			A.out.Table([]string{"ID", "Title", "Status", "Column", "Votes", "Comments", "Created"}, rows)
+			A.out.Printf("(%d shown, %d total)", len(resp.Requests), resp.Total)
+			if resp.NextCursor != nil {
+				A.out.Printf("More requests available. Next page: --cursor %s", *resp.NextCursor)
+			}
+			return nil
+		},
+	}
+	publicRequests.Flags().IntVar(&limit, "limit", 50, "Requests per page (1-200, server default 50)")
+	publicRequests.Flags().IntVar(&offset, "offset", 0, "Legacy offset page start (ignored when --cursor is set)")
+	publicRequests.Flags().StringVar(&cursor, "cursor", "", "Opaque keyset cursor from the previous page's nextCursor")
+	publicRequests.Flags().StringVar(&query, "q", "", "Search titles, descriptions, columns, and versions")
+	return publicRequests
 }
 
 // newAppsPublicConfigCmd shows the PublicAppConfig served to the public web
