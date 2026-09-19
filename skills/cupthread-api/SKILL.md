@@ -33,7 +33,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 
 ## Roles & Authentication
 - **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`). Console workspace routes additionally enforce role-based capabilities (AUTH-01), and high-impact ones reject `cpt_` tokens outright — see [Workspace Capability RBAC (AUTH-01)](#workspace-capability-rbac-auth-01).
-- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, roadmap personalization, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28). On `GET /api/v1/feature-requests` the header replaces the deprecated `?userToken=` query parameter, and `POST /api/v1/me/link` combines it with a Clerk session to confirm identity linking — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12).
+- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, roadmap personalization, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28). On `GET /api/v1/feature-requests` the header replaces the deprecated `?userToken=` query parameter, and `POST /api/v1/me/link` combines it with a Clerk session to confirm identity linking — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). `POST /api/v1/me/erase` uses it for self-service data erasure — see [Self-Service Data Erasure (PRIV-01)](#self-service-data-erasure-priv-01).
 
 ---
 
@@ -60,8 +60,9 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
+| `/api/v1/me/erase` | `POST` | Self-service data erasure (PRIV-01): erases the caller's own end-user profile for one app — rotates the anonymous token, clears stored PII, and anonymizes feature requests/votes/comments. Authenticates with the `X-User-Token` header or a Clerk session; see [Self-Service Data Erasure (PRIV-01)](#self-service-data-erasure-priv-01). |
 | `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. Unknown `u_*` ids return `404` without a reverse-lookup scan (SEC-34). Rate limited per client IP: 60 requests/minute in the same bucket as the `PUT .../user` upsert, `429` on bursts. |
-| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). |
+| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). Free-form `metadata` is sanitized server-side before persistence — shrunk, never rejected (see [Feedback Metadata Redaction (PRIV-01)](#feedback-metadata-redaction-priv-01)). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
 | `/api/v1/uploads/:uploadId` | `PUT` | Upload one reserved session slot's bytes. `Authorization: Bearer <sessionToken>` (or `X-Upload-Session-Token`); raw binary body or `multipart/form-data` with a `file` field. `POST` is accepted as an alias. |
 | `/api/v1/uploads/images` | `POST` | Legacy multipart image upload — **now requires an upload session** (`401` `upload_session_required` without one; `Authorization` header or `sessionToken`/`sessionId` form field). PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). |
@@ -374,3 +375,47 @@ Both verbs are rate limited per client IP with the same 10 requests / 60 s budge
 - Signing secret resolution is fail-closed: `DIGEST_EMAIL_TOKEN_SECRET`, then `CHANGELOG_EMAIL_TOKEN_SECRET`, then `JWT_SECRET`. With no usable secret, verification fails (`400`) **and** the digest cron skips the email entirely — a digest whose unsubscribe token cannot be minted is never sent.
 
 Client guidance: never pre-fetch or "validate" footer URLs with a GET from automation (safe, but pointless — only POST mutates); don't fabricate, cache beyond 90 days, or attempt to parse tokens (they are opaque to clients); retry `429`s with exponential backoff.
+
+---
+
+## Self-Service Data Erasure (PRIV-01)
+
+`POST /api/v1/me/erase` (OpenAPI tag `Privacy`, "Erase My Data (Self-Service)") lets the data subject erase their **own** end-user profile for one app. Anyone holding the secret anonymous token — or the matching signed-in Clerk user — may call it; developer `cpt_` API tokens are **not** an identity here.
+
+**Request**: JSON body `{"appKey": "<8-128 chars>"}` plus identity — `X-User-Token: <uuid>` header (any UUID version; a malformed value is treated as absent) or a Clerk session (header optional for signed-in callers).
+
+**Effect** (aggregates survive, attribution does not):
+
+- The anonymous token is **rotated immediately** to an `erased-…` value: the old token stops working at once, and replaying the erase with it returns `404`.
+- Stored PII is cleared: display name, email, the Clerk link, end-user attributes, and IP/user agent on feedback submissions matching the profile's email.
+- Feature requests, votes, and comment attribution are anonymized; changelog subscriptions of the identity are removed. Feedback content and vote counts are preserved without personal attribution.
+
+| Status | When | Body |
+|---|---|---|
+| `200` | Profile erased | `{"erased": true, "endUserId": "…"}` |
+| `400` | Missing/empty `appKey` in the body | `{"error": "appKey is required"}` |
+| `401` | Neither a valid `X-User-Token` header nor a Clerk session was presented | `{"error": "Authentication required"}` |
+| `404` | Unknown `appKey`, no profile for this identity, or already erased (replay) | `{"erased": false, "error": "No profile found for this identity"}` |
+| `429` | Rate limited (per-IP or per-token) | see below |
+
+Rate limiting is two-layered. First the shared **per-IP** public-submit budget (10 requests / 60 s): `429 {"error": "Too many submissions. Please try again shortly."}` — note this check runs **before** authentication, so even unauthenticated probes consume the IP budget. Then a **per-token** erasure budget for anonymous callers (the same limiter keyed by the token): `429 {"error": "Too many erasure requests for this token. Please try again shortly."}`.
+
+Client guidance for SDKs (expose an "erase my data" entry point, e.g. a settings action):
+
+1. Confirm with the user before calling — erasure is immediate and **irreversible** for that profile.
+2. On `200`, discard the stored `X-User-Token` locally and mint a fresh token for any further activity; the old one is dead.
+3. Treat `404` as "nothing left to erase" (the expected replay/no-profile response) — never retry it. Retry `429` with exponential backoff; treat `400`/`401` as deterministic client errors.
+
+---
+
+## Feedback Metadata Redaction (PRIV-01)
+
+The free-form `metadata` field on feedback submissions (`POST /api/v1/feedback` and every other feedback write path) is **sanitized server-side before persistence**. Sanitization never throws and never rejects the submission — oversized or suspicious payloads are shrunk — so the contract is non-breaking for existing SDKs. Pre-sanitizing client-side with the same rules is encouraged so users get local feedback:
+
+1. **Key allowlist**: only keys matching `[A-Za-z0-9_.:-]{1,64}` are kept, at most **24** keys; non-conforming or surplus keys are silently dropped. Nested objects and arrays are also capped at 24 entries per level.
+2. **Credential redaction**: values under credential-looking keys are replaced with the literal string `"[redacted]"` — regardless of the value's type. The match runs on a normalized key (camelCase/PascalCase split, lowercased) against a broad pattern covering `password`, `secret`, `token`, `apiKey`, `accessKey`, `clientSecret`, `credential`, `authorization`, `cookie`, `session`, `bearer`, `privateKey`, `signature`, `jwt`, `otp`, `ssn`, and credit-card-like keys — so `github_token`, `api-key`, `sessionCookie`, and `SECRET` all hit.
+3. **String truncation**: string values longer than 512 chars are cut to 512 and suffixed with `…[truncated]`.
+4. **Depth cap**: the top-level metadata object is depth 0; object/array values at depth 4 or deeper collapse to `null`.
+5. **8 KB budget**: the total serialized object is capped at 8192 bytes. Whole keys are dropped — never sliced mid-value — in deterministic **sorted-key order**: a key that does not fit is skipped, and a smaller later key can still be kept.
+
+Sanitization is deterministic (same input always yields the same output) and runs **before any other validation**, so even submissions that later fail (`402` quota, `403` public feedback disabled, `401` anonymous feedback disabled, `404` unknown app, `422` `scan_rejected`) never persist unsanitized metadata. Console triage reads back only the sanitized result: pre-rendered string entries carrying `redacted` / `truncated` flags.
