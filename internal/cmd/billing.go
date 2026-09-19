@@ -13,6 +13,12 @@ func newBillingCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "billing",
 		Short: "Show usage and manage the subscription (Polar)",
+		Long: `Show usage and manage the subscription (Polar).
+
+show works for every workspace role and with cpt_ API tokens. checkout,
+portal, and addons require an interactive Clerk session: cpt_ API tokens
+are rejected with 403 interactive_session_required — run 'cupthread auth
+login' or use Console → Billing.`,
 	}
 	cmd.AddCommand(newBillingShowCmd(), newBillingCheckoutCmd(), newBillingPortalCmd(), newBillingAddonsCmd())
 	return cmd

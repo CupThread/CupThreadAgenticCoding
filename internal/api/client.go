@@ -71,12 +71,26 @@ var tierLimitHints = map[string]string{
 	"workspace_limit_reached": "the developer account already owns the maximum number of workspaces; delete one you own or transfer its ownership (Console → Workspaces), then retry — member/admin seats in other workspaces do not count toward the cap",
 }
 
+// forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
+// remediation: every /api/v1/console/workspaces/* route declares one
+// capability checked against the caller's role, and members.manage,
+// billing.manage, and integration.manage additionally reject cpt_ API tokens
+// outright (interactive Clerk session required).
+var forbiddenHints = map[string]string{
+	"capability_required":          "your workspace role does not include the capability this action requires; ask a workspace admin or owner to perform it, or have an owner change your role (Console → Members)",
+	"interactive_session_required": "this action rejects cpt_ API tokens; sign in interactively with 'cupthread auth login' (browser OAuth) or manage it in the Console web UI",
+}
+
 // Hint returns actionable remediation for known API error codes, e.g. 402
-// tier-limit responses on submission endpoints and 429 throttling on public
-// write endpoints. It returns "" when there is no specific guidance.
+// tier-limit responses on submission endpoints, 429 throttling on public
+// write endpoints, and 403 AUTH-01 workspace RBAC denials. It returns ""
+// when there is no specific guidance.
 func (e *APIError) Hint() string {
 	if e.RateLimited() {
 		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
+	}
+	if e.Forbidden() {
+		return forbiddenHints[e.Code]
 	}
 	if !e.TierLimit() {
 		return ""
@@ -90,6 +104,12 @@ func (e *APIError) Hint() string {
 // NotFound returns true when the API answered 404 for the targeted resource,
 // e.g. a comment that does not exist in the workspace.
 func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
+
+// Forbidden returns true when the API rejected the caller's authorization
+// (403): a workspace role missing the endpoint's capability
+// (capability_required) or a cpt_ API token on an interactive-session-only
+// endpoint (interactive_session_required).
+func (e *APIError) Forbidden() bool { return e.Status == http.StatusForbidden }
 
 // workspaceScopedPrefix marks paths that already carry the workspace id. For
 // these the API treats the path id as authoritative: X-Workspace-Id is
@@ -184,6 +204,12 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		}
 		if apiErr.RateLimited() {
 			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
+		}
+		if apiErr.Forbidden() {
+			if hint := apiErr.Hint(); hint != "" {
+				return fmt.Errorf("forbidden: %w — %s", apiErr, hint)
+			}
+			return apiErr
 		}
 		return apiErr
 	}
@@ -313,6 +339,11 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 		}
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
 			return fmt.Errorf("unsupported image type: %w", apiErr)
+		}
+		if apiErr.Forbidden() {
+			if hint := apiErr.Hint(); hint != "" {
+				return fmt.Errorf("forbidden: %w — %s", apiErr, hint)
+			}
 		}
 		return apiErr
 	}

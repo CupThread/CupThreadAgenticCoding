@@ -109,3 +109,60 @@ func TestWorkspacesCreateOtherErrorsPassThrough(t *testing.T) {
 		t.Errorf("error = %v, want non-402 errors untouched by the workspace-cap guidance", err)
 	}
 }
+
+// TestMembersInviteInteractiveSessionRequired covers the AUTH-01 end-to-end
+// path: a cpt_ token calling a members.manage endpoint surfaces the server's
+// 403 interactive_session_required with the actionable sign-in hint.
+func TestMembersInviteInteractiveSessionRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/console/workspaces/ws_1/members" || r.Method != http.MethodPost {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"This action requires an interactive session; API tokens are not permitted","code":"interactive_session_required"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "workspaces", "members", "invite", "--email", "dev@example.com", "--role", "member", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{
+		"interactive_session_required",
+		"API tokens are not permitted",
+		"cupthread auth login",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestMembersInviteCapabilityRequired covers the role-based denial: a
+// member-role credential hitting members.manage surfaces 403
+// capability_required with the ask-an-admin hint.
+func TestMembersInviteCapabilityRequired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Access denied: your workspace role does not include the 'members.manage' capability","code":"capability_required"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "workspaces", "members", "invite", "--email", "dev@example.com", "--role", "member", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{
+		"capability_required",
+		"members.manage",
+		"ask a workspace admin or owner to perform it",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}

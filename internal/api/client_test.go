@@ -519,3 +519,117 @@ func TestAPIErrorNotFound(t *testing.T) {
 		t.Errorf("message = %q", apiErr.Message)
 	}
 }
+
+func TestForbiddenCapabilityRequiredHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Access denied: your workspace role does not include the 'members.manage' capability","code":"capability_required"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/api/v1/console/workspaces/ws_1/members", nil,
+		map[string]string{"email": "dev@example.com", "role": "member"}, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{
+		"capability_required",
+		"does not include the 'members.manage' capability",
+		"ask a workspace admin or owner to perform it",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"This action requires an interactive session; API tokens are not permitted","code":"interactive_session_required"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/api/v1/console/workspaces/ws_1/billing/checkout", nil,
+		map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{
+		"interactive_session_required",
+		"API tokens are not permitted",
+		"cupthread auth login",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestForbiddenUnknownCodeUntouched(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Token management requires an interactive session"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/api/v1/console/tokens", nil, map[string]string{"name": "k"}, nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "Token management requires an interactive session (HTTP 403)" {
+		t.Errorf("error = %q, want the plain APIError without a forbidden hint", err)
+	}
+}
+
+func TestHintForbiddenCodes(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		code   string
+		want   string
+	}{
+		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
+		{"403 without code", http.StatusForbidden, "", ""},
+		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &APIError{Status: tc.status, Message: "x", Code: tc.code}
+			if got := e.Hint(); !strings.Contains(got, tc.want) {
+				t.Errorf("Hint() = %q, want it to contain %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUploadAppIconForbiddenHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/console/workspaces/ws_1/apps/app_1/icon" {
+			t.Errorf("request path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"Access denied: your workspace role does not include the 'app.configure' capability","code":"capability_required"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("png-bytes"))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"forbidden:", "app.configure", "ask a workspace admin or owner to perform it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}

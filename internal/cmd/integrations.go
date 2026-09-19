@@ -14,6 +14,14 @@ func newIntegrationsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "integrations",
 		Short: "Manage workspace integrations (GitHub, Linear, Notion, Slack)",
+		Long: `Manage workspace integrations (GitHub, Linear, Notion, Slack).
+
+status and the read-only lookups (repos, categories) work with cpt_ API
+tokens. Connecting or disconnecting an integration (auth-url, connect,
+disconnect) and running a GitHub sync require an interactive Clerk session:
+cpt_ API tokens are rejected with 403 interactive_session_required. The
+per-app github config needs the app.configure capability (workspace admin
+or owner) but accepts tokens.`,
 	}
 	cmd.AddCommand(newIntegrationsStatusCmd(), newIntegrationsGitHubCmd())
 	for _, p := range importProviders {
