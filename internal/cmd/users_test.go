@@ -192,3 +192,50 @@ func TestUsersProfileJSONOutput(t *testing.T) {
 		t.Errorf("publicApps = %+v", payload.PublicApps)
 	}
 }
+
+// TestUsersProfileRateLimited covers the SEC-34 per-IP rate limit on the
+// public profile GET: the CLI must map a 429 to the rate-limited error path
+// with the retry-with-backoff hint, not a generic HTTP failure.
+func TestUsersProfileRateLimited(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error": "Too many requests. Please try again shortly."}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "users", "profile", "u_9f2ca1b3d4e5f60718293a4b5c6d7e8f", "--app-key", "key_live_1")
+	if err == nil {
+		t.Fatal("expected a rate-limit error from users profile")
+	}
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error = %v, want it reported as rate limited", err)
+	}
+	if !strings.Contains(err.Error(), "back off exponentially") {
+		t.Errorf("error = %v, want the retry-with-backoff hint", err)
+	}
+}
+
+// TestUsersProfileNotFound covers the SEC-34 unknown-u_* contract: an unmapped
+// app-scoped id fails with the server's 404 body instead of decoding into a
+// zero-value profile that would render as empty tables.
+func TestUsersProfileNotFound(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error": "User profile not found"}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "users", "profile", "u_0123456789abcdef0123456789abcdef", "--app-key", "key_live_1")
+	if err == nil {
+		t.Fatal("expected a not-found error from users profile")
+	}
+	if !strings.Contains(err.Error(), "User profile not found") {
+		t.Errorf("error = %v, want the server's 404 message", err)
+	}
+}
