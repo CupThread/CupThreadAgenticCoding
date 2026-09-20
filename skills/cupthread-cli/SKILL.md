@@ -197,6 +197,8 @@ Every CLI request carries an `X-Request-Id` correlation header (`cli-<uuid>`; th
 bin/cupthread status --json
 
 # Symlink skills into target project (.agents, .claude, .zcode)
+# Works from any installed binary: a verified CupThreadAgenticCoding checkout
+# is symlinked; otherwise the skills embedded in the binary are copied.
 bin/cupthread skills list
 bin/cupthread skills link /path/to/target/project
 ```
