@@ -218,6 +218,8 @@ cupthread inbox list                        # triage feedback
 cupthread features list --sort revenue      # Pro-gated revenue view
 cupthread comments moderation hide cmt_abc  # moderate comments in a workspace
 cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
+                                             # publish-now/schedule-at need a workspace admin/owner
+                                             # interactive session; cpt_ tokens can create drafts only
 cupthread imports create --source github_issues --mode preview
 cupthread billing show
 cupthread search "dark mode"

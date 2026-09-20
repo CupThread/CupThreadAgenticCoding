@@ -171,6 +171,13 @@ cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --pub
 `hasMore`; the table view prints the next `--offset` when more pages remain.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
+Drafts (create/edit/delete without publishing) work for every workspace role
+and with `cpt_` API tokens. Publishing, `--publish-now`, and `--schedule-at`
+require the admin/owner `changelog.publish` capability (SEC-40): with a
+`cpt_` API token they fail with `403 interactive_session_required` (run
+`cupthread auth login` first), and for member-role callers with
+`403 capability_required` — the CLI appends both hints to the error.
+
 ### Search
 ```sh
 cupthread search "crash on login"          # Global fuzzy search across apps, feedback, and roadmap

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -233,5 +235,134 @@ func TestAppsPublicChangelogRequiresAppKey(t *testing.T) {
 	}
 	if *gotPath != "" {
 		t.Errorf("no request should be made, got %s", *gotPath)
+	}
+}
+
+// sec40ForbiddenServer returns a server that answers the given 403 body on
+// the changelog publish paths and records the request method, path, and JSON
+// body for wire-format assertions.
+func sec40ForbiddenServer(t *testing.T, respBody string) (*httptest.Server, *string, *string) {
+	t.Helper()
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(respBody))
+	}))
+	t.Cleanup(server.Close)
+	return server, &gotMethod, &gotPath
+}
+
+// TestChangelogPublishInteractiveSessionRequired covers SEC-40 end to end: a
+// cpt_ API token calling POST .../publish surfaces the server's 403
+// interactive_session_required with the actionable sign-in hint.
+func TestChangelogPublishInteractiveSessionRequired(t *testing.T) {
+	server, gotMethod, gotPath := sec40ForbiddenServer(t,
+		`{"error":"This action requires an interactive session; API tokens are not permitted","code":"interactive_session_required"}`)
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "changelog", "publish", "cl_entry_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if *gotMethod != http.MethodPost || *gotPath != "/api/v1/console/workspaces/ws_1/changelog/cl_entry_1/publish" {
+		t.Errorf("request = %s %s", *gotMethod, *gotPath)
+	}
+	for _, want := range []string{
+		"interactive_session_required",
+		"API tokens are not permitted",
+		"cupthread auth login",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestChangelogPublishCapabilityRequired covers the role-based denial
+// (SEC-40): a member-role credential hitting POST .../publish surfaces 403
+// capability_required with the ask-an-admin hint.
+func TestChangelogPublishCapabilityRequired(t *testing.T) {
+	server, _, _ := sec40ForbiddenServer(t,
+		`{"error":"Access denied: your workspace role does not include the 'changelog.publish' capability","code":"capability_required"}`)
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "changelog", "publish", "cl_entry_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{
+		"capability_required",
+		"changelog.publish",
+		"ask a workspace admin or owner to perform it",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestChangelogCreatePublishNowInteractiveSessionRequired covers SEC-40 on
+// the create path: a cpt_ API token sending publishNow: true still reaches
+// the wire (the create itself stays allowed) but the server's 403
+// interactive_session_required surfaces with the sign-in hint.
+func TestChangelogCreatePublishNowInteractiveSessionRequired(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"This action requires an interactive session; API tokens are not permitted","code":"interactive_session_required"}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--title", "v1.2.0", "--publish-now")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if gotBody["publishNow"] != true {
+		t.Errorf("request body publishNow = %v, want true", gotBody["publishNow"])
+	}
+	for _, want := range []string{
+		"interactive_session_required",
+		"cupthread auth login",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestChangelogUpdateScheduleAtCapabilityRequired covers the last SEC-40
+// gate: scheduling via update --schedule-at requires changelog.publish, so a
+// member-role credential gets 403 capability_required.
+func TestChangelogUpdateScheduleAtCapabilityRequired(t *testing.T) {
+	server, gotMethod, gotPath := sec40ForbiddenServer(t,
+		`{"error":"Access denied: your workspace role does not include the 'changelog.publish' capability","code":"capability_required"}`)
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	_, err := runRoot(t, server.URL, "changelog", "update", "cl_entry_1", "--workspace", "ws_1",
+		"--schedule-at", "2026-10-01T09:00:00Z")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if *gotMethod != http.MethodPut || *gotPath != "/api/v1/console/workspaces/ws_1/changelog/cl_entry_1" {
+		t.Errorf("request = %s %s", *gotMethod, *gotPath)
+	}
+	for _, want := range []string{
+		"capability_required",
+		"changelog.publish",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
 	}
 }

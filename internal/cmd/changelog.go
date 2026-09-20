@@ -23,6 +23,14 @@ func newChangelogCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "changelog",
 		Short: "Manage changelog entries (drafts, scheduling, publishing)",
+		Long: `Manage changelog entries (drafts, scheduling, publishing).
+
+Creating, editing, listing, and deleting drafts works for every workspace
+role and with cpt_ API tokens. Publishing, --publish-now, and --schedule-at
+require the changelog.publish capability (workspace admin or owner, SEC-40):
+with a cpt_ API token they fail with 403 interactive_session_required (use
+'cupthread auth login'), and for member-role callers they fail with 403
+capability_required.`,
 	}
 	cmd.AddCommand(
 		newChangelogListCmd(),
