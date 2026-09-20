@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -380,8 +381,23 @@ func newAppsUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <app-id-or-slug>",
 		Short: "Update an app's profile",
+		Long: `Update an app's profile with the given flags.
+
+Field flags (--name, --slug, --store-url, --app-store-url, --google-play-url,
+--public, --platforms) are validated locally against the server's rules and
+applied with one PUT before the icon is uploaded, so a rejected field update
+commits nothing. If the metadata PUT succeeds but the icon upload fails, the
+command reports "partially applied" — in --json/--yaml mode the error payload
+carries "applied" and "failed" lists so scripts can tell what went live.
+Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Issue #91: mirror the server's field rules locally so bad
+			// flag values fail before any request — the app lookup
+			// included — can commit anything.
+			if err := validateAppsUpdateFlags(cmd, name, slug, storeURL, appStoreURL, googlePlayURL, platforms); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -391,7 +407,7 @@ func newAppsUpdateCmd() *cobra.Command {
 				return err
 			}
 
-			var iconRec *api.AppRecord
+			iconUpload := cmd.Flags().Changed("icon") && iconPath != ""
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
 				body["name"] = name
@@ -414,22 +430,19 @@ func newAppsUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("platforms") {
 				body["allowedPlatforms"] = platforms
 			}
-			if cmd.Flags().Changed("icon") && iconPath != "" {
-				// The console icon endpoint validates the image and updates
-				// the app record in the same request, so no iconUrl PUT here.
-				iconRec, err = uploadIcon(cmd.Context(), ws, appRec.AppID, iconPath)
-				if err != nil {
-					return err
-				}
-			}
 			if cmd.Flags().Changed("icon") && iconPath == "" {
 				body["iconUrl"] = nil
 			}
-			if len(body) == 0 && iconRec == nil {
+			if len(body) == 0 && !iconUpload {
 				return errors.New("nothing to update: pass at least one flag")
 			}
 
-			updated := iconRec
+			// Issue #91: the metadata PUT runs before the icon upload. A
+			// rejected field update then commits nothing (the icon was
+			// never sent), so the only possible partial state is "fields
+			// applied, icon failed" — disclosed by reportPartialUpdate.
+			var updated *api.AppRecord
+			var applied []string
 			if len(body) > 0 {
 				var rec api.AppRecord
 				if err := A.client.Do(cmd.Context(), "PUT",
@@ -437,13 +450,30 @@ func newAppsUpdateCmd() *cobra.Command {
 					return err
 				}
 				updated = &rec
+				applied = append(applied, "metadata")
+			}
+			var iconRec *api.AppRecord
+			if iconUpload {
+				// The console icon endpoint validates the image and updates
+				// the app record in the same request, so no iconUrl PUT here.
+				iconRec, err = uploadIcon(cmd.Context(), ws, appRec.AppID, iconPath)
+				if err != nil {
+					if updated != nil {
+						return A.reportPartialUpdate(applied, "icon", err)
+					}
+					return err
+				}
+				applied = append(applied, "icon")
+				if updated == nil {
+					updated = iconRec
+				}
 			}
 			if A.structured() {
 				return A.out.Structured(*updated)
 			}
 			A.out.Printf("✓ Updated app %s", updated.AppID)
 			if iconRec != nil {
-				A.out.Printf("  Icon: %s", deref(updated.IconURL))
+				A.out.Printf("  Icon: %s", deref(iconRec.IconURL))
 			}
 			return nil
 		},
@@ -457,6 +487,89 @@ func newAppsUpdateCmd() *cobra.Command {
 	update.Flags().BoolVar(&public, "public", false, "Show the app on the public showcase (Pro feature)")
 	update.Flags().StringSliceVar(&platforms, "platforms", nil, "Allowed platforms: ios,macos,android,universal")
 	return update
+}
+
+// appSlugRE mirrors the server's slug rule for apps (UpdateWorkspaceAppInputSchema).
+var appSlugRE = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// appPlatformSet mirrors the server's PlatformSchema enum.
+var appPlatformSet = map[string]bool{"ios": true, "macos": true, "android": true, "universal": true}
+
+// validateAppsUpdateFlags checks flag values against the server's zod rules
+// (UpdateWorkspaceAppInputSchema: name 2-120, slug 2-64 [a-z0-9-]+, absolute
+// URLs, 1-4 platforms) so a rejected update fails before any request is sent.
+// Clearing a URL with "" is allowed (sent as null); only values meant to be
+// set are checked.
+func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreURL, googlePlayURL string, platforms []string) error {
+	if cmd.Flags().Changed("name") && (len(name) < 2 || len(name) > 120) {
+		return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", len(name))
+	}
+	if cmd.Flags().Changed("slug") {
+		if len(slug) < 2 || len(slug) > 64 {
+			return fmt.Errorf("invalid --slug: must be 2-64 characters, got %d", len(slug))
+		}
+		if !appSlugRE.MatchString(slug) {
+			return fmt.Errorf("invalid --slug %q: may only contain a-z, 0-9 and -", slug)
+		}
+	}
+	for _, f := range []struct{ flag, val string }{
+		{"store-url", storeURL},
+		{"app-store-url", appStoreURL},
+		{"google-play-url", googlePlayURL},
+	} {
+		if cmd.Flags().Changed(f.flag) && f.val != "" && !validAbsoluteURL(f.val) {
+			return fmt.Errorf("invalid --%s %q: must be an absolute URL (e.g. https://example.com/app)", f.flag, f.val)
+		}
+	}
+	if cmd.Flags().Changed("platforms") {
+		if len(platforms) < 1 || len(platforms) > 4 {
+			return fmt.Errorf("invalid --platforms: pass 1-4 of ios, macos, android, universal")
+		}
+		for _, p := range platforms {
+			if !appPlatformSet[p] {
+				return fmt.Errorf("invalid --platforms value %q: must be one of ios, macos, android, universal", p)
+			}
+		}
+	}
+	return nil
+}
+
+// validAbsoluteURL reports whether v parses as an absolute URL with a host,
+// the client-side approximation of zod's z.string().url() for store URLs.
+func validAbsoluteURL(v string) bool {
+	u, err := url.Parse(v)
+	return err == nil && u.Scheme != "" && u.Host != ""
+}
+
+// partialUpdateError reports an apps update where earlier steps already
+// committed server-side while a later step failed (issue #91).
+type partialUpdateError struct {
+	applied []string
+	failed  string
+	cause   error
+}
+
+func (e *partialUpdateError) Error() string {
+	return fmt.Sprintf("apps update partially applied: %s already applied, but %s failed: %v",
+		strings.Join(e.applied, " and "), e.failed, e.cause)
+}
+
+func (e *partialUpdateError) Unwrap() error { return e.cause }
+
+// reportPartialUpdate fails the command while disclosing what already went
+// live: the returned error names the applied steps (human mode), and in
+// --json/--yaml mode a structured payload with applied/failed is printed so
+// scripts and agents can react programmatically.
+func (a *app) reportPartialUpdate(applied []string, failed string, cause error) error {
+	err := &partialUpdateError{applied: applied, failed: failed, cause: cause}
+	if a.structured() {
+		_ = a.out.Structured(map[string]any{
+			"error":   err.Error(),
+			"applied": applied,
+			"failed":  failed,
+		})
+	}
+	return err
 }
 
 func nilIfEmpty(s string) any {

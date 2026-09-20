@@ -96,6 +96,10 @@ cupthread apps create --name "My App"      # Create a new app
 cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPEG/WebP/GIF, or screened SVG;
                                            # requires workspace admin/owner). A declared type that does not
                                            # match the file content fails with 415 "unsupported image type".
+                                           # Update order: metadata flags are PUT first, icon uploaded last;
+                                           # name/slug/URL/platform values are validated locally first and a
+                                           # failed icon upload after an applied PUT reports
+                                           # "partially applied" (JSON errors carry applied/failed lists).
 cupthread apps public-config <app-key>     # Show the public portal config (no login required);
                                            # also accepts --workspace-slug <slug> --app-slug <slug>;
                                            # private apps fail with 404 like unknown keys (fail-closed)
