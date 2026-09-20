@@ -116,8 +116,10 @@ var tierLimitHints = map[string]string{
 // forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
 // remediation: every /api/v1/console/workspaces/* route declares one
 // capability checked against the caller's role, and members.manage,
-// billing.manage, and integration.manage additionally reject cpt_ API tokens
-// outright (interactive Clerk session required).
+// billing.manage, integration.manage, and changelog.publish (SEC-40:
+// publishing or scheduling a changelog entry, admin/owner only)
+// additionally reject cpt_ API tokens outright (interactive Clerk session
+// required).
 var forbiddenHints = map[string]string{
 	"capability_required":          "your workspace role does not include the capability this action requires; ask a workspace admin or owner to perform it, or have an owner change your role (Console → Members)",
 	"interactive_session_required": "this action rejects cpt_ API tokens; sign in interactively with 'cupthread auth login' (browser OAuth) or manage it in the Console web UI",

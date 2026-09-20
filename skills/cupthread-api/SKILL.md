@@ -331,7 +331,8 @@ Every `/api/v1/console/workspaces/{wsId}/...` route declares one capability (ups
 |---|---|---|---|
 | `workspace.read` (all read-only GET/list endpoints) | ✅ | ✅ | ✅ |
 | `triage` (submissions, feature requests, forwarding) | ✅ | ✅ | ✅ |
-| `content.manage` (changelog, columns, versions, imports, comment moderation, deletions) | ✅ | ✅ | ✅ |
+| `content.manage` (changelog drafts & edits, columns, versions, imports, comment moderation, deletions) | ✅ | ✅ | ✅ |
+| `changelog.publish` (publish/schedule changelog entries → subscriber email blast, SEC-40) | ❌ | ✅ | ✅ |
 | `app.configure` (app create/update, icon, SDK settings, per-app repo link) | ❌ | ✅ | ✅ |
 | `integration.manage` (connect/disconnect integrations, manual tokens, sync) | ❌ | ✅ | ✅ |
 | `billing.manage` (checkout, portal, add-ons) | ❌ | ✅ | ✅ |
@@ -342,12 +343,33 @@ Two structured 403 codes can come back from these routes (both with HTTP 403):
 
 - `capability_required` — the caller's role does not include the route's capability:
   `{"error": "Access denied: your workspace role does not include the '<capability>' capability", "code": "capability_required"}`
-- `interactive_session_required` — the route's capability is in the interactive-only set (`members.manage`, `billing.manage`, `integration.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
+- `interactive_session_required` — the route's capability is in the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
   `{"error": "This action requires an interactive session; API tokens are not permitted", "code": "interactive_session_required"}`
 
 The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk sessions (Console web UI or the CLI's `auth login` OAuth flow) never see `interactive_session_required`.
 
-Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage`, `app.configure`, and imports. Two GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`) and `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`). Public feedback/SDK endpoints are unchanged.
+Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage` (changelog **drafts and edits** included — only publishing/scheduling moved out into `changelog.publish`, see the next section), `app.configure`, and imports. Two GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`) and `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`). Public feedback/SDK endpoints are unchanged.
+
+---
+
+## Changelog Publishing Capability (SEC-40)
+
+Publishing or scheduling a changelog entry emails every confirmed subscriber (a blast), so it carries its own `changelog.publish` capability — admin/owner only — on top of the `content.manage` access the routes already require (upstream CupThread/SaaS#286, merge `0bc77d6`). Gate per endpoint:
+
+| Endpoint | Gated request shape | Requirement |
+|---|---|---|
+| `POST .../changelog` | body has `publishNow: true` or non-null `scheduledAt` | `changelog.publish` (checked **in addition to** the route's `content.manage` access) |
+| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (`""`/null clears it) | `changelog.publish` |
+| `POST .../changelog/:entryId/publish` | always | `changelog.publish` (route-wide; **changed** from `content.manage`) |
+
+Not gated: creating/updating/deleting **drafts** without publish/schedule intent, listing, and unpublishing stay under plain `content.manage` (members and `cpt_` tokens keep full draft workflow access).
+
+Denials follow the AUTH-01 order (role first, then token type):
+
+- member (any auth type) on a gated path → `403 capability_required` naming `'changelog.publish'`
+- admin/owner with a `cpt_` API token on a gated path → `403 interactive_session_required` — publish from the Console web UI or via an interactive `auth login` session instead
+
+Server side, every denial emits a structured `authz_denied` audit event (`reason: missing_capability` or `interactive_session_required`), and a successful publish records the publishing Clerk user and enqueues the blast job. The console publish routes are not declared in the OpenAPI document (only the public read/subscribe paths are), so there is no spec surface to regenerate.
 
 ---
 
