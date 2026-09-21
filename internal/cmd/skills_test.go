@@ -86,21 +86,59 @@ func TestSkillsListEmbedded(t *testing.T) {
 }
 
 // Without a checkout, skills link copies the embedded skills (a symlink into
-// a binary is impossible), byte-identical, and re-running replaces cleanly.
+// a binary is impossible), byte-identical. A re-run finds real files, so the
+// non-destructive contract skips them unless --force replaces them through a
+// recoverable .bak backup — copies are never silently destroyed.
 func TestSkillsLinkFromEmbeddedCopy(t *testing.T) {
 	t.Chdir(t.TempDir())
 	target := t.TempDir()
 
-	for run := 0; run < 2; run++ {
-		out, err := runRoot(t, "http://127.0.0.1:1", "skills", "link", target)
-		if err != nil {
-			t.Fatalf("skills link run %d: %v", run, err)
-		}
-		if !strings.Contains(out, "embedded") {
-			t.Errorf("run %d output does not disclose the embedded copy: %q", run, out)
+	out, err := runRoot(t, "http://127.0.0.1:1", "skills", "link", target)
+	if err != nil {
+		t.Fatalf("skills link: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "embedded") {
+		t.Errorf("output does not disclose the embedded copy: %q", out)
+	}
+	assertEmbeddedCopies(t, target)
+
+	// Re-run without --force: the copies are real files, so they are skipped
+	// and the command exits non-zero instead of overwriting them.
+	out, err = runRoot(t, "http://127.0.0.1:1", "skills", "link", target)
+	if err == nil || !strings.Contains(err.Error(), "not symlinks") {
+		t.Fatalf("re-run without --force = %v, want the non-symlink skip error\n%s", err, out)
+	}
+	// --force replaces every copy through a .bak backup, still byte-identical.
+	out, err = runRoot(t, "http://127.0.0.1:1", "skills", "link", target, "--force")
+	if err != nil {
+		t.Fatalf("skills link --force: %v\n%s", err, out)
+	}
+	assertEmbeddedCopies(t, target)
+	for _, agentDir := range agentSkillDirs {
+		for _, name := range embeddedSkillNames(t) {
+			backups, err := filepath.Glob(filepath.Join(target, agentDir, name) + ".bak-*")
+			if err != nil || len(backups) != 1 {
+				t.Fatalf("%s/%s backups = %v (%v), want exactly one", agentDir, name, backups, err)
+			}
+			got, err := os.ReadFile(filepath.Join(backups[0], "SKILL.md"))
+			if err != nil {
+				t.Fatalf("read backup %s: %v", backups[0], err)
+			}
+			want, err := fs.ReadFile(skills.FS, name+"/SKILL.md")
+			if err != nil {
+				t.Fatalf("read embedded %s/SKILL.md: %v", name, err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("backup %s content differs from the embedded copy", backups[0])
+			}
 		}
 	}
+}
 
+// assertEmbeddedCopies verifies every linked skill in target is a real
+// (non-symlink) copy whose SKILL.md is byte-identical to the embedded one.
+func assertEmbeddedCopies(t *testing.T, target string) {
+	t.Helper()
 	for _, agentDir := range agentSkillDirs {
 		for _, name := range embeddedSkillNames(t) {
 			skillFile := filepath.Join(target, agentDir, name, "SKILL.md")
