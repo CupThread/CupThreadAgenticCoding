@@ -226,6 +226,8 @@ Every CLI request carries an `X-Request-Id` correlation header (`cli-<uuid>`; th
 
 `--input @file` (or `"-"`/`"@"` for stdin) sends the body as JSON and is strict: the file must contain exactly one JSON value. A second value or stray text after it fails the command with `parse input JSON: unexpected trailing data` before anything is sent — fix the file rather than retrying.
 
+Exit codes match the typed commands: on any API error (4xx/5xx) the `--json`/`-o yaml` payload (`{error, code, status, hint}`) still reaches stdout, but the command exits 1 and prints the `Error: …` line on stderr — branch on `$?` first, then parse the payload.
+
 ### Repository & Skills Management
 ```sh
 # Inspect git status of local CupThread repositories
