@@ -160,22 +160,48 @@ func (e *APIError) Forbidden() bool { return e.Status == http.StatusForbidden }
 // optional and rejected with 400 when it disagrees with the path.
 const workspaceScopedPrefix = "/api/v1/console/workspaces/"
 
+// encodeRequestBody renders the request body into the bytes to send. A
+// json.RawMessage (or *json.RawMessage) body is returned verbatim instead of
+// being re-encoded: marshaling a decoded any would round-trip every number
+// through float64 and silently rewrite integers that a float64 cannot
+// represent exactly (issue #75). A nil body or an empty RawMessage encodes to
+// nil, meaning "no body"; everything else goes through json.Marshal.
+func encodeRequestBody(body any) ([]byte, error) {
+	switch raw := body.(type) {
+	case json.RawMessage:
+		if len(raw) == 0 {
+			return nil, nil
+		}
+		return raw, nil
+	case *json.RawMessage:
+		if raw == nil || len(*raw) == 0 {
+			return nil, nil
+		}
+		return *raw, nil
+	}
+	if body == nil {
+		return nil, nil
+	}
+	return json.Marshal(body)
+}
+
 // Do performs an API request. Path must start with "/" and is appended to
-// BaseURL verbatim. When body is non-nil it is JSON-encoded; when out is
-// non-nil the response body is decoded into it (*json.RawMessage receives
-// the undecoded bytes).
+// BaseURL verbatim. When body is non-nil it is JSON-encoded, except a
+// json.RawMessage (or *json.RawMessage) body, which is sent verbatim; when
+// out is non-nil the response body is decoded into it (*json.RawMessage
+// receives the undecoded bytes).
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	return c.DoWithHeaders(ctx, method, path, query, nil, body, out)
 }
 
 // DoWithHeaders performs an API request with optional extra request headers.
 func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
+	data, err := encodeRequestBody(body)
+	if err != nil {
+		return fmt.Errorf("encode request body: %w", err)
+	}
 	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encode request body: %w", err)
-		}
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 
@@ -184,7 +210,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
+	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	// The path id is authoritative on workspace-scoped endpoints; the
@@ -227,7 +253,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("%s %s: read response: %w", method, path, err)
 	}
