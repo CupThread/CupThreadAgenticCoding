@@ -1,7 +1,9 @@
 // Package auth implements the CLI login flows against the CupThread OAuth
 // server: Authorization Code + PKCE with a local loopback callback (primary)
 // and the Device Authorization Grant (fallback for headless environments).
-// The server-side contract is specified in SaaS/docs/CLI-OAuth.md.
+// The server-side contract is specified in SaaS/docs/CLI-OAuth.md and
+// mirrored in the OpenAPI 3.1 spec (GET /api/v1/openapi.json, RFC 8414
+// metadata at /.well-known/oauth-authorization-server).
 package auth
 
 import (
@@ -217,7 +219,7 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 		return nil, fmt.Errorf("decode device authorization: %w", err)
 	}
 	if parsed.DeviceCode == "" || parsed.UserCode == "" {
-		return nil, errors.New("device authorization endpoint did not return device_code/user_code (not implemented server-side yet?)")
+		return nil, errors.New("device authorization endpoint did not return device_code/user_code")
 	}
 	interval := time.Duration(parsed.Interval) * time.Second
 	if interval <= 0 {
