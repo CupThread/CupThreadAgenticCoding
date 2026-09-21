@@ -680,11 +680,16 @@ func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	// Issue #58: re-login advice is a dead end — the browser OAuth login also
+	// issues a cpt_ token, which the interactive-only capabilities reject.
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -714,7 +719,7 @@ func TestHintForbiddenCodes(t *testing.T) {
 		want   string
 	}{
 		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
-		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "Console web UI"},
 		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
 		{"403 without code", http.StatusForbidden, "", ""},
 		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},

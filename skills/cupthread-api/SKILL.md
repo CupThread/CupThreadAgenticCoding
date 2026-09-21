@@ -346,7 +346,7 @@ Two structured 403 codes can come back from these routes (both with HTTP 403):
 - `interactive_session_required` — the route's capability is in the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
   `{"error": "This action requires an interactive session; API tokens are not permitted", "code": "interactive_session_required"}`
 
-The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk sessions (Console web UI or the CLI's `auth login` OAuth flow) never see `interactive_session_required`.
+The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk web sessions (Console web UI) never see `interactive_session_required` — note that the CLI's `auth login` OAuth flow issues a `cpt_` access token too, so from the CLI every interactive-only capability is unreachable.
 
 Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage` (changelog **drafts and edits** included — only publishing/scheduling moved out into `changelog.publish`, see the next section), `app.configure`, and imports. Two GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`) and `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`). Public feedback/SDK endpoints are unchanged.
 
@@ -367,7 +367,7 @@ Not gated: creating/updating/deleting **drafts** without publish/schedule intent
 Denials follow the AUTH-01 order (role first, then token type):
 
 - member (any auth type) on a gated path → `403 capability_required` naming `'changelog.publish'`
-- admin/owner with a `cpt_` API token on a gated path → `403 interactive_session_required` — publish from the Console web UI or via an interactive `auth login` session instead
+- admin/owner with a `cpt_` API token on a gated path → `403 interactive_session_required` — publish from the Console web UI instead (the CLI's OAuth login also issues a `cpt_` token, so no CLI credential can publish)
 
 Server side, every denial emits a structured `authz_denied` audit event (`reason: missing_capability` or `interactive_session_required`), and a successful publish records the publishing Clerk user and enqueues the blast job. The console publish routes are not declared in the OpenAPI document (only the public read/subscribe paths are), so there is no spec surface to regenerate.
 

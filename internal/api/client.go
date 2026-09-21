@@ -118,11 +118,12 @@ var tierLimitHints = map[string]string{
 // capability checked against the caller's role, and members.manage,
 // billing.manage, integration.manage, and changelog.publish (SEC-40:
 // publishing or scheduling a changelog entry, admin/owner only)
-// additionally reject cpt_ API tokens outright (interactive Clerk session
-// required).
+// additionally require an interactive Clerk web session. Both kinds of CLI
+// credential — personal access tokens and OAuth logins — are cpt_ tokens,
+// so no CLI credential can perform these actions; only the Console web UI.
 var forbiddenHints = map[string]string{
 	"capability_required":          "your workspace role does not include the capability this action requires; ask a workspace admin or owner to perform it, or have an owner change your role (Console → Members)",
-	"interactive_session_required": "this action rejects cpt_ API tokens; sign in interactively with 'cupthread auth login' (browser OAuth) or manage it in the Console web UI",
+	"interactive_session_required": "this action is Console-only: no CLI credential (personal access token or OAuth login) can perform it — open the workspace in the CupThread Console web UI",
 }
 
 // Hint returns actionable remediation for known API error codes, e.g. 402
@@ -151,8 +152,9 @@ func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
 
 // Forbidden returns true when the API rejected the caller's authorization
 // (403): a workspace role missing the endpoint's capability
-// (capability_required) or a cpt_ API token on an interactive-session-only
-// endpoint (interactive_session_required).
+// (capability_required) or a non-interactive credential (any cpt_ token —
+// personal access or OAuth) on an interactive-session-only endpoint
+// (interactive_session_required).
 func (e *APIError) Forbidden() bool { return e.Status == http.StatusForbidden }
 
 // workspaceScopedPrefix marks paths that already carry the workspace id. For

@@ -16,9 +16,10 @@ func newBillingCmd() *cobra.Command {
 		Long: `Show usage and manage the subscription (Polar).
 
 show works for every workspace role and with cpt_ API tokens. checkout,
-portal, and addons require an interactive Clerk session: cpt_ API tokens
-are rejected with 403 interactive_session_required — run 'cupthread auth
-login' or use Console → Billing.`,
+portal, and addons require an interactive Clerk session, and no CLI
+credential qualifies — personal access tokens and OAuth logins are both
+cpt_ tokens, so they fail with 403 interactive_session_required; perform
+these actions in the Console web UI (Console → Billing).`,
 	}
 	cmd.AddCommand(newBillingShowCmd(), newBillingCheckoutCmd(), newBillingPortalCmd(), newBillingAddonsCmd())
 	return cmd

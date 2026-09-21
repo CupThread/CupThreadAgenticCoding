@@ -18,10 +18,11 @@ func newIntegrationsCmd() *cobra.Command {
 
 status and the read-only lookups (repos, categories) work with cpt_ API
 tokens. Connecting or disconnecting an integration (auth-url, connect,
-disconnect) and running a GitHub sync require an interactive Clerk session:
-cpt_ API tokens are rejected with 403 interactive_session_required. The
-per-app github config needs the app.configure capability (workspace admin
-or owner) but accepts tokens.`,
+disconnect) and running a GitHub sync require an interactive Clerk session,
+and no CLI credential qualifies — personal access tokens and OAuth logins
+are both cpt_ tokens, so they fail with 403 interactive_session_required;
+manage integrations in the Console web UI. The per-app github config needs
+the app.configure capability (workspace admin or owner) but accepts tokens.`,
 	}
 	cmd.AddCommand(newIntegrationsStatusCmd(), newIntegrationsGitHubCmd())
 	for _, p := range importProviders {

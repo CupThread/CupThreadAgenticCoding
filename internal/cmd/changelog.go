@@ -27,9 +27,10 @@ func newChangelogCmd() *cobra.Command {
 
 Creating, editing, listing, and deleting drafts works for every workspace
 role and with cpt_ API tokens. Publishing, --publish-now, and --schedule-at
-require the changelog.publish capability (workspace admin or owner, SEC-40):
-with a cpt_ API token they fail with 403 interactive_session_required (use
-'cupthread auth login'), and for member-role callers they fail with 403
+require the changelog.publish capability (workspace admin or owner, SEC-40),
+and no CLI credential qualifies — personal access tokens and OAuth logins
+are both cpt_ tokens, so they fail with 403 interactive_session_required;
+publish in the Console web UI. For member-role callers they fail with 403
 capability_required.`,
 	}
 	cmd.AddCommand(
