@@ -186,7 +186,9 @@ func TestFeaturesMutationsScopedToSavedDefaultApp(t *testing.T) {
 	}{
 		{"update", []string{"features", "update", "fr_b_1", "--title", "hijack"}},
 		{"approve", []string{"features", "approve", "fr_b_1"}},
-		{"delete", []string{"features", "delete", "fr_b_1"}},
+		// --yes skips the destructive-command confirm so the test reaches the
+		// resolution whose app scoping it actually pins (issue #80's guard).
+		{"delete", []string{"features", "delete", "fr_b_1", "--yes"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -248,11 +248,19 @@ func newImportsGetCmd() *cobra.Command {
 }
 
 func newImportsCancelCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "cancel <job-id>",
 		Short: "Cancel a queued or running import job",
-		Args:  cobra.ExactArgs(1),
+		Long: `Cancel a queued or running import job.
+
+A canceled job cannot be resumed; re-run the import from scratch instead.
+On an interactive terminal you are asked to confirm before anything is
+sent; non-interactive callers must pass --yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("cancel import job %q", args[0])); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -266,6 +274,8 @@ func newImportsCancelCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
 
 func newImportsRerunCmd() *cobra.Command {
