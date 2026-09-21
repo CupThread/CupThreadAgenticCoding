@@ -663,7 +663,11 @@ func newAppSettingsCmd() *cobra.Command {
 				return err
 			}
 
-			var body map[string]any
+			// json.RawMessage values keep every number in the --input body
+			// byte-identical on the wire (issue #75); a map[string]any decode
+			// would round-trip them through float64 and silently rewrite
+			// integers a float64 cannot represent exactly.
+			body := map[string]json.RawMessage{}
 			if inputPath != "" {
 				data, err := readInputFile(inputPath)
 				if err != nil {
@@ -672,8 +676,6 @@ func newAppSettingsCmd() *cobra.Command {
 				if err := json.Unmarshal(data, &body); err != nil {
 					return fmt.Errorf("parse settings JSON: %w", err)
 				}
-			} else {
-				body = map[string]any{}
 			}
 
 			for flag, key := range map[string]string{
@@ -684,7 +686,11 @@ func newAppSettingsCmd() *cobra.Command {
 			} {
 				if cmd.Flags().Changed(flag) {
 					v, _ := cmd.Flags().GetBool(flag)
-					body[key] = v
+					encoded, err := json.Marshal(v)
+					if err != nil {
+						return err
+					}
+					body[key] = encoded
 				}
 			}
 			if len(body) == 0 {
@@ -707,7 +713,7 @@ func newAppSettingsCmd() *cobra.Command {
 	set.Flags().Bool("anon-vote", true, "Allow anonymous voting")
 	set.Flags().Bool("anon-feedback", true, "Allow anonymous feedback")
 	set.Flags().Bool("anon-changelog", true, "Allow anonymous changelog viewing")
-	set.Flags().StringVar(&inputPath, "input", "", "JSON file (or @- for stdin) with the raw update body, e.g. {\"sdk\":{\"theme\":\"dark\"}}")
+	set.Flags().StringVar(&inputPath, "input", "", "JSON file (or @- for stdin) with the raw update body, sent verbatim (numbers keep full precision), e.g. {\"sdk\":{\"theme\":\"dark\"}}")
 	cmd.AddCommand(set)
 	return cmd
 }
