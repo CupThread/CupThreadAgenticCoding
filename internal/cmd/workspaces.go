@@ -157,9 +157,11 @@ func newWorkspaceMembersCmd() *cobra.Command {
 
 List works for every workspace role and with cpt_ API tokens. invite, add,
 set-role, and remove require a workspace admin or owner signed in
-interactively: with a cpt_ API token they fail with 403
-interactive_session_required (use 'cupthread auth login'), and for
-member-role callers they fail with 403 capability_required.`,
+interactively, and no CLI credential qualifies — personal access tokens and
+OAuth logins are both cpt_ tokens, so they fail with 403
+interactive_session_required; perform these actions in the Console web UI
+(Workspace → Members). For member-role callers they fail with 403
+capability_required.`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{
@@ -328,8 +330,10 @@ func newWorkspaceInvitationsCmd() *cobra.Command {
 		Long: `Manage pending workspace invitations.
 
 List works for every workspace role and with cpt_ API tokens. Revoke
-requires a workspace admin or owner signed in interactively: cpt_ API
-tokens are rejected with 403 interactive_session_required.`,
+requires a workspace admin or owner signed in interactively, and no CLI
+credential qualifies — personal access tokens and OAuth logins are both
+cpt_ tokens, so they fail with 403 interactive_session_required; revoke in
+the Console web UI (Workspace → Members).`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{
