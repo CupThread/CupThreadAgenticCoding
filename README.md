@@ -232,9 +232,14 @@ directly:
 cupthread api request GET /api/v1/console/me
 
 # Compute the HMAC signature that PUT /api/v1/public/apps/{appKey}/user
-# requires for payment-attribute bodies (isPaying/mrr/plan):
-cupthread api sign-user-attrs --app-key app_demo12345 --secret cpt_sk_... \
-  --input ./user-attrs.json
+# requires for payment-attribute bodies (isPaying/mrr/plan). Keep the signing
+# secret off the command line (shell history / ps): pipe it via stdin or set
+# $CUPTHREAD_SDK_SIGNING_SECRET.
+cupthread api sign-user-attrs --app-key app_demo12345 --secret - \
+  --input ./user-attrs.json < ./sdk-signing-secret.txt
+# or: CUPTHREAD_SDK_SIGNING_SECRET=cpt_sk_... cupthread api sign-user-attrs \
+#   --app-key app_demo12345 --input ./user-attrs.json
+# An inline --secret cpt_sk_... still works, but leaks via history and ps.
 ```
 
 ### Repo tooling
@@ -252,6 +257,7 @@ bin/cupthread skills link /path/to/project
 | Variable | Purpose |
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
+| `CUPTHREAD_SDK_SIGNING_SECRET` | SDK signing secret fallback for `api sign-user-attrs`; an explicit `--secret` wins |
 | `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
 
