@@ -69,9 +69,12 @@ include that value in bug reports and support requests.`,
 			err := A.client.DoWithHeaders(cmd.Context(), method, path, nil,
 				map[string]string{"X-Request-Id": requestID}, body, &raw)
 			if err != nil {
-				// Still surface structured API errors as JSON when in JSON mode.
-				// errors.As is required because tier-limit (402) errors are
-				// wrapped by the client.
+				// Surface structured API errors as a machine-readable payload
+				// on stdout, but still return the error so the process exits
+				// non-zero: scripts and agents branch on the exit code, and
+				// exiting 0 on a failed request would hide the failure behind
+				// a parseable payload. errors.As is required because
+				// tier-limit (402) errors are wrapped by the client.
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) && A.structured() {
 					payload := map[string]any{
@@ -85,7 +88,9 @@ include that value in bug reports and support requests.`,
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
 					}
-					return A.out.Structured(payload)
+					if perr := A.out.Structured(payload); perr != nil {
+						return perr
+					}
 				}
 				return err
 			}

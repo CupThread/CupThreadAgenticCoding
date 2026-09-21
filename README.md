@@ -207,7 +207,9 @@ cupthread billing show -o yaml
 `--output` (short `-o`) accepts `table` (default), `json`, or `yaml`. In
 `json` mode commands print a faithful, indented copy of the API response; the
 `yaml` variant renders the same data as YAML. `cupthread api request` also
-honors both formats for raw endpoint calls.
+honors both formats for raw endpoint calls. A failed request (any 4xx/5xx)
+always exits 1: structured error payloads (`{error, code, status, hint}`)
+still reach stdout, while the `Error: …` line goes to stderr.
 
 ### Manage your projects
 
