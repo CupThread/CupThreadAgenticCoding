@@ -62,6 +62,12 @@ Check current authentication status:
 cupthread auth status
 ```
 
+Remove stored credentials from this machine (local only — revoke tokens
+server-side in the Console under Settings → API Tokens):
+```sh
+cupthread auth logout
+```
+
 Logging in against a non-default API endpoint (`--base-url <url>` or `$CUPTHREAD_BASE_URL`) stores that
 endpoint in the config until `auth logout`, so later invocations without the flag reach the same server
 instead of silently falling back to production. Flags and env still override it per invocation; when a
@@ -95,10 +101,15 @@ warning on stderr and saved workspace defaults are cleared because they could no
 cupthread workspaces list                  # List all available workspaces
 cupthread workspaces use <workspace-id>    # Set active workspace context
 cupthread me                               # Show current user, workspaces, and roles
-cupthread workspaces members list          # List workspace members & roles (any role, tokens OK)
-cupthread billing show                     # Show subscription tier, limits, and usage (tokens OK)
+cupthread workspaces members list          # List workspace members & roles
+cupthread workspaces invitations list      # List pending invitations
+cupthread billing show                     # Show subscription tier, limits, and usage
 ```
-Member mutations (`workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`) and billing
+All of the above are `[token-safe]`: any workspace role can run them and `cpt_`
+API tokens work.
+
+**Console-only (interactive session required — AUTH-01):** member mutations
+(`workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`) and billing
 changes (`billing checkout/portal/addons`) are interactive-session-only: every CLI credential — a `cpt_`
 personal access token and the browser OAuth login alike — fails with `403 interactive_session_required`;
 perform these actions in the Console web UI (see Agent Best Practices #6).
@@ -132,6 +143,20 @@ cupthread apps public-feature-requests <app-key>  # Fetch the public feature-req
                                            # keyset-cursor-paginated (DATA-01): follow --cursor <nextCursor> until
                                            # hasMore=false; --offset is ignored when --cursor is set; --q filters
 ```
+The management commands above are `[token-safe]`; `apps create`/`update`
+need the workspace `app.configure` capability (admin/owner).
+
+### App Settings (anonymous access & SDK appearance)
+```sh
+cupthread apps settings                    # Show settings of every app in the workspace
+cupthread apps settings show <app-id-or-slug>              # Show one app's settings
+cupthread apps settings set <app-id-or-slug> --anon-vote=false  # Toggle anonymous voting
+                                           # (also --anon-roadmap/--anon-feedback/--anon-changelog)
+cupthread apps settings set <app-id-or-slug> --input ./settings.json  # Raw JSON body, e.g. {"sdk":{"theme":"dark"}}
+```
+`[token-safe]` but needs `app.configure` (workspace admin/owner). These flags
+drive what anonymous visitors can do on the public portal (roadmap view,
+voting, feedback, changelog) and the SDK appearance (`sdk.theme`).
 
 ### Feedback Inbox Triage
 ```sh
@@ -144,11 +169,26 @@ cupthread inbox triage <feedback-id> in_progress   # Set triage status: open | i
 cupthread inbox assign <feedback-id> <clerk-user-id>  # Assign to a workspace member (omit ID to unassign)
 cupthread inbox bulk-triage <id1> <id2> --triage-status resolved  # Bulk update 1-50 submissions (also --assignee / --unassign)
 cupthread inbox retry <feedback-id>        # Retry GitHub forwarding for a failed delivery
+cupthread inbox deliveries                 # Show the GitHub delivery queue (status, attempts, last error)
 ```
+The whole `inbox` group is `[token-safe]` (workspace.read / content.manage).
 
 > Delivery `status` (`received` / `forwarded` / `forward_failed`) is managed by
 > the platform and is separate from the triage lifecycle — use `inbox triage`
 > (never a `--status` flag) to change triage state.
+
+### Notifications
+```sh
+cupthread notifications list               # List notifications, newest first (table ends with the unread count)
+cupthread notifications read <notification-id>  # Mark one notification as read
+cupthread notifications read-all           # Mark every notification as read
+cupthread notifications prefs show         # Show per-channel (inbox/email) notification preferences
+cupthread notifications prefs set --channel inbox --all-events  # Enable every event type on a channel
+cupthread notifications prefs set --channel email --events "delivery.failed,import.failed" --enable  # Fine-grained event mask
+```
+The whole `notifications` group is `[token-safe]` (workspace.read). Event
+types accepted by `--events` are the ones shown by `prefs show`
+(`feedback.received`, `feature_request.approved`, `delivery.failed`, …).
 
 ### Feature Requests & Roadmap
 ```sh
@@ -156,9 +196,16 @@ cupthread features list                    # List feature requests
 cupthread features list --sort revenue     # Sort by user ARR/MRR (Pro plan)
 cupthread features get <request-id>        # View feature request details (requester info, commenters)
 cupthread features create --title "Dark mode" --description "Add dark theme support"
+cupthread features update <request-id> --title "New title" --column-slug planned  # Edit / move / re-version
+                                           # (also --description, --version-id, --approved)
+cupthread features approve <request-id>    # Approve a pending request
+cupthread features forward <request-id> --target issue --labels bug,confirmed  # Forward to GitHub
+                                           # (--target discussion|issue; repo defaults to the app's GitHub config)
+cupthread features delete <request-id> --yes  # Permanently delete incl. votes & comments (confirm-guarded)
 cupthread columns list                     # List public roadmap columns
 cupthread versions list                    # List release milestones / versions
 ```
+All of the above are `[token-safe]` (triage / content.manage capabilities).
 `features list` reads the console (workspace-scoped) listing. The ID-taking
 commands (`features get/update/approve/delete/forward`) resolve
 `<request-id>` within the **resolved app** — the `--app` flag, else the saved
@@ -175,6 +222,39 @@ until the table reports no more pages. `hasMore`/`nextCursor` are always
 present in the `--json` output (`nextCursor` is `null` on the last page), and
 `--offset` is ignored whenever `--cursor` is set.
 
+### Imports (GitHub / Linear / Notion / Slack)
+```sh
+cupthread imports create --source github_issues --mode preview --owner acme --repo app  # Preview (default);
+                                           # --mode commit actually creates the requests
+cupthread imports list                     # List import jobs of the current app
+cupthread imports history                  # List every import job in the workspace
+cupthread imports get <job-id>             # Poll a job; --json includes preview candidates (.job.candidates)
+cupthread imports rerun <job-id>           # Re-run a job (--mode preview|commit, --include-duplicates)
+cupthread imports cancel <job-id> --yes    # Cancel a queued/running job (confirm-guarded; cannot be resumed)
+```
+The whole `imports` group is `[token-safe]`. Preview jobs complete
+synchronously; commit jobs run on the queue — poll with `imports get` until
+the status leaves `queued`/`running`. Source availability is tier-gated
+(GitHub issues/discussions: Pro; Linear/Notion/Slack: Business).
+
+### Integrations (GitHub / Linear / Notion / Slack)
+```sh
+cupthread integrations status              # Connection status of every integration (account, connected)
+cupthread integrations github repos        # GitHub repositories accessible to the integration
+cupthread integrations github categories --owner acme --repo app  # Discussion categories of a repository
+cupthread integrations github config <app-id-or-slug> --owner acme --repo app  # Per-app repo + sync options
+                                           # (also --category-slug, --sync-enabled, --status-sync, --comments-sync)
+cupthread integrations linear status       # Per-provider status (also notion, slack)
+```
+The reads and the per-app GitHub config above are `[token-safe]` (workspace
+read; `github config` needs `app.configure`, admin/owner).
+
+**Console-only (interactive session required — AUTH-01):**
+`integrations github|linear|notion|slack auth-url/connect/disconnect` and
+`integrations github sync` reject `cpt_` tokens with
+`403 interactive_session_required` — connect or sync integrations from an
+interactive login or the Console web UI.
+
 ### Comments & @Replies
 ```sh
 cupthread comments list <featureRequestId> # List comments on a feature request
@@ -188,6 +268,8 @@ cupthread comments moderation hide <commentId>         # Hide a comment from pub
 cupthread comments moderation unhide <commentId>       # Restore a hidden comment
 cupthread comments moderation delete <commentId>       # Permanently delete a comment (404 if not in workspace)
 ```
+The moderation group is `[token-safe]` (content.manage) and works from any
+workspace role whose capabilities include it.
 
 ### User Profiles
 ```sh
@@ -201,7 +283,13 @@ User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`);
 cupthread changelog list                   # List published and draft changelogs
 cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (server default: 100/page)
 cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --publish-now
+cupthread changelog update <entry-id> --title "v1.2.0"   # Edit a draft (also --body-file, --version-id,
+                                           # --version-label, --link-request-ids, --schedule-at)
+cupthread changelog unpublish <entry-id>   # Revert a published entry to draft
+cupthread changelog delete <entry-id> --yes  # Permanently delete a draft (confirm-guarded)
 ```
+Draft editing, `unpublish`, and `delete` are `[token-safe]` (content.manage;
+clearing a schedule with `--schedule-at ""` stays token-safe too).
 `changelog list` (console) is offset/limit-paginated and reports `total` +
 `hasMore`; the table view prints the next `--offset` when more pages remain.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
