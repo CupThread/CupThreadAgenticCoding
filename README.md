@@ -128,6 +128,21 @@ go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
 go build -o bin/cupthread ./cmd/cupthread
 ```
 
+### Releases and versioning
+
+Releases are tag-driven. Pushing an annotated `vX.Y.Z` tag triggers the
+release workflow, which runs the test suite, builds the CLI with the tag
+injected as the version, verifies the built binary reports exactly that
+version, publishes a GitHub release with source checksums, and regenerates
+the `CupThread/homebrew-tap` formula pinned to the tag's source tarball —
+so `brew upgrade cupthread` picks up every release and `cupthread --version`
+identifies the exact build. Source builds without an injected version
+report `dev`; to stamp one:
+
+```sh
+go build -ldflags "-X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=0.3.0" -o bin/cupthread ./cmd/cupthread
+```
+
 ### Log in
 
 The CLI supports two authentication methods.

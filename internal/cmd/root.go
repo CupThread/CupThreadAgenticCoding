@@ -19,8 +19,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is the CLI version.
-const Version = "0.2.0"
+// Version is the CLI version. It is a var so release builds can inject the
+// git tag at link time:
+//
+//	go build -ldflags "-X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=0.3.0" ./cmd/cupthread
+//
+// The tag is then the single source of truth; builds without the flag report
+// "dev" instead of a stale-looking fake version.
+var Version = "dev"
 
 var (
 	flagJSON      bool
