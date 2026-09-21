@@ -18,6 +18,10 @@ const (
 	signTestToken  = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 	signAltToken   = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 	signTestStamp  = 1758000000
+	// Signature of the full payment-attribute body (signGoldenBody below)
+	// keyed with signTestSecret at signTestStamp, per TestAPISignUserAttrsGolden.
+	signGoldenSignature = "59bc1177751f4c36f9caeed8c763cde9ee18835196acd1b6d4ce3b1ea2dc0273"
+	signGoldenBody      = `{"isPaying":true,"plan":"pro","mrr":299.5,"currency":"USD"}`
 )
 
 func writeSignBody(t *testing.T, body string) string {
@@ -212,5 +216,155 @@ func TestAPISignUserAttrsErrors(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// withSignStdin replaces os.Stdin with a file carrying content for the
+// duration of the test, so the --secret -/@ stdin path is hermetic.
+func withSignStdin(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write stdin file: %v", err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open stdin file: %v", err)
+	}
+	old := os.Stdin
+	os.Stdin = f
+	t.Cleanup(func() {
+		os.Stdin = old
+		f.Close()
+	})
+}
+
+// runSignFlags runs sign-user-attrs against the golden body with a
+// caller-controlled flag set (used by the secret-source tests).
+func runSignFlags(t *testing.T, args ...string) (signPayload, string, error) {
+	t.Helper()
+	base := []string{
+		"api", "sign-user-attrs",
+		"--app-key", signTestAppKey,
+		"--timestamp", "1758000000",
+		"--user-token", signTestToken,
+		"--input", writeSignBody(t, signGoldenBody),
+	}
+	out, err := runRoot(t, "http://127.0.0.1:1", append(base, args...)...)
+	var payload signPayload
+	if err == nil {
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+			t.Fatalf("decode structured output %q: %v", out, err)
+		}
+	}
+	return payload, out, err
+}
+
+// TestAPISignUserAttrsSecretFromStdin pins the stdin forms: --secret - and
+// --secret @ must produce the byte-identical signature to the inline flag.
+func TestAPISignUserAttrsSecretFromStdin(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", "")
+
+	for _, form := range []string{"-", "@"} {
+		t.Run("form "+form, func(t *testing.T) {
+			withSignStdin(t, signTestSecret+"\n")
+			payload, _, err := runSignFlags(t, "--secret", form, "--json")
+			if err != nil {
+				t.Fatalf("sign-user-attrs --secret %s: %v", form, err)
+			}
+			if payload.Signature != signGoldenSignature {
+				t.Errorf("signature = %q, want the inline-flag golden %q", payload.Signature, signGoldenSignature)
+			}
+		})
+	}
+
+	// Empty stdin is a clean error, not a signature over an empty key.
+	t.Run("empty stdin", func(t *testing.T) {
+		withSignStdin(t, "\n")
+		_, _, err := runSignFlags(t, "--secret", "-", "--json")
+		if err == nil {
+			t.Fatal("want error for empty stdin secret")
+		}
+		if !strings.Contains(err.Error(), "stdin carried no SDK signing secret") {
+			t.Errorf("error = %q, want the empty-stdin message", err.Error())
+		}
+	})
+}
+
+// TestAPISignUserAttrsSecretTrimsWhitespace verifies trailing newlines and
+// spaces on the stdin secret never change the signature (piped
+// `echo $SECRET`-style usage always carries a trailing newline).
+func TestAPISignUserAttrsSecretTrimsWhitespace(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", "")
+
+	withSignStdin(t, "  "+signTestSecret+" \n\n")
+	payload, _, err := runSignFlags(t, "--secret", "-", "--json")
+	if err != nil {
+		t.Fatalf("sign-user-attrs: %v", err)
+	}
+	if payload.Signature != signGoldenSignature {
+		t.Errorf("signature = %q, want the trimmed secret to match the golden %q", payload.Signature, signGoldenSignature)
+	}
+}
+
+// TestAPISignUserAttrsSecretEnv covers the $CUPTHREAD_SDK_SIGNING_SECRET
+// fallback (including trailing-newline trimming) and the flag > env
+// precedence.
+func TestAPISignUserAttrsSecretEnv(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", signTestSecret+"\n")
+	payload, _, err := runSignFlags(t, "--json")
+	if err != nil {
+		t.Fatalf("sign-user-attrs without --secret: %v", err)
+	}
+	if payload.Signature != signGoldenSignature {
+		t.Errorf("env-secret signature = %q, want the golden %q", payload.Signature, signGoldenSignature)
+	}
+
+	// When both are set the flag wins: the golden secret sits in the env, but
+	// an inline different secret must change the signature.
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", signTestSecret)
+	payload, _, err = runSignFlags(t, "--secret", "cpt_sk_inline_flag_secret", "--json")
+	if err != nil {
+		t.Fatalf("sign-user-attrs with both sources: %v", err)
+	}
+	if payload.Signature == signGoldenSignature {
+		t.Error("signature matches the env secret; the inline --secret flag should win")
+	}
+}
+
+// TestAPISignUserAttrsSecretMissingSources checks the no-source error names
+// every accepted source so agents can self-serve.
+func TestAPISignUserAttrsSecretMissingSources(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", "")
+
+	_, _, err := runSignFlags(t, "--json")
+	if err == nil {
+		t.Fatal("want error when no secret source is set")
+	}
+	for _, want := range []string{"--secret", "stdin", "CUPTHREAD_SDK_SIGNING_SECRET"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err.Error(), want)
+		}
+	}
+}
+
+// TestAPISignUserAttrsSecretAndInputBothStdin pins the stdin conflict:
+// --secret and --input cannot both consume stdin in one invocation.
+func TestAPISignUserAttrsSecretAndInputBothStdin(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	t.Setenv("CUPTHREAD_SDK_SIGNING_SECRET", "")
+
+	withSignStdin(t, signTestSecret+"\n")
+	_, _, err := runSignFlags(t, "--secret", "-", "--input", "-", "--json")
+	if err == nil {
+		t.Fatal("want error when --secret and --input both read stdin")
+	}
+	if !strings.Contains(err.Error(), "cannot both read stdin") {
+		t.Errorf("error = %q, want the stdin-conflict message", err.Error())
 	}
 }
