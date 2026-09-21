@@ -366,3 +366,53 @@ func TestChangelogUpdateScheduleAtCapabilityRequired(t *testing.T) {
 		}
 	}
 }
+
+// TestChangelogUpdateScheduleAtEmptySendsNull pins the ungated clear path
+// (issue #61): the server schema is z.string().datetime().nullable(), so a
+// literal "" would 400 — the CLI must translate a passed-but-empty
+// --schedule-at into JSON null, which the PUT publish gate skips
+// (typeof scheduledAt === "string") so plain content.manage suffices.
+func TestChangelogUpdateScheduleAtEmptySendsNull(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	out, err := runRoot(t, server.URL, "changelog", "update", "cl_entry_1", "--workspace", "ws_1",
+		"--schedule-at", "")
+	if err != nil {
+		t.Fatalf(`update --schedule-at "": %v`, err)
+	}
+	if !strings.Contains(out, "cl_entry_1") {
+		t.Errorf("output %q missing entry id", out)
+	}
+	if string(gotBody) != `{"scheduledAt":null}` {
+		t.Errorf("request body = %s, want {\"scheduledAt\":null}", gotBody)
+	}
+}
+
+// TestChangelogUpdateScheduleAtValueSendsString pins the gated sibling case:
+// a non-empty --schedule-at travels as a datetime string, which is the shape
+// the server gates behind changelog.publish.
+func TestChangelogUpdateScheduleAtValueSendsString(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	if _, err := runRoot(t, server.URL, "changelog", "update", "cl_entry_1", "--workspace", "ws_1",
+		"--schedule-at", "2026-10-01T09:00:00Z"); err != nil {
+		t.Fatalf("update --schedule-at <datetime>: %v", err)
+	}
+	if string(gotBody) != `{"scheduledAt":"2026-10-01T09:00:00Z"}` {
+		t.Errorf("request body = %s, want {\"scheduledAt\":\"2026-10-01T09:00:00Z\"}", gotBody)
+	}
+}

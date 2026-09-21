@@ -74,3 +74,54 @@ func TestSDKSkillSigningGuidance(t *testing.T) {
 		})
 	}
 }
+
+// TestAPISkillInteractiveOnlyCapabilitySet guards against Fact-2-class drift
+// (issue #61): the AUTH-01 interactive-only enumeration in
+// cupthread-api/SKILL.md must name every capability in the SaaS upstream
+// INTERACTIVE_SESSION_CAPABILITIES set (apps/api/src/lib/capabilities.ts).
+// When SaaS adds or removes one, update this snapshot and the SKILL.md in the
+// same sync — the enumeration below is that snapshot.
+func TestAPISkillInteractiveOnlyCapabilitySet(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	doc := string(data)
+
+	interactiveOnlySet := "(`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `privacy.manage`, `workspace.delete`)"
+	if !strings.Contains(doc, interactiveOnlySet) {
+		t.Errorf("cupthread-api/SKILL.md interactive-only set drifted from SaaS INTERACTIVE_SESSION_CAPABILITIES; want %s", interactiveOnlySet)
+	}
+
+	// privacy.manage was the capability missing at the time of issue #61; pin
+	// its matrix row (admin/owner only, interactive sessions required) too.
+	if !strings.Contains(doc, "| `privacy.manage` (end-user erase/anonymize, attachment delete, export create / download-token / download — PRIV-01) | ❌ | ✅ | ✅ |") {
+		t.Error("cupthread-api/SKILL.md capability matrix has no privacy.manage row (admin/owner)")
+	}
+}
+
+// TestAPISkillScheduleAtClearSemantics guards against Fact-1-class drift
+// (issue #61): the SEC-40 gate table must not claim that ""/null both clear
+// scheduledAt under the gate. "" 400s on the datetime schema and a JSON null
+// clears without the gate (plain content.manage suffices).
+func TestAPISkillScheduleAtClearSemantics(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	doc := string(data)
+
+	for _, marker := range []string{
+		"| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (setting a schedule only) | `changelog.publish` |",
+		"`scheduledAt: null` clears the schedule and is **not** gated",
+		`an empty string fails validation with ` + "`400 {\"error\": \"Validation failed\"}`",
+		"The CLI's `changelog update <id> --schedule-at \"\"` sends exactly `{\"scheduledAt\": null}`",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required scheduleAt-clear marker %s", marker)
+		}
+	}
+	if strings.Contains(doc, "(`\"\"`/null clears it)") {
+		t.Error("cupthread-api/SKILL.md still claims \"\" clears scheduledAt under the changelog.publish gate (issue #61)")
+	}
+}
