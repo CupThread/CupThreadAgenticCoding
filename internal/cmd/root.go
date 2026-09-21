@@ -68,8 +68,10 @@ func newRootCmd() *cobra.Command {
 
 Manage the projects you created on cupthread.com (workspaces, apps, inbox,
 feature requests, roadmap columns, versions, changelog, imports, integrations,
-notifications, billing) without leaving the terminal — everything the web
-Console can do.
+notifications, billing) without leaving the terminal — nearly everything the
+web Console can do. A few high-impact actions (member management, billing
+changes, integration connect/disconnect, changelog publishing) are
+Console-web-only: no CLI credential can perform them.
 
 Log in with 'cupthread auth login' (OAuth via browser) or
 'cupthread auth login --token cpt_...' (personal access token).`,
