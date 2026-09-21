@@ -49,11 +49,24 @@ If a previous login on this machine saved a default workspace or app that the
 new account cannot see, those saved defaults are cleared with a warning
 instead of silently targeting the previous user's workspace.
 
+The interactive flows (browser and device) store the token pair as soon as
+the server issues it; the session check that follows is advisory. If the API
+cannot be reached right after login, the command still succeeds and prints a
+warning — saved workspace defaults are then cleared because they could not
+be verified against the new login. 'cupthread auth status' confirms the
+session once the API is reachable again.
+
 Logging in against a non-default API endpoint (--base-url or
 $CUPTHREAD_BASE_URL) remembers that endpoint in the config file, so later
 invocations reach the same server without the flag. --base-url and
 $CUPTHREAD_BASE_URL still override it per invocation; 'cupthread auth
-logout' forgets it.`,
+logout' forgets it.
+
+With --json/--output yaml every method prints a single structured document
+on stdout — {method, email, tokenPrefix, baseUrl} where method is "token",
+"oauth" or "device" — and all progress (browser URL, device-flow
+verification URI and user code, context-reconcile warnings) moves to
+stderr. The device payload also echoes verificationUri and userCode.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token != "" {
@@ -68,6 +81,40 @@ logout' forgets it.`,
 	login.Flags().StringVar(&token, "token", "", "Personal access token (cpt_...); \"-\" reads from stdin")
 	login.Flags().BoolVar(&useDevice, "device", false, "Log in with the device code flow (for SSH/containers without a local browser)")
 	return login
+}
+
+// loginResult is the payload of a successful 'auth login' in structured
+// mode; the same fields feed the human confirmation line. Email is omitted
+// when the account has no address on record, and the device-flow fields are
+// only set by --device.
+type loginResult struct {
+	Method      string `json:"method"` // "token", "oauth" or "device"
+	Email       string `json:"email,omitempty"`
+	TokenPrefix string `json:"tokenPrefix"`
+	BaseURL     string `json:"baseUrl"`
+	// VerificationURI and UserCode echo where the pending --device login
+	// is approved, so an agent that relayed them can cross-check what it
+	// waited for.
+	VerificationURI string `json:"verificationUri,omitempty"`
+	UserCode        string `json:"userCode,omitempty"`
+}
+
+// reportLogin emits the login outcome: one JSON/YAML document on stdout in
+// structured mode, the human confirmation line otherwise.
+func (a *app) reportLogin(res loginResult) error {
+	if a.structured() {
+		return a.out.Structured(res)
+	}
+	email := res.Email
+	if email == "" {
+		email = "<unknown email>"
+	}
+	if res.Method == "token" {
+		a.out.Printf("✓ Logged in as %s (token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+	} else {
+		a.out.Printf("✓ Logged in as %s (OAuth, token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+	}
+	return nil
 }
 
 func loginWithToken(ctx context.Context, token string) error {
@@ -103,17 +150,20 @@ func loginWithToken(ctx context.Context, token string) error {
 		AccessToken: token,
 		TokenPrefix: prefix,
 	}
-	reconcileWorkspaceContext(&me, A.out.Printf)
+	reconcileWorkspaceContext(&me, A.warnf)
 	A.rememberLoginBaseURL()
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
-	email := "<unknown email>"
-	if me.Email != nil {
-		email = *me.Email
+	res := loginResult{
+		Method:      "token",
+		TokenPrefix: prefix,
+		BaseURL:     A.baseURL(),
 	}
-	A.out.Printf("✓ Logged in as %s (token %s…) at %s", email, prefix, A.baseURL())
-	return nil
+	if me.Email != nil {
+		res.Email = *me.Email
+	}
+	return A.reportLogin(res)
 }
 
 func loginWithPKCE(ctx context.Context) error {
@@ -122,7 +172,7 @@ func loginWithPKCE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(ctx, set)
+	return finishOAuthLogin(ctx, set, loginResult{Method: "oauth"})
 }
 
 func loginWithDevice(ctx context.Context) error {
@@ -131,33 +181,66 @@ func loginWithDevice(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	A.out.Printf("First, open:  %s", start.VerificationURI)
-	A.out.Printf("Enter code:   %s", start.UserCode)
+	// The verification URI and user code are progress, not results: they
+	// go to stderr in both modes so stdout carries at most one
+	// machine-readable document — the final login result, which also
+	// echoes the URI and code for agents relaying them to a human.
+	fmt.Fprintf(os.Stderr, "First, open:  %s\n", start.VerificationURI)
+	fmt.Fprintf(os.Stderr, "Enter code:   %s\n", start.UserCode)
 	set, err := start.Wait(ctx)
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(ctx, set)
+	return finishOAuthLogin(ctx, set, loginResult{
+		Method:          "device",
+		VerificationURI: start.VerificationURI,
+		UserCode:        start.UserCode,
+	})
 }
 
-func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
+func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) error {
 	A.applyTokenSet(set)
-
-	var me api.MeResponse
-	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
-		return fmt.Errorf("login succeeded but session check failed: %w", err)
-	}
-	reconcileWorkspaceContext(&me, A.out.Printf)
 	A.rememberLoginBaseURL()
+	// Persist the freshly issued pair BEFORE the session check: the pair was
+	// just minted by the server's own token endpoint and the check is
+	// advisory, so a transient failure (or an interrupted probe) must never
+	// abandon it — redoing the interactive browser/device approval would
+	// mint a second rotating refresh chain while the first stays valid until
+	// expiry (issue #69).
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
-	email := "<unknown email>"
-	if me.Email != nil {
-		email = *me.Email
+
+	var me api.MeResponse
+	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
+		warnf := func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		}
+		warnf("warning: logged in, but could not verify the session yet: %v — check 'cupthread auth status'", err)
+		if clearUnverifiedWorkspaceContext(warnf) {
+			if err := A.saveConfig(); err != nil {
+				return err
+			}
+		}
+		if A.structured() {
+			res.TokenPrefix = A.cfg.Auth.TokenPrefix
+			res.BaseURL = A.baseURL()
+			return A.out.Structured(res)
+		}
+		A.out.Printf("✓ Logged in (OAuth, token %s…) at %s", A.cfg.Auth.TokenPrefix, A.baseURL())
+		return nil
 	}
-	A.out.Printf("✓ Logged in as %s (OAuth, token %s…) at %s", email, A.cfg.Auth.TokenPrefix, A.baseURL())
-	return nil
+	if reconcileWorkspaceContext(&me, A.warnf) {
+		if err := A.saveConfig(); err != nil {
+			return err
+		}
+	}
+	if me.Email != nil {
+		res.Email = *me.Email
+	}
+	res.TokenPrefix = A.cfg.Auth.TokenPrefix
+	res.BaseURL = A.baseURL()
+	return A.reportLogin(res)
 }
 
 // rememberLoginBaseURL stores the base URL the credential was issued against,
@@ -188,7 +271,10 @@ management API is available.
 
 Logout also clears the saved default workspace, per-workspace app defaults
 and base URL, so the next login starts from a clean slate instead of
-inheriting the previous account's context.`,
+inheriting the previous account's context.
+
+With --json/--output yaml, stdout carries a single
+{"loggedOut":true,"configPath":…,"cleared":[…]} document.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var cleared []string
@@ -208,6 +294,13 @@ inheriting the previous account's context.`,
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			if A.structured() {
+				return A.out.Structured(logoutResult{
+					LoggedOut:  true,
+					ConfigPath: A.cfgPath,
+					Cleared:    cleared,
+				})
+			}
 			A.out.Printf("✓ Credentials removed from %s", A.cfgPath)
 			if len(cleared) > 0 {
 				A.out.Printf("  Cleared saved context from the previous login: %s", strings.Join(cleared, ", "))
@@ -217,6 +310,14 @@ inheriting the previous account's context.`,
 	}
 }
 
+// logoutResult is the machine-readable payload of 'auth logout'. Cleared
+// names the inherited context that was wiped along with the credential.
+type logoutResult struct {
+	LoggedOut  bool     `json:"loggedOut"`
+	ConfigPath string   `json:"configPath"`
+	Cleared    []string `json:"cleared,omitempty"`
+}
+
 // reconcileWorkspaceContext drops workspace context inherited from a previous
 // login that the just-authenticated account cannot see. The config holds
 // exactly one credential, so its user-scoped defaults must never outlive that
@@ -224,10 +325,12 @@ inheriting the previous account's context.`,
 // route every workspace-scoped command at the previous user's workspace (or
 // fail with an unrelated 403). Both login paths already fetch /console/me,
 // so the new account's workspace list is in hand at no extra cost.
-func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
+// It reports whether the config changed, so callers can decide to re-persist.
+func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) bool {
 	if A.cfg.DefaultWorkspace == "" && len(A.cfg.Workspaces) == 0 {
-		return
+		return false
 	}
+	changed := false
 	visible := make(map[string]bool, len(me.Workspaces))
 	for i := range me.Workspaces {
 		visible[me.Workspaces[i].Workspace.ID] = true
@@ -235,12 +338,14 @@ func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
 	if A.cfg.DefaultWorkspace != "" && !visible[A.cfg.DefaultWorkspace] {
 		warnf("⚠ Cleared saved default workspace %s: it is not visible to the logged-in account (saved by a previous login)", A.cfg.DefaultWorkspace)
 		A.cfg.DefaultWorkspace = ""
+		changed = true
 	}
 	dropped := []string{}
 	for id := range A.cfg.Workspaces {
 		if !visible[id] {
 			delete(A.cfg.Workspaces, id)
 			dropped = append(dropped, id)
+			changed = true
 		}
 	}
 	if len(dropped) > 0 {
@@ -250,6 +355,35 @@ func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
 	if len(A.cfg.Workspaces) == 0 {
 		A.cfg.Workspaces = nil
 	}
+	return changed
+}
+
+// clearUnverifiedWorkspaceContext is the conservative counterpart of
+// reconcileWorkspaceContext for the session check failing: nothing about the
+// freshly issued credential could be verified against the server, so saved
+// workspace defaults from a previous login are dropped wholesale instead of
+// kept unverified — an OAuth approval may have switched accounts, and a stale
+// invisible default would route the new credential at the previous user's
+// workspace (issue #82's invariant, applied to issue #69's failure path).
+// It reports whether the config changed, so callers can decide to re-persist.
+func clearUnverifiedWorkspaceContext(warnf func(string, ...any)) bool {
+	if A.cfg.DefaultWorkspace == "" && len(A.cfg.Workspaces) == 0 {
+		return false
+	}
+	if A.cfg.DefaultWorkspace != "" {
+		warnf("⚠ Cleared saved default workspace %s: the session check failed, so it could not be verified against the new login (restore it with 'cupthread workspaces use' once the API is reachable)", A.cfg.DefaultWorkspace)
+	}
+	if len(A.cfg.Workspaces) > 0 {
+		ids := make([]string, 0, len(A.cfg.Workspaces))
+		for id := range A.cfg.Workspaces {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		warnf("⚠ Dropped saved per-workspace app default(s) for %s: the session check failed, so they could not be verified against the new login", strings.Join(ids, ", "))
+	}
+	A.cfg.DefaultWorkspace = ""
+	A.cfg.Workspaces = nil
+	return true
 }
 
 func newAuthStatusCmd() *cobra.Command {
