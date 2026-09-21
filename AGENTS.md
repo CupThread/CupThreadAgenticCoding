@@ -12,7 +12,7 @@
 - **Agentic Coding & CLI**: [`CupThread/CupThreadAgenticCoding`](https://github.com/CupThread/CupThreadAgenticCoding) (AI Skills, Go CLI tools)
 
 ## CLI Usage for Agents
-Install via `brew install CupThread/tap/cupthread` (or `go build -o bin/cupthread ./cmd/cupthread`), then:
+Install via `brew install CupThread/tap/cupthread` (releases are tag-driven, so `brew upgrade cupthread` picks up each new `vX.Y.Z` tag; or `go build -o bin/cupthread ./cmd/cupthread`), then:
 
 - `bin/cupthread status --json`: Inspect local repo status in machine-readable JSON.
 - `bin/cupthread skills list`: List all agent skills (`cupthread-cli`, `cupthread-api`, `cupthread-swift-sdk`, `cupthread-android-sdk`, `cupthread-react-native-sdk`, `cupthread-flutter-sdk`).

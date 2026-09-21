@@ -1,0 +1,133 @@
+name: Release
+
+# Tag-driven releases (issue #60): pushing an annotated vX.Y.Z tag runs the
+# test suite, builds the CLI with the tag injected as the version, refuses to
+# release unless the built binary reports it, publishes a GitHub release with
+# source checksums, and updates the first-party Homebrew tap so
+# `brew upgrade cupthread` actually fires.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the tag and `git archive` are available.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Derive the version from the tag
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Build with the tag injected as the CLI version
+        run: |
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=${VERSION}" \
+            -o dist/cupthread ./cmd/cupthread
+
+      # Guard from the issue's acceptance criteria: a tag can never ship a
+      # mismatched version string.
+      - name: Verify the binary reports the tagged version
+        run: |
+          out="$(./dist/cupthread --version)"
+          echo "binary reports: ${out}"
+          if [ "${out}" != "cupthread version ${VERSION}" ]; then
+            echo "::error::built binary reports '${out}' but the tag is v${VERSION} — refusing to release"
+            exit 1
+          fi
+
+      - name: Checksum the source tarballs
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="cupthread-${TAG}/" -o "dist/cupthread-${TAG}.tar.gz" "${TAG}"
+          # Download the exact GitHub archive URL the formula pins, so the
+          # sha256 is computed from the same bytes a brew user gets.
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" -o dist/github-source.tar.gz
+          cd dist
+          {
+            sha256sum "cupthread-${TAG}.tar.gz"
+            sha256sum github-source.tar.gz | sed "s|github-source.tar.gz|github-source-${TAG}.tar.gz|"
+          } > checksums.txt
+          echo "FORMULA_SHA256=$(awk -v n="github-source-${TAG}.tar.gz" '$2==n {print $1}' checksums.txt)" >> "$GITHUB_ENV"
+          cat checksums.txt
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; refreshing assets"
+            gh release upload "${TAG}" "dist/cupthread-${TAG}.tar.gz" dist/checksums.txt --clobber
+          else
+            gh release create "${TAG}" --verify-tag --title "cupthread ${TAG}" --generate-notes \
+              "dist/cupthread-${TAG}.tar.gz" dist/checksums.txt
+          fi
+
+      - name: Update the Homebrew tap (CupThread/homebrew-tap)
+        env:
+          # A fine-grained PAT with Contents: read/write on
+          # CupThread/homebrew-tap; GITHUB_TOKEN cannot push cross-repo.
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "::warning::TAP_TOKEN secret is not set — the tap formula was NOT updated; brew users will not see this release. Add the secret and re-run this workflow, or push the formula below manually:"
+            go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/CupThread/homebrew-tap.git" tap
+          go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}" > tap/Formula/cupthread.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/cupthread.rb
+          git commit -m "cupthread ${TAG}"
+          git push origin main
+
+      # Best effort: keeps the in-repo Formula/ mirror showing the latest
+      # release. Failure (e.g. branch protection) must not fail the release.
+      - name: Commit the generated formula to the in-repo mirror
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B formula-mirror origin/main
+          go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}" > Formula/cupthread.rb
+          git add Formula/cupthread.rb
+          if git diff --cached --quiet; then
+            echo "formula unchanged"
+            exit 0
+          fi
+          git commit -m "chore(release): regenerate Formula/cupthread.rb for ${TAG}"
+          git push origin formula-mirror:main
