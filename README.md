@@ -128,6 +128,21 @@ go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
 go build -o bin/cupthread ./cmd/cupthread
 ```
 
+### Releases and versioning
+
+Releases are tag-driven. Pushing an annotated `vX.Y.Z` tag triggers the
+release workflow, which runs the test suite, builds the CLI with the tag
+injected as the version, verifies the built binary reports exactly that
+version, publishes a GitHub release with source checksums, and regenerates
+the `CupThread/homebrew-tap` formula pinned to the tag's source tarball —
+so `brew upgrade cupthread` picks up every release and `cupthread --version`
+identifies the exact build. Source builds without an injected version
+report `dev`; to stamp one:
+
+```sh
+go build -ldflags "-X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=0.3.0" -o bin/cupthread ./cmd/cupthread
+```
+
 ### Log in
 
 The CLI supports two authentication methods.
@@ -207,7 +222,9 @@ cupthread billing show -o yaml
 `--output` (short `-o`) accepts `table` (default), `json`, or `yaml`. In
 `json` mode commands print a faithful, indented copy of the API response; the
 `yaml` variant renders the same data as YAML. `cupthread api request` also
-honors both formats for raw endpoint calls.
+honors both formats for raw endpoint calls. A failed request (any 4xx/5xx)
+always exits 1: structured error payloads (`{error, code, status, hint}`)
+still reach stdout, while the `Error: …` line goes to stderr.
 
 ### Manage your projects
 
@@ -225,7 +242,13 @@ cupthread comments moderation hide cmt_abc  # moderate comments in a workspace
 cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
                                              # publish-now/schedule-at need a workspace admin/owner
                                              # interactive session; cpt_ tokens can create drafts only
+cupthread features update fr_123 --column-slug planned  # moderate requests (also approve/forward/delete)
+cupthread changelog unpublish <entry-id>   # revert a published entry to draft (tokens OK)
 cupthread imports create --source github_issues --mode preview
+cupthread imports get <job-id>             # poll the import job created above (also list/history/rerun/cancel)
+cupthread integrations status              # connection status of every integration (tokens OK)
+cupthread apps settings set my-app --anon-vote=false  # app settings (anonymous access, admin/owner)
+cupthread notifications list               # notifications: read / read-all / prefs show / prefs set (tokens OK)
 cupthread billing show
 cupthread search "dark mode"
 ```
@@ -258,6 +281,14 @@ cupthread api sign-user-attrs --app-key app_demo12345 --secret - \
 # or: CUPTHREAD_SDK_SIGNING_SECRET=cpt_sk_... cupthread api sign-user-attrs \
 #   --app-key app_demo12345 --input ./user-attrs.json
 # An inline --secret cpt_sk_... still works, but leaks via history and ps.
+
+# Connect an integration provider without exposing its token on the command
+# line (shell history / ps / CI logs): pipe it via stdin or set the
+# per-provider variable. Linear/Notion/Slack use CUPTHREAD_LINEAR_TOKEN,
+# CUPTHREAD_NOTION_TOKEN and CUPTHREAD_SLACK_TOKEN the same way.
+printf %s "$GITHUB_PAT" | cupthread integrations github connect --token -
+# or: CUPTHREAD_GITHUB_TOKEN=ghp_... cupthread integrations github connect
+# An inline --token ghp_... still works, but leaks via history and ps.
 ```
 
 ### Repo tooling
@@ -281,6 +312,10 @@ bin/cupthread skills link /path/to/project
 | `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
 | `CUPTHREAD_NO_RETRY` | Set to `1` to disable automatic retry/backoff on transient failures (same as `--no-retry`) |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
+| `CUPTHREAD_GITHUB_TOKEN` | GitHub PAT fallback for `integrations github connect` (an explicit `--token` wins; `--token -`/`@` reads stdin) |
+| `CUPTHREAD_LINEAR_TOKEN` | Linear API token fallback for `integrations linear connect` (same rules) |
+| `CUPTHREAD_NOTION_TOKEN` | Notion API token fallback for `integrations notion connect` (same rules) |
+| `CUPTHREAD_SLACK_TOKEN` | Slack API token fallback for `integrations slack connect` (same rules) |
 
 ### Development
 

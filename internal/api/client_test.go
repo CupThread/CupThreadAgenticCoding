@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +9,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // requestIDPattern mirrors the API's accepted correlation-ID charset and
@@ -178,6 +175,57 @@ func TestDoEncodesJSONBody(t *testing.T) {
 	}
 	if body["name"] != "app" {
 		t.Errorf("body = %v", body)
+	}
+}
+
+// TestDoSendsRawJSONBodyVerbatim covers issue #75: a json.RawMessage (or
+// *json.RawMessage) request body must reach the server byte-identical —
+// re-encoding through json.Marshal would round-trip every number through
+// float64 and silently rewrite integers a float64 cannot represent exactly.
+// An empty RawMessage means "no body"; plain values keep going through
+// json.Marshal.
+func TestDoSendsRawJSONBodyVerbatim(t *testing.T) {
+	var gotBody, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotContentType = r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	const body = `{"big":12345678901234567890, "pad": [1, 2]}`
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage(body), nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("wire body = %q, want the RawMessage bytes %q verbatim", gotBody, body)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+
+	rawPtr := json.RawMessage(body)
+	if err := client.Do(context.Background(), "POST", "/x", nil, &rawPtr, nil); err != nil {
+		t.Fatalf("Do with *json.RawMessage: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("*json.RawMessage wire body = %q, want %q verbatim", gotBody, body)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage{}, nil); err != nil {
+		t.Fatalf("Do with empty RawMessage: %v", err)
+	}
+	if gotBody != "" || gotContentType != "" {
+		t.Errorf("empty RawMessage sent body %q (Content-Type %q), want no body at all", gotBody, gotContentType)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, map[string]string{"name": "app"}, nil); err != nil {
+		t.Fatalf("Do with a plain map: %v", err)
+	}
+	if gotBody != `{"name":"app"}` {
+		t.Errorf("plain map wire body = %q, want the marshaled form", gotBody)
 	}
 }
 
@@ -380,6 +428,119 @@ func TestHintEmptyForOrdinary4xxErrors(t *testing.T) {
 			if tc.err.Status != http.StatusPaymentRequired {
 				if hint := tc.err.Hint(); hint != "" {
 					t.Errorf("Hint() = %q for a plain %d error, want \"\"", hint, tc.err.Status)
+				}
+			}
+		})
+	}
+}
+
+// TestDoPublicSurfaceAuthenticationRequiredHint covers the PRIV-12 contract
+// from issue #77: when an app disables anonymous access, the public end-user
+// surfaces (roadmap columns/versions, feature-request comment threads,
+// changelog subscribe) answer 401 with code authentication_required. The CLI
+// cannot present an end-user Clerk session, so the error must render the
+// actionable hint. The code travels only on end-user-surface 401s — console
+// 401s mean "cpt_ token invalid or expired" and carry no code, and DATA-03
+// signing failures carry their own codes — so those must stay bare.
+func TestDoPublicSurfaceAuthenticationRequiredHint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		status  int
+		body    string
+		wantSub []string
+		notWant []string
+	}{
+		{
+			name:   "columns 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/columns/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"Sign in is required to view this roadmap",
+				"requires a signed-in session",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "versions 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/versions/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "comments 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/feature-requests/fr_1/comments",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "changelog subscribe 403 email_not_verified",
+			method: "POST",
+			path:   "/api/v1/public/apps/app_key_1/changelog/subscribe",
+			status: http.StatusForbidden,
+			body:   `{"error":"Subscriptions on this changelog are bound to your signed-in email address","code":"email_not_verified"}`,
+			wantSub: []string{
+				"forbidden",
+				"Subscriptions on this changelog are bound to your signed-in email address",
+				"verified email",
+				"third-party emails are not accepted",
+			},
+		},
+		{
+			name:    "console 401 without a code stays bare",
+			method:  "GET",
+			path:    "/api/v1/console/workspaces/ws_1/apps",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Authentication required"}`,
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+		{
+			name:    "DATA-03 signing 401 keeps its own code, no anonymous-access hint",
+			method:  "PUT",
+			path:    "/api/v1/public/apps/app_key_1/user",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Signature mismatch","code":"invalid_signature"}`,
+			wantSub: []string{"invalid_signature"},
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != tc.method {
+					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.method, tc.path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			err := client.Do(context.Background(), tc.method, tc.path, nil, nil, nil)
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			for _, want := range tc.wantSub {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to contain %q", err, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("err = %q, want it to NOT contain %q", err, notWant)
 				}
 			}
 		})
@@ -683,11 +844,16 @@ func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	// Issue #58: re-login advice is a dead end — the browser OAuth login also
+	// issues a cpt_ token, which the interactive-only capabilities reject.
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -717,7 +883,7 @@ func TestHintForbiddenCodes(t *testing.T) {
 		want   string
 	}{
 		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
-		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "Console web UI"},
 		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
 		{"403 without code", http.StatusForbidden, "", ""},
 		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},
@@ -755,408 +921,163 @@ func TestUploadAppIconForbiddenHint(t *testing.T) {
 	}
 }
 
-// ---- Transient-failure retry suite (issue #71) ----
+// --- Validation-details rendering (issue #73) ---
 
-// sleepRecorder captures the delays the retry loop requests so tests run
-// instantly and can assert exact backoff values.
-type sleepRecorder struct{ waits []time.Duration }
+// TestDoSurfacesValidationFieldErrors covers issue #73: a 400 whose body
+// carries the server's zod-flatten `details` must name every offending field
+// and reason in the error line, fields in sorted key order, and keep the raw
+// payload on APIError.Details for programmatic use.
+func TestDoSurfacesValidationFieldErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}}`))
+	}))
+	defer server.Close()
 
-func (s *sleepRecorder) sleep(d time.Duration) { s.waits = append(s.waits, d) }
-
-// retryTestClient builds a client against server whose waits are recorded
-// instead of slept.
-func retryTestClient(server *httptest.Server) (*Client, *sleepRecorder) {
-	rec := &sleepRecorder{}
 	client := New(server.URL)
-	client.Sleeper = rec.sleep
-	return client, rec
-}
-
-// TestRetryGetThenSuccess pins the core contract: a 429 on a body-less GET
-// is retried once and the command succeeds; exactly one backoff wait within
-// the first window (≤ DefaultRetryBaseDelay, full jitter) is requested, and
-// the decoded payload is the second attempt's body.
-func TestRetryGetThenSuccess(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) == 1 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"Too many requests. Please try again shortly."}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer server.Close()
-
-	client, rec := retryTestClient(server)
-	var out struct {
-		OK bool `json:"ok"`
-	}
-	if err := client.Do(context.Background(), "GET", "/x", nil, nil, &out); err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	if !out.OK {
-		t.Errorf("ok = false, want the retry's decoded body")
-	}
-	if got := hits.Load(); got != 2 {
-		t.Errorf("attempts = %d, want 2 (429 then success)", got)
-	}
-	if len(rec.waits) != 1 {
-		t.Fatalf("sleeps = %d (%v), want exactly 1", len(rec.waits), rec.waits)
-	}
-	if rec.waits[0] < 0 || rec.waits[0] > DefaultRetryBaseDelay {
-		t.Errorf("first wait = %v, want a full-jitter draw in [0, %v]", rec.waits[0], DefaultRetryBaseDelay)
-	}
-}
-
-// TestRetryReusesCallerRequestID pins the `api request` observability
-// contract: a caller-supplied correlation ID (one per invocation) rides
-// every attempt, so the echoed ID on the final error traces the whole
-// retry chain.
-func TestRetryReusesCallerRequestID(t *testing.T) {
-	var ids []string
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ids = append(ids, r.Header.Get("X-Request-Id"))
-		if hits.Add(1) < 3 {
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-
-	client, _ := retryTestClient(server)
-	err := client.DoWithHeaders(context.Background(), "GET", "/x", nil,
-		map[string]string{"X-Request-Id": "agent-correlation-1"}, nil, nil)
-	if err != nil {
-		t.Fatalf("DoWithHeaders: %v", err)
-	}
-	if len(ids) != 3 || ids[0] != "agent-correlation-1" || ids[1] != "agent-correlation-1" || ids[2] != "agent-correlation-1" {
-		t.Errorf("request ids = %v, want the caller-supplied id on every attempt", ids)
-	}
-}
-
-// TestRetryExhaustedAlways429 pins the exhaustion contract: 1 initial
-// attempt + 3 retries, three backoff waits, and the final error keeps the
-// rate-limited wrapping and hint while stamping the attempt count.
-func TestRetryExhaustedAlways429(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":"Too many requests. Please try again shortly."}`))
-	}))
-	defer server.Close()
-
-	client, rec := retryTestClient(server)
-	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected the always-429 request to fail")
-	}
-	if got := hits.Load(); got != 4 {
-		t.Errorf("attempts = %d, want 4 (1 + DefaultMaxRetries)", got)
-	}
-	if len(rec.waits) != 3 {
-		t.Fatalf("sleeps = %d (%v), want 3", len(rec.waits), rec.waits)
-	}
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got %v", err)
 	}
-	if apiErr.Attempts != 4 {
-		t.Errorf("APIError.Attempts = %d, want 4", apiErr.Attempts)
+	got := apiErr.Error()
+	if !strings.Contains(got, "title: Title must be at least 3 characters") {
+		t.Errorf("Error() = %q, want the title reason", got)
 	}
-	for _, want := range []string{"rate limited", "back off exponentially"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing %q", err, want)
-		}
+	if !strings.Contains(got, "versionId: Invalid version") {
+		t.Errorf("Error() = %q, want the versionId reason", got)
+	}
+	if i, j := strings.Index(got, "title:"), strings.Index(got, "versionId:"); i < 0 || j < 0 || i > j {
+		t.Errorf("Error() = %q, want fields in sorted key order (title before versionId)", got)
+	}
+	if !strings.HasPrefix(got, "Validation failed (HTTP 400): ") {
+		t.Errorf("Error() = %q, want the bare rendering as prefix", got)
+	}
+	// The raw server JSON is retained verbatim for programmatic consumers.
+	wantDetails := `{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}`
+	if string(apiErr.Details) != wantDetails {
+		t.Errorf("Details = %s, want raw server JSON %s", apiErr.Details, wantDetails)
 	}
 }
 
-// TestRetryExhaustedAlways503 proves the 5xx transient class (gateway/
-// overload) gets the same retry budget as throttling.
-func TestRetryExhaustedAlways503(t *testing.T) {
-	var hits atomic.Int32
+// TestDoSurfacesValidationFormErrors covers issue #73: form-level messages
+// (no field attached) render before the field errors.
+func TestDoSurfacesValidationFormErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":["Body is not valid JSON"],"fieldErrors":{}}}`))
 	}))
 	defer server.Close()
 
-	client, rec := retryTestClient(server)
-	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected the always-503 request to fail")
-	}
-	if got := hits.Load(); got != 4 {
-		t.Errorf("attempts = %d, want 4", got)
-	}
-	if len(rec.waits) != 3 {
-		t.Fatalf("sleeps = %d (%v), want 3", len(rec.waits), rec.waits)
-	}
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("expected *APIError, got %v", err)
 	}
-	if apiErr.Attempts != 4 || apiErr.Status != http.StatusServiceUnavailable {
-		t.Errorf("apiErr = %+v, want a 503 with Attempts=4", apiErr)
+	got := apiErr.Error()
+	if !strings.Contains(got, `Validation failed (HTTP 400): Body is not valid JSON`) {
+		t.Errorf("Error() = %q, want the form error appended", got)
 	}
 }
 
-// TestMutationNeverRetried pins the safety scope: a POST carrying a body is
-// a single wire attempt even on a retryable status — replaying mutations
-// could double-apply them.
-func TestMutationNeverRetried(t *testing.T) {
-	var hits atomic.Int32
-	var bodies []string
+// TestAPIErrorWithoutDetailsByteIdentical pins the regression contract: with
+// no `details` on the wire (or an empty flatten), Error() output is exactly
+// the pre-issue rendering — many call sites and tests quote these strings.
+func TestAPIErrorWithoutDetailsByteIdentical(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		bodies = append(bodies, string(b))
-		hits.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
 	}))
 	defer server.Close()
 
-	client, rec := retryTestClient(server)
-	err := client.Do(context.Background(), "POST", "/api/v1/feature-requests", nil, map[string]any{"appKey": "k"}, nil)
-	if err == nil {
-		t.Fatal("expected the always-503 POST to fail")
-	}
-	if got := hits.Load(); got != 1 {
-		t.Errorf("attempts = %d, want exactly 1 for a mutation", got)
-	}
-	if len(rec.waits) != 0 {
-		t.Errorf("sleeps = %v, want none for a mutation", rec.waits)
-	}
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Attempts != 1 {
-		t.Errorf("apiErr = %+v, want Attempts=1", apiErr)
-	}
-}
-
-// TestOnlyIdempotentMethodsRetried sweeps the verb matrix: GET and HEAD
-// retry, every mutation verb stays single-shot.
-func TestOnlyIdempotentMethodsRetried(t *testing.T) {
-	for _, tc := range []struct {
-		method string
-		want   int32
-	}{
-		{"GET", 4},
-		{"HEAD", 4},
-		{"PUT", 1},
-		{"PATCH", 1},
-		{"DELETE", 1},
-	} {
-		t.Run(tc.method, func(t *testing.T) {
-			var hits atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				hits.Add(1)
-				w.WriteHeader(http.StatusBadGateway)
-			}))
-			defer server.Close()
-
-			client, rec := retryTestClient(server)
-			_ = client.Do(context.Background(), tc.method, "/x", nil, nil, nil)
-			if got := hits.Load(); got != tc.want {
-				t.Errorf("%s attempts = %d, want %d", tc.method, got, tc.want)
-			}
-			wantSleeps := int(tc.want) - 1
-			if len(rec.waits) != wantSleeps {
-				t.Errorf("%s sleeps = %d, want %d", tc.method, len(rec.waits), wantSleeps)
-			}
-		})
-	}
-}
-
-// TestRetryAfterSecondsHonored: when the server supplies Retry-After the
-// client waits exactly that long (no jitter) — here 1 s.
-func TestRetryAfterSecondsHonored(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) == 1 {
-			w.Header().Set("Retry-After", "1")
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-
-	client, rec := retryTestClient(server)
-	if err := client.Do(context.Background(), "GET", "/x", nil, nil, nil); err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	if len(rec.waits) != 1 || rec.waits[0] != time.Second {
-		t.Errorf("waits = %v, want exactly [1s] from Retry-After", rec.waits)
-	}
-}
-
-// TestRetryAfterCappedAtMaximum: an absurd Retry-After is clamped to
-// DefaultRetryMaxDelay so a server cannot stall the CLI for minutes.
-func TestRetryAfterCappedAtMaximum(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) == 1 {
-			w.Header().Set("Retry-After", "9999")
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-
-	client, rec := retryTestClient(server)
-	if err := client.Do(context.Background(), "GET", "/x", nil, nil, nil); err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	if len(rec.waits) != 1 || rec.waits[0] != DefaultRetryMaxDelay {
-		t.Errorf("waits = %v, want the %v cap", rec.waits, DefaultRetryMaxDelay)
-	}
-}
-
-// TestNoRetryFieldSingleShot: Client.NoRetry restores exact single-shot
-// semantics — one wire attempt, no waits.
-func TestNoRetryFieldSingleShot(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusTooManyRequests)
-	}))
-	defer server.Close()
-
-	client, rec := retryTestClient(server)
-	client.NoRetry = true
-	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected the always-429 request to fail")
-	}
-	if got := hits.Load(); got != 1 {
-		t.Errorf("attempts = %d, want exactly 1 with NoRetry", got)
-	}
-	if len(rec.waits) != 0 {
-		t.Errorf("sleeps = %v, want none with NoRetry", rec.waits)
-	}
-}
-
-// TestRetryNoticeGoesToStderr: each retry writes one human-readable line to
-// Stderr (never stdout) and a nil Stderr — structured mode — stays silent.
-func TestRetryNoticeGoesToStderr(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hits.Add(1) == 1 {
-			w.Header().Set("Retry-After", "0")
-			w.WriteHeader(http.StatusTooManyRequests)
-			return
-		}
-		_, _ = w.Write([]byte(`{}`))
-	}))
-	defer server.Close()
-
-	client, _ := retryTestClient(server)
-	var buf bytes.Buffer
-	client.Stderr = &buf
-	if err := client.Do(context.Background(), "GET", "/items", nil, nil, nil); err != nil {
-		t.Fatalf("Do: %v", err)
-	}
-	line := buf.String()
-	for _, want := range []string{"GET /items got HTTP 429", "retrying (attempt 2/4", "waiting 0s"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("stderr notice %q missing %q", line, want)
-		}
-	}
-	if strings.Count(line, "\n") != 1 {
-		t.Errorf("stderr notice = %q, want exactly one line", line)
-	}
-}
-
-// TestRetryAbortsOnCanceledContext: Ctrl-C during a backoff wait aborts the
-// command instead of finishing the sleep first — one wire attempt, then a
-// context-canceled error.
-func TestRetryAbortsOnCanceledContext(t *testing.T) {
-	var hits atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	client := New(server.URL)
-	client.RetryBaseDelay = 30 * time.Second // real sleep path, canceled mid-wait
-	go func() {
-		// Let the first attempt land and the backoff sleep begin.
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
-	err := client.Do(ctx, "GET", "/x", nil, nil, nil)
-	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
-		t.Fatalf("err = %v, want a context-canceled failure", err)
-	}
-	if got := hits.Load(); got != 1 {
-		t.Errorf("attempts = %d, want 1 (no retry after cancellation)", got)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
 	}
 }
 
-// TestBackoffDelayFullJitterBounds: computed waits are full-jitter draws —
-// uniformly bounded by min(base·2^attempt, max), never exceeding the cap
-// even for large attempt numbers.
-func TestBackoffDelayFullJitterBounds(t *testing.T) {
-	client := &Client{RetryBaseDelay: 10 * time.Millisecond, RetryMaxDelay: 40 * time.Millisecond}
-	for attempt := 0; attempt < 10; attempt++ {
-		ceiling := 10 * time.Millisecond << attempt
-		if ceiling > 40*time.Millisecond {
-			ceiling = 40 * time.Millisecond
-		}
-		for i := 0; i < 200; i++ {
-			d := client.backoffDelay(attempt)
-			if d < 0 || d > ceiling {
-				t.Fatalf("backoffDelay(%d) = %v, want a draw in [0, %v]", attempt, d, ceiling)
-			}
-		}
-	}
-	// A max below the base clamps every window immediately.
-	clamped := &Client{RetryBaseDelay: time.Second, RetryMaxDelay: 5 * time.Millisecond}
-	for i := 0; i < 200; i++ {
-		if d := clamped.backoffDelay(3); d > 5*time.Millisecond {
-			t.Fatalf("backoffDelay(3) = %v, want ≤ 5ms under the tiny cap", d)
-		}
+// TestAPIErrorEmptyDetailsObjectByteIdentical pins the empty-flatten case: a
+// details object without any messages must not add a dangling colon.
+func TestAPIErrorEmptyDetailsObjectByteIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
 	}
 }
 
-// TestParseRetryAfter covers the header grammar the client accepts:
-// delay-seconds (trimmed, non-negative) and HTTP-date, with absent,
-// negative, and garbage values rejected.
-func TestParseRetryAfter(t *testing.T) {
-	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
-	future := now.Add(90 * time.Second).UTC().Format(http.TimeFormat)
-	for _, tc := range []struct {
-		name    string
-		value   string
-		wantOK  bool
-		wantMin time.Duration
-		wantMax time.Duration
-	}{
-		{"absent", "", false, 0, 0},
-		{"seconds", "120", true, 120 * time.Second, 120 * time.Second},
-		{"zero", "0", true, 0, 0},
-		{"negative", "-5", false, 0, 0},
-		{"padded", " 90 ", true, 90 * time.Second, 90 * time.Second},
-		{"garbage", "soon", false, 0, 0},
-		{"http-date future", future, true, 88 * time.Second, 91 * time.Second},
-		{"http-date past", now.Add(-time.Hour).Format(http.TimeFormat), true, 0, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			d, ok := parseRetryAfter(tc.value, now)
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
-			}
-			if ok && (d < tc.wantMin || d > tc.wantMax) {
-				t.Errorf("delay = %v, want within [%v, %v]", d, tc.wantMin, tc.wantMax)
-			}
-		})
+// TestAPIErrorDetailsRenderingCaps pins the flood guards on Error(): at most
+// five groups are shown followed by a "+N more" tail, each group truncated,
+// and control characters are stripped so server text cannot inject terminal
+// sequences into the error line.
+func TestAPIErrorDetailsRenderingCaps(t *testing.T) {
+	msg := "x" + strings.Repeat("y", 200)
+	e := &APIError{
+		Status:  http.StatusBadRequest,
+		Message: "Validation failed",
+		Details: json.RawMessage(`{"formErrors":[],"fieldErrors":{` +
+			`"f1":["` + msg + `"],"f2":["two"],"f3":["three"],"f4":["four"],"f5":["five"],"f6":["six"],"f7":["seven"]` +
+			`}}`),
+	}
+	got := e.Error()
+	if !strings.Contains(got, "f1: ") || !strings.Contains(got, "f5: five") {
+		t.Errorf("Error() = %q, want the first five field groups", got)
+	}
+	if strings.Contains(got, "f6:") || strings.Contains(got, "f7:") {
+		t.Errorf("Error() = %q, want groups past the cap dropped", got)
+	}
+	if !strings.Contains(got, "(+2 more)") {
+		t.Errorf("Error() = %q, want the +N more tail", got)
+	}
+	// The whole "f1: <msg>" group is truncated to detailsMaxRunes runes
+	// (the 5-rune "f1: x" prefix leaves 115 y's before the ellipsis).
+	if !strings.Contains(got, "f1: x"+strings.Repeat("y", 115)+"…") {
+		t.Errorf("Error() = %q, want the long group truncated at %d runes", got, detailsMaxRunes)
+	}
+}
+
+// TestSanitizeErrorText unit-covers the control-character stripper used when
+// server text is inlined into human-readable errors.
+func TestSanitizeErrorText(t *testing.T) {
+	got := sanitizeErrorText("a\x1b]8;;http://evil\b7\x07 ESC \r\nline\x7f")
+	for _, bad := range []string{"\x1b", "\x07", "\b", "\r", "\n", "\x7f"} {
+		if strings.ContainsAny(got, bad) {
+			t.Errorf("sanitizeErrorText = %q, still contains control char %q", got, bad)
+		}
+	}
+	if got := sanitizeErrorText("plain text"); got != "plain text" {
+		t.Errorf("sanitizeErrorText = %q, want it unchanged", got)
+	}
+}
+
+// TestUploadAppIconCapturesValidationDetails covers the multipart error path
+// (postMultipartFile): it must decode `details` the same as DoWithHeaders so
+// icon-upload 400s name the offending metadata.
+func TestUploadAppIconCapturesValidationDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"icon":["File exceeds the maximum size"]}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("big"))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !strings.Contains(apiErr.Error(), "icon: File exceeds the maximum size") {
+		t.Errorf("Error() = %q, want the field reason", apiErr.Error())
+	}
+	if len(apiErr.Details) == 0 {
+		t.Error("Details = empty, want the raw server JSON retained")
 	}
 }

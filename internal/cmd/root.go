@@ -19,8 +19,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is the CLI version.
-const Version = "0.2.0"
+// Version is the CLI version. It is a var so release builds can inject the
+// git tag at link time:
+//
+//	go build -ldflags "-X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=0.3.0" ./cmd/cupthread
+//
+// The tag is then the single source of truth; builds without the flag report
+// "dev" instead of a stale-looking fake version.
+var Version = "dev"
 
 var (
 	flagJSON      bool
@@ -69,8 +75,10 @@ func newRootCmd() *cobra.Command {
 
 Manage the projects you created on cupthread.com (workspaces, apps, inbox,
 feature requests, roadmap columns, versions, changelog, imports, integrations,
-notifications, billing) without leaving the terminal — everything the web
-Console can do.
+notifications, billing) without leaving the terminal — nearly everything the
+web Console can do. A few high-impact actions (member management, billing
+changes, integration connect/disconnect, changelog publishing) are
+Console-web-only: no CLI credential can perform them.
 
 Log in with 'cupthread auth login' (OAuth via browser) or
 'cupthread auth login --token cpt_...' (personal access token).`,
@@ -174,7 +182,10 @@ func (a *app) baseURL() string {
 }
 
 // buildClient wires the API client with a token provider that transparently
-// refreshes expired OAuth tokens and persists the rotated pair.
+// refreshes expired OAuth tokens and persists the rotated pair. The refresh
+// is serialized across processes via a config lock and a disk re-read, so
+// two concurrent invocations never replay the same single-use refresh token
+// (issue #62).
 func (a *app) buildClient() *api.Client {
 	client := api.New(a.baseURL())
 	client.WorkspaceID = flagWorkspace
@@ -202,26 +213,108 @@ func (a *app) buildClient() *api.Client {
 		if err != nil || time.Until(expiresAt) > time.Minute {
 			return authState.AccessToken, nil
 		}
+		// Snapshot the pair values: another goroutine can mutate a.cfg.Auth
+		// in place while we wait, so comparing through the pointer would
+		// never observe its rotation.
+		snap := *authState
 		a.refreshMu.Lock()
 		defer a.refreshMu.Unlock()
 		// Another request may have refreshed while we waited on the lock.
-		if a.cfg.Auth.ExpiresAt != authState.ExpiresAt {
-			return a.cfg.Auth.AccessToken, nil
+		if cur := a.cfg.Auth; cur != nil &&
+			(cur.RefreshToken != snap.RefreshToken || cur.ExpiresAt != snap.ExpiresAt) {
+			return cur.AccessToken, nil
 		}
-		_, tokenURL, _, _ := auth.Endpoints(a.baseURL())
-		refreshCtx, cancel := context.WithTimeout(ctx, oauthRefreshTimeout)
-		defer cancel()
-		set, err := auth.Refresh(refreshCtx, tokenURL, authState.ClientID, a.cfg.Auth.RefreshToken)
-		if err != nil {
-			return "", fmt.Errorf("refresh OAuth token (run 'cupthread auth login' again): %w", err)
-		}
-		a.applyTokenSet(set)
-		if err := a.cfg.Save(a.cfgPath); err != nil {
-			return set.AccessToken, fmt.Errorf("save refreshed tokens: %w", err)
-		}
-		return set.AccessToken, nil
+		return a.refreshAcrossProcesses(ctx, &snap)
 	}
 	return client
+}
+
+// refreshAcrossProcesses rotates the stored OAuth pair without the
+// cross-process race in which one concurrent CLI invocation replays an
+// already-rotated refresh token; the server treats the replay as theft and
+// revokes the entire descendant rotation chain, permanently bricking every
+// future invocation (issue #62). It holds an exclusive lock on
+// <config>.lock, re-reads the on-disk pair under the lock so a rotation
+// another process already committed is adopted instead of replayed, and
+// persists the rotated pair merged onto the latest on-disk config.
+func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (string, error) {
+	lock, err := config.LockConfig(a.cfgPath)
+	if err != nil {
+		return "", fmt.Errorf("lock config for token refresh: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	// Cross-process double-check: another CLI process may have rotated the
+	// pair between this process's start and now. Adopting the disk pair
+	// skips the token endpoint entirely — the disk-level analogue of the
+	// in-process double-check above.
+	disk, err := config.Load(a.cfgPath)
+	if err != nil {
+		return "", fmt.Errorf("re-read config before token refresh: %w", err)
+	}
+	refreshToken := snap.RefreshToken
+	if d := disk.Auth; d != nil && d.RefreshToken != "" && d.RefreshToken != snap.RefreshToken {
+		if d.AccessToken == "" {
+			return "", errors.New("stored OAuth credential has a refresh token but no access token; run 'cupthread auth login' again")
+		}
+		a.cfg.Auth = d
+		return d.AccessToken, nil
+	}
+	if d := disk.Auth; d != nil && d.RefreshToken != "" {
+		refreshToken = d.RefreshToken
+	}
+
+	_, tokenURL, _, _ := auth.Endpoints(a.baseURL())
+	refreshCtx, cancel := context.WithTimeout(ctx, oauthRefreshTimeout)
+	defer cancel()
+	set, err := auth.Refresh(refreshCtx, tokenURL, snap.ClientID, refreshToken)
+	if err != nil {
+		// invalid_grant after the re-read means a winner's rotation landed in
+		// the window between our disk read and the server processing our
+		// refresh. The winner persisted its still-valid pair before we
+		// failed, so re-read once and adopt it instead of surfacing the
+		// (now misleading) re-login demand.
+		if disk2, lerr := config.Load(a.cfgPath); lerr == nil {
+			if d := disk2.Auth; d != nil && d.AccessToken != "" && d.RefreshToken != "" &&
+				d.RefreshToken != refreshToken {
+				a.cfg.Auth = d
+				return d.AccessToken, nil
+			}
+		}
+		var apiErr *auth.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "invalid_grant" {
+			return "", fmt.Errorf("refresh OAuth token: the OAuth credential chain was revoked server-side (likely a concurrent refresh race or replay detection); run 'cupthread auth login' again: %w", err)
+		}
+		return "", fmt.Errorf("refresh OAuth token (run 'cupthread auth login' again): %w", err)
+	}
+	a.applyTokenSet(set)
+	// Merge-save so the refresh only claims the auth section and never
+	// reverts defaults another process wrote meanwhile.
+	if err := a.saveAuthUnderLock(); err != nil {
+		return set.AccessToken, fmt.Errorf("save refreshed tokens: %w", err)
+	}
+	return set.AccessToken, nil
+}
+
+// saveAuthUnderLock persists the in-memory auth pair onto a fresh read of
+// the on-disk config, leaving every other field exactly as the disk has it.
+// Callers must hold the config lock; the merge means a concurrent
+// `workspaces use` or `apps use` (which does not take the lock) survives the
+// refresh. A PAT stored by a concurrent `auth login --token` wins and the
+// save is skipped — the newer credential must not be clobbered.
+func (a *app) saveAuthUnderLock() error {
+	if a.cfg.Auth == nil {
+		return nil
+	}
+	disk, err := config.Load(a.cfgPath)
+	if err != nil {
+		return err
+	}
+	if disk.Auth != nil && disk.Auth.Method == "token" {
+		return nil
+	}
+	disk.Auth = a.cfg.Auth
+	return disk.Save(a.cfgPath)
 }
 
 // applyTokenSet stores a fresh OAuth token pair on the config.
