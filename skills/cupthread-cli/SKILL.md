@@ -315,12 +315,16 @@ clearing a schedule with `--schedule-at ""` stays token-safe too).
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
 Drafts (create/edit/delete without publishing) work for every workspace role
-and with `cpt_` API tokens. Publishing, `--publish-now`, and `--schedule-at`
-require the admin/owner `changelog.publish` capability (SEC-40): every CLI
-credential — a `cpt_` API token and the browser OAuth login alike — fails
-with `403 interactive_session_required` (publish in the Console web UI
-instead), and for member-role callers with `403 capability_required` — the
-CLI appends both hints to the error.
+and with `cpt_` API tokens. Publishing, `--publish-now`, and setting a
+schedule with `--schedule-at <datetime>` require the admin/owner
+`changelog.publish` capability (SEC-40): every CLI credential — a `cpt_`
+API token and the browser OAuth login alike — fails with `403
+interactive_session_required` (publish in the Console web UI instead), and
+for member-role callers with `403 capability_required` — the CLI appends
+both hints to the error. Clearing a schedule is not gated:
+`changelog update <id> --schedule-at ""` sends `scheduledAt: null` and only
+needs plain `content.manage` (an empty string would 400 on the datetime
+schema, so the CLI converts it to null).
 
 ### Search
 ```sh
