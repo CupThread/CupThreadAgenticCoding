@@ -209,7 +209,11 @@ The skills come from a verified CupThreadAgenticCoding checkout when one
 exists (a go.mod declaring module ` + repoModulePath + ` above the current
 directory or the executable) and are symlinked from there; without a
 checkout — e.g. for Homebrew or go install binaries — the skills embedded
-in this binary are copied into place instead.`,
+in this binary are copied into place instead.
+
+With --json/--output the command prints a single object summarizing the
+whole operation — {"linked","skills","targets","source"} — instead of one
+line per agent directory.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "."
@@ -251,10 +255,13 @@ in this binary are copied into place instead.`,
 						if err != nil {
 							rel = dest
 						}
-						A.out.Printf("⚠ Skipped %s in %s: exists and is not a symlink (use --force to replace)", name, rel)
+						A.warnf("⚠ Skipped %s in %s: exists and is not a symlink (use --force to replace)", name, rel)
 						continue
 					}
 					linked++
+				}
+				if A.structured() {
+					continue
 				}
 				rel, err := filepath.Rel(mustWD(), dest)
 				if err != nil {
@@ -269,6 +276,18 @@ in this binary are copied into place instead.`,
 			if skipped > 0 {
 				return fmt.Errorf("skipped %d of %d skill destinations: existing entries are not symlinks (use --force to replace)", skipped, total)
 			}
+			if A.structured() {
+				source := "checkout"
+				if src.embedded() {
+					source = "embedded"
+				}
+				return A.out.Structured(skillsLinkResult{
+					Linked:  total,
+					Skills:  names,
+					Targets: agentSkillDirs,
+					Source:  source,
+				})
+			}
 			if src.embedded() {
 				A.out.Printf("  (copied from the skills embedded in this binary; no source checkout found)")
 			}
@@ -277,4 +296,14 @@ in this binary are copied into place instead.`,
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "replace existing non-symlink files/directories (moved to <skill>.bak-<timestamp>, not deleted)")
 	return cmd
+}
+
+// skillsLinkResult is the machine-readable payload of 'skills link': one
+// object summarizing the whole operation instead of one line per agent
+// directory. Source is "checkout" or "embedded", mirroring 'skills list'.
+type skillsLinkResult struct {
+	Linked  int      `json:"linked"`
+	Skills  []string `json:"skills"`
+	Targets []string `json:"targets"`
+	Source  string   `json:"source"`
 }

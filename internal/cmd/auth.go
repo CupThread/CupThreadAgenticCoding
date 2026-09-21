@@ -53,7 +53,13 @@ Logging in against a non-default API endpoint (--base-url or
 $CUPTHREAD_BASE_URL) remembers that endpoint in the config file, so later
 invocations reach the same server without the flag. --base-url and
 $CUPTHREAD_BASE_URL still override it per invocation; 'cupthread auth
-logout' forgets it.`,
+logout' forgets it.
+
+With --json/--output yaml every method prints a single structured document
+on stdout — {method, email, tokenPrefix, baseUrl} where method is "token",
+"oauth" or "device" — and all progress (browser URL, device-flow
+verification URI and user code, context-reconcile warnings) moves to
+stderr. The device payload also echoes verificationUri and userCode.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token != "" {
@@ -68,6 +74,40 @@ logout' forgets it.`,
 	login.Flags().StringVar(&token, "token", "", "Personal access token (cpt_...); \"-\" reads from stdin")
 	login.Flags().BoolVar(&useDevice, "device", false, "Log in with the device code flow (for SSH/containers without a local browser)")
 	return login
+}
+
+// loginResult is the payload of a successful 'auth login' in structured
+// mode; the same fields feed the human confirmation line. Email is omitted
+// when the account has no address on record, and the device-flow fields are
+// only set by --device.
+type loginResult struct {
+	Method      string `json:"method"` // "token", "oauth" or "device"
+	Email       string `json:"email,omitempty"`
+	TokenPrefix string `json:"tokenPrefix"`
+	BaseURL     string `json:"baseUrl"`
+	// VerificationURI and UserCode echo where the pending --device login
+	// is approved, so an agent that relayed them can cross-check what it
+	// waited for.
+	VerificationURI string `json:"verificationUri,omitempty"`
+	UserCode        string `json:"userCode,omitempty"`
+}
+
+// reportLogin emits the login outcome: one JSON/YAML document on stdout in
+// structured mode, the human confirmation line otherwise.
+func (a *app) reportLogin(res loginResult) error {
+	if a.structured() {
+		return a.out.Structured(res)
+	}
+	email := res.Email
+	if email == "" {
+		email = "<unknown email>"
+	}
+	if res.Method == "token" {
+		a.out.Printf("✓ Logged in as %s (token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+	} else {
+		a.out.Printf("✓ Logged in as %s (OAuth, token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+	}
+	return nil
 }
 
 func loginWithToken(ctx context.Context, token string) error {
@@ -103,17 +143,20 @@ func loginWithToken(ctx context.Context, token string) error {
 		AccessToken: token,
 		TokenPrefix: prefix,
 	}
-	reconcileWorkspaceContext(&me, A.out.Printf)
+	reconcileWorkspaceContext(&me, A.warnf)
 	A.rememberLoginBaseURL()
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
-	email := "<unknown email>"
-	if me.Email != nil {
-		email = *me.Email
+	res := loginResult{
+		Method:      "token",
+		TokenPrefix: prefix,
+		BaseURL:     A.baseURL(),
 	}
-	A.out.Printf("✓ Logged in as %s (token %s…) at %s", email, prefix, A.baseURL())
-	return nil
+	if me.Email != nil {
+		res.Email = *me.Email
+	}
+	return A.reportLogin(res)
 }
 
 func loginWithPKCE(ctx context.Context) error {
@@ -122,7 +165,7 @@ func loginWithPKCE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(ctx, set)
+	return finishOAuthLogin(ctx, set, loginResult{Method: "oauth"})
 }
 
 func loginWithDevice(ctx context.Context) error {
@@ -131,33 +174,41 @@ func loginWithDevice(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	A.out.Printf("First, open:  %s", start.VerificationURI)
-	A.out.Printf("Enter code:   %s", start.UserCode)
+	// The verification URI and user code are progress, not results: they
+	// go to stderr in both modes so stdout carries at most one
+	// machine-readable document — the final login result, which also
+	// echoes the URI and code for agents relaying them to a human.
+	fmt.Fprintf(os.Stderr, "First, open:  %s\n", start.VerificationURI)
+	fmt.Fprintf(os.Stderr, "Enter code:   %s\n", start.UserCode)
 	set, err := start.Wait(ctx)
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(ctx, set)
+	return finishOAuthLogin(ctx, set, loginResult{
+		Method:          "device",
+		VerificationURI: start.VerificationURI,
+		UserCode:        start.UserCode,
+	})
 }
 
-func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
+func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) error {
 	A.applyTokenSet(set)
 
 	var me api.MeResponse
 	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 		return fmt.Errorf("login succeeded but session check failed: %w", err)
 	}
-	reconcileWorkspaceContext(&me, A.out.Printf)
+	reconcileWorkspaceContext(&me, A.warnf)
 	A.rememberLoginBaseURL()
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
-	email := "<unknown email>"
 	if me.Email != nil {
-		email = *me.Email
+		res.Email = *me.Email
 	}
-	A.out.Printf("✓ Logged in as %s (OAuth, token %s…) at %s", email, A.cfg.Auth.TokenPrefix, A.baseURL())
-	return nil
+	res.TokenPrefix = A.cfg.Auth.TokenPrefix
+	res.BaseURL = A.baseURL()
+	return A.reportLogin(res)
 }
 
 // rememberLoginBaseURL stores the base URL the credential was issued against,
@@ -188,7 +239,10 @@ management API is available.
 
 Logout also clears the saved default workspace, per-workspace app defaults
 and base URL, so the next login starts from a clean slate instead of
-inheriting the previous account's context.`,
+inheriting the previous account's context.
+
+With --json/--output yaml, stdout carries a single
+{"loggedOut":true,"configPath":…,"cleared":[…]} document.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var cleared []string
@@ -208,6 +262,13 @@ inheriting the previous account's context.`,
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			if A.structured() {
+				return A.out.Structured(logoutResult{
+					LoggedOut:  true,
+					ConfigPath: A.cfgPath,
+					Cleared:    cleared,
+				})
+			}
 			A.out.Printf("✓ Credentials removed from %s", A.cfgPath)
 			if len(cleared) > 0 {
 				A.out.Printf("  Cleared saved context from the previous login: %s", strings.Join(cleared, ", "))
@@ -215,6 +276,14 @@ inheriting the previous account's context.`,
 			return nil
 		},
 	}
+}
+
+// logoutResult is the machine-readable payload of 'auth logout'. Cleared
+// names the inherited context that was wiped along with the credential.
+type logoutResult struct {
+	LoggedOut  bool     `json:"loggedOut"`
+	ConfigPath string   `json:"configPath"`
+	Cleared    []string `json:"cleared,omitempty"`
 }
 
 // reconcileWorkspaceContext drops workspace context inherited from a previous

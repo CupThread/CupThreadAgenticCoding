@@ -18,6 +18,16 @@ func readInputFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// warnf reports a non-fatal warning. In structured mode it goes to stderr so
+// stdout stays a single machine-parseable document.
+func (a *app) warnf(format string, args ...any) {
+	if a.structured() {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		return
+	}
+	a.out.Printf(format, args...)
+}
+
 // decodeStrictJSON decodes exactly one JSON value and rejects any trailing
 // content after it (only whitespace is allowed). A single Decode call alone
 // silently discarded everything past the first value (issue #87), so a
