@@ -165,23 +165,36 @@ func newAuthStatusCmd() *cobra.Command {
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			type statusRow struct {
-				BaseURL          string `json:"baseUrl"`
-				Method           string `json:"method"`
-				TokenPrefix      string `json:"tokenPrefix,omitempty"`
-				ExpiresAt        string `json:"expiresAt,omitempty"`
-				DefaultWorkspace string `json:"defaultWorkspace,omitempty"`
-				DefaultApp       string `json:"defaultApp,omitempty"`
-				User             string `json:"user,omitempty"`
+				BaseURL     string `json:"baseUrl"`
+				Method      string `json:"method"`
+				TokenPrefix string `json:"tokenPrefix,omitempty"`
+				ExpiresAt   string `json:"expiresAt,omitempty"`
+				// Stored* mirror the login saved in the config file. They are
+				// only set when $CUPTHREAD_TOKEN overrides it, so `method`
+				// always names the credential requests actually use.
+				StoredMethod      string `json:"storedMethod,omitempty"`
+				StoredTokenPrefix string `json:"storedTokenPrefix,omitempty"`
+				StoredExpiresAt   string `json:"storedExpiresAt,omitempty"`
+				DefaultWorkspace  string `json:"defaultWorkspace,omitempty"`
+				DefaultApp        string `json:"defaultApp,omitempty"`
+				User              string `json:"user,omitempty"`
 			}
 			row := statusRow{BaseURL: A.baseURL(), Method: "not logged in"}
-			if env := config.EnvToken(); env != "" {
+			env := config.EnvToken()
+			if env != "" {
 				row.Method = "token ($CUPTHREAD_TOKEN)"
 				row.TokenPrefix = mask(env)
 			}
 			if A.cfg.Auth != nil {
-				row.Method = A.cfg.Auth.Method
-				row.TokenPrefix = A.cfg.Auth.TokenPrefix
-				row.ExpiresAt = A.cfg.Auth.ExpiresAt
+				if env != "" {
+					row.StoredMethod = A.cfg.Auth.Method
+					row.StoredTokenPrefix = A.cfg.Auth.TokenPrefix
+					row.StoredExpiresAt = A.cfg.Auth.ExpiresAt
+				} else {
+					row.Method = A.cfg.Auth.Method
+					row.TokenPrefix = A.cfg.Auth.TokenPrefix
+					row.ExpiresAt = A.cfg.Auth.ExpiresAt
+				}
 			}
 			row.DefaultWorkspace = A.cfg.DefaultWorkspace
 			if prefs, ok := A.cfg.Workspaces[A.cfg.DefaultWorkspace]; ok {
@@ -200,7 +213,7 @@ func newAuthStatusCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(row)
 			}
-			A.out.Table([]string{"Field", "Value"}, [][]string{
+			table := [][]string{
 				{"Base URL", row.BaseURL},
 				{"Auth", row.Method},
 				{"Token", orDash(row.TokenPrefix)},
@@ -208,7 +221,15 @@ func newAuthStatusCmd() *cobra.Command {
 				{"User", orDash(row.User)},
 				{"Default workspace", orDash(row.DefaultWorkspace)},
 				{"Default app", orDash(row.DefaultApp)},
-			})
+			}
+			if row.StoredMethod != "" {
+				table = append(table, []string{
+					"Stored login (inactive — overridden by $CUPTHREAD_TOKEN)",
+					fmt.Sprintf("%s, token %s, expires %s",
+						row.StoredMethod, orDash(row.StoredTokenPrefix), orDash(row.StoredExpiresAt)),
+				})
+			}
+			A.out.Table([]string{"Field", "Value"}, table)
 			return nil
 		},
 	}
