@@ -49,6 +49,13 @@ If a previous login on this machine saved a default workspace or app that the
 new account cannot see, those saved defaults are cleared with a warning
 instead of silently targeting the previous user's workspace.
 
+The interactive flows (browser and device) store the token pair as soon as
+the server issues it; the session check that follows is advisory. If the API
+cannot be reached right after login, the command still succeeds and prints a
+warning — saved workspace defaults are then cleared because they could not
+be verified against the new login. 'cupthread auth status' confirms the
+session once the API is reachable again.
+
 Logging in against a non-default API endpoint (--base-url or
 $CUPTHREAD_BASE_URL) remembers that endpoint in the config file, so later
 invocations reach the same server without the flag. --base-url and
@@ -193,15 +200,40 @@ func loginWithDevice(ctx context.Context) error {
 
 func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) error {
 	A.applyTokenSet(set)
+	A.rememberLoginBaseURL()
+	// Persist the freshly issued pair BEFORE the session check: the pair was
+	// just minted by the server's own token endpoint and the check is
+	// advisory, so a transient failure (or an interrupted probe) must never
+	// abandon it — redoing the interactive browser/device approval would
+	// mint a second rotating refresh chain while the first stays valid until
+	// expiry (issue #69).
+	if err := A.saveConfig(); err != nil {
+		return err
+	}
 
 	var me api.MeResponse
 	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
-		return fmt.Errorf("login succeeded but session check failed: %w", err)
+		warnf := func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, format+"\n", args...)
+		}
+		warnf("warning: logged in, but could not verify the session yet: %v — check 'cupthread auth status'", err)
+		if clearUnverifiedWorkspaceContext(warnf) {
+			if err := A.saveConfig(); err != nil {
+				return err
+			}
+		}
+		if A.structured() {
+			res.TokenPrefix = A.cfg.Auth.TokenPrefix
+			res.BaseURL = A.baseURL()
+			return A.out.Structured(res)
+		}
+		A.out.Printf("✓ Logged in (OAuth, token %s…) at %s", A.cfg.Auth.TokenPrefix, A.baseURL())
+		return nil
 	}
-	reconcileWorkspaceContext(&me, A.warnf)
-	A.rememberLoginBaseURL()
-	if err := A.saveConfig(); err != nil {
-		return err
+	if reconcileWorkspaceContext(&me, A.warnf) {
+		if err := A.saveConfig(); err != nil {
+			return err
+		}
 	}
 	if me.Email != nil {
 		res.Email = *me.Email
@@ -293,10 +325,12 @@ type logoutResult struct {
 // route every workspace-scoped command at the previous user's workspace (or
 // fail with an unrelated 403). Both login paths already fetch /console/me,
 // so the new account's workspace list is in hand at no extra cost.
-func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
+// It reports whether the config changed, so callers can decide to re-persist.
+func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) bool {
 	if A.cfg.DefaultWorkspace == "" && len(A.cfg.Workspaces) == 0 {
-		return
+		return false
 	}
+	changed := false
 	visible := make(map[string]bool, len(me.Workspaces))
 	for i := range me.Workspaces {
 		visible[me.Workspaces[i].Workspace.ID] = true
@@ -304,12 +338,14 @@ func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
 	if A.cfg.DefaultWorkspace != "" && !visible[A.cfg.DefaultWorkspace] {
 		warnf("⚠ Cleared saved default workspace %s: it is not visible to the logged-in account (saved by a previous login)", A.cfg.DefaultWorkspace)
 		A.cfg.DefaultWorkspace = ""
+		changed = true
 	}
 	dropped := []string{}
 	for id := range A.cfg.Workspaces {
 		if !visible[id] {
 			delete(A.cfg.Workspaces, id)
 			dropped = append(dropped, id)
+			changed = true
 		}
 	}
 	if len(dropped) > 0 {
@@ -319,6 +355,35 @@ func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
 	if len(A.cfg.Workspaces) == 0 {
 		A.cfg.Workspaces = nil
 	}
+	return changed
+}
+
+// clearUnverifiedWorkspaceContext is the conservative counterpart of
+// reconcileWorkspaceContext for the session check failing: nothing about the
+// freshly issued credential could be verified against the server, so saved
+// workspace defaults from a previous login are dropped wholesale instead of
+// kept unverified — an OAuth approval may have switched accounts, and a stale
+// invisible default would route the new credential at the previous user's
+// workspace (issue #82's invariant, applied to issue #69's failure path).
+// It reports whether the config changed, so callers can decide to re-persist.
+func clearUnverifiedWorkspaceContext(warnf func(string, ...any)) bool {
+	if A.cfg.DefaultWorkspace == "" && len(A.cfg.Workspaces) == 0 {
+		return false
+	}
+	if A.cfg.DefaultWorkspace != "" {
+		warnf("⚠ Cleared saved default workspace %s: the session check failed, so it could not be verified against the new login (restore it with 'cupthread workspaces use' once the API is reachable)", A.cfg.DefaultWorkspace)
+	}
+	if len(A.cfg.Workspaces) > 0 {
+		ids := make([]string, 0, len(A.cfg.Workspaces))
+		for id := range A.cfg.Workspaces {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		warnf("⚠ Dropped saved per-workspace app default(s) for %s: the session check failed, so they could not be verified against the new login", strings.Join(ids, ", "))
+	}
+	A.cfg.DefaultWorkspace = ""
+	A.cfg.Workspaces = nil
+	return true
 }
 
 func newAuthStatusCmd() *cobra.Command {
