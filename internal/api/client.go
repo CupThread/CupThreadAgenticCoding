@@ -118,12 +118,19 @@ var tierLimitHints = map[string]string{
 // capability checked against the caller's role, members.manage,
 // billing.manage, integration.manage, and changelog.publish (SEC-40:
 // publishing or scheduling a changelog entry, admin/owner only)
-// additionally reject cpt_ API tokens outright (interactive Clerk session
-// required), and PRIV-12 sign-in-only changelogs reject subscribe bodies
-// whose email is not the session's verified address.
+// forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
+// remediation: every /api/v1/console/workspaces/* route declares one
+// capability checked against the caller's role, members.manage,
+// billing.manage, integration.manage, and changelog.publish (SEC-40:
+// publishing or scheduling a changelog entry, admin/owner only)
+// additionally require an interactive Clerk web session — both kinds of CLI
+// credential, personal access tokens and OAuth logins alike, are cpt_ tokens,
+// so no CLI credential can perform these actions; only the Console web UI —
+// and PRIV-12 sign-in-only changelogs reject subscribe bodies whose email is
+// not the session's verified address.
 var forbiddenHints = map[string]string{
 	"capability_required":          "your workspace role does not include the capability this action requires; ask a workspace admin or owner to perform it, or have an owner change your role (Console → Members)",
-	"interactive_session_required": "this action rejects cpt_ API tokens; sign in interactively with 'cupthread auth login' (browser OAuth) or manage it in the Console web UI",
+	"interactive_session_required": "this action is Console-only: no CLI credential (personal access token or OAuth login) can perform it — open the workspace in the CupThread Console web UI",
 	"email_not_verified":           "sign-in-only changelogs bind subscriptions to your account's verified email; retry with the signed-in account's own address (third-party emails are not accepted)",
 }
 
@@ -168,9 +175,10 @@ func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
 
 // Forbidden returns true when the API rejected the caller's authorization
 // (403): a workspace role missing the endpoint's capability
-// (capability_required), a cpt_ API token on an interactive-session-only
-// endpoint (interactive_session_required), or a changelog subscribe email
-// that is not the signed-in session's verified address (email_not_verified).
+// (capability_required), a non-interactive credential (any cpt_ token —
+// personal access or OAuth) on an interactive-session-only endpoint
+// (interactive_session_required), or a changelog subscribe email that is not
+// the signed-in session's verified address (email_not_verified).
 func (e *APIError) Forbidden() bool { return e.Status == http.StatusForbidden }
 
 // Unauthorized returns true when the API demanded an end-user Clerk session
@@ -184,22 +192,48 @@ func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthori
 // optional and rejected with 400 when it disagrees with the path.
 const workspaceScopedPrefix = "/api/v1/console/workspaces/"
 
+// encodeRequestBody renders the request body into the bytes to send. A
+// json.RawMessage (or *json.RawMessage) body is returned verbatim instead of
+// being re-encoded: marshaling a decoded any would round-trip every number
+// through float64 and silently rewrite integers that a float64 cannot
+// represent exactly (issue #75). A nil body or an empty RawMessage encodes to
+// nil, meaning "no body"; everything else goes through json.Marshal.
+func encodeRequestBody(body any) ([]byte, error) {
+	switch raw := body.(type) {
+	case json.RawMessage:
+		if len(raw) == 0 {
+			return nil, nil
+		}
+		return raw, nil
+	case *json.RawMessage:
+		if raw == nil || len(*raw) == 0 {
+			return nil, nil
+		}
+		return *raw, nil
+	}
+	if body == nil {
+		return nil, nil
+	}
+	return json.Marshal(body)
+}
+
 // Do performs an API request. Path must start with "/" and is appended to
-// BaseURL verbatim. When body is non-nil it is JSON-encoded; when out is
-// non-nil the response body is decoded into it (*json.RawMessage receives
-// the undecoded bytes).
+// BaseURL verbatim. When body is non-nil it is JSON-encoded, except a
+// json.RawMessage (or *json.RawMessage) body, which is sent verbatim; when
+// out is non-nil the response body is decoded into it (*json.RawMessage
+// receives the undecoded bytes).
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	return c.DoWithHeaders(ctx, method, path, query, nil, body, out)
 }
 
 // DoWithHeaders performs an API request with optional extra request headers.
 func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
+	data, err := encodeRequestBody(body)
+	if err != nil {
+		return fmt.Errorf("encode request body: %w", err)
+	}
 	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("encode request body: %w", err)
-		}
+	if data != nil {
 		reader = bytes.NewReader(data)
 	}
 
@@ -208,7 +242,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
+	if data != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	// The path id is authoritative on workspace-scoped endpoints; the
@@ -251,7 +285,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("%s %s: read response: %w", method, path, err)
 	}

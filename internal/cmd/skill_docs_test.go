@@ -110,3 +110,43 @@ func TestAPISkillAnonymousAccessEnforcement(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillOAuthServerDocs pins the OAuth authorization-server and public
+// route facts the cupthread-api skill synced from the OpenAPI 3.1 spec
+// (QUAL-04): RFC 8414 discovery, the token envelope's fixed lifetimes and
+// rotating refresh tokens, S256-only PKCE, RFC 7009 always-empty revocation,
+// the RFC 8628 polling errors, plus the released-only public versions list,
+// the /files/:key image-serving hardening, and the uploads/images quota 429.
+// Without these markers a future edit can silently desync the skill from the
+// spec the way earlier API-sync issues (e.g. #67) did.
+func TestAPISkillOAuthServerDocs(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	doc := string(data)
+	for _, marker := range []string{
+		"## OAuth Authorization Server (QUAL-04)",
+		"GET /.well-known/oauth-authorization-server",
+		"expires_in` = 1209600",
+		"180 days",
+		"rotate on every use",
+		"invalid_grant",
+		"code_challenge_method=S256",
+		"RFC 7009",
+		"empty body",
+		"authorization_pending",
+		"slow_down",
+		"expired_token",
+		"access_denied",
+		"redirect_uri` must never become an open redirect",
+		"released` flag is true are listed (PROD-32)",
+		"`/api/v1/files/:key`",
+		"private_attachment_forbidden",
+		"daily_storage_quota_exceeded",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required OAuth-server/public-route marker %q", marker)
+		}
+	}
+}
