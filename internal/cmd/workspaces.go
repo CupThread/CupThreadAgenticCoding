@@ -129,10 +129,28 @@ func newWorkspacesUseCmd() *cobra.Command {
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			if A.structured() {
+				return A.out.Structured(workspaceUseResult{
+					DefaultWorkspace: workspaceRef{ID: ws.ID, Name: ws.Name, Slug: ws.Slug},
+				})
+			}
 			A.out.Printf("✓ Default workspace: %s (%s)", ws.Name, ws.ID)
 			return nil
 		},
 	}
+}
+
+// workspaceUseResult is the machine-readable payload of 'workspaces use',
+// carrying the resolved record so a caller that passed a slug learns its ID.
+type workspaceUseResult struct {
+	DefaultWorkspace workspaceRef `json:"defaultWorkspace"`
+}
+
+// workspaceRef names a resolved workspace without its timestamps.
+type workspaceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
 }
 
 // workspaceClient returns a client scoped to the resolved workspace.

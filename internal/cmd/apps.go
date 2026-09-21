@@ -364,10 +364,30 @@ func newAppsUseCmd() *cobra.Command {
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			if A.structured() {
+				return A.out.Structured(appUseResult{
+					Workspace:  ws,
+					DefaultApp: appUseAppRef{AppID: appRec.AppID, Name: appRec.Name, Slug: appRec.Slug},
+				})
+			}
 			A.out.Printf("✓ Default app for %s: %s (%s)", ws, appRec.Name, appRec.AppID)
 			return nil
 		},
 	}
+}
+
+// appUseResult is the machine-readable payload of 'apps use', carrying the
+// resolved record so a caller that passed a slug learns its app ID.
+type appUseResult struct {
+	Workspace  string       `json:"workspace"`
+	DefaultApp appUseAppRef `json:"defaultApp"`
+}
+
+// appUseAppRef names the resolved app without its profile fields.
+type appUseAppRef struct {
+	AppID string `json:"appId"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug"`
 }
 
 func newAppsUpdateCmd() *cobra.Command {

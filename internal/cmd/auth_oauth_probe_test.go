@@ -165,7 +165,7 @@ func TestOAuthLoginProbeFailurePersistsIssuedPair(t *testing.T) {
 		AccessToken:  "cpt_oauth_access_tok",
 		RefreshToken: "cpr_oauth_refresh_tok",
 		ExpiresIn:    3600,
-	})
+	}, loginResult{Method: "oauth"})
 	stdout := stopStdout()
 	stderr := stopStderr()
 
@@ -223,7 +223,7 @@ func TestOAuthLoginProbeFailureFreshMachineWarnsOnly(t *testing.T) {
 		AccessToken:  "cpt_fresh_access_tok",
 		RefreshToken: "cpr_fresh_refresh_tok",
 		ExpiresIn:    3600,
-	})
+	}, loginResult{Method: "oauth"})
 	stdout := stopStdout()
 	stderr := stopStderr()
 
@@ -273,7 +273,7 @@ func TestOAuthLoginSuccessKeepsVisibleContext(t *testing.T) {
 		AccessToken:  "cpt_ok_access_tok",
 		RefreshToken: "cpr_ok_refresh_tok",
 		ExpiresIn:    3600,
-	})
+	}, loginResult{Method: "oauth"})
 	stdout := stopStdout()
 	stderr := stopStderr()
 
@@ -326,7 +326,7 @@ func TestOAuthLoginSuccessReconcilesInvisibleContext(t *testing.T) {
 		AccessToken:  "cpt_rec_access_tok",
 		RefreshToken: "cpr_rec_refresh_tok",
 		ExpiresIn:    3600,
-	})
+	}, loginResult{Method: "oauth"})
 	stdout := stopStdout()
 	stopStderr()
 
