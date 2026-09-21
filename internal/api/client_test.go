@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,9 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // requestIDPattern mirrors the API's accepted correlation-ID charset and
@@ -749,5 +752,411 @@ func TestUploadAppIconForbiddenHint(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+}
+
+// ---- Transient-failure retry suite (issue #71) ----
+
+// sleepRecorder captures the delays the retry loop requests so tests run
+// instantly and can assert exact backoff values.
+type sleepRecorder struct{ waits []time.Duration }
+
+func (s *sleepRecorder) sleep(d time.Duration) { s.waits = append(s.waits, d) }
+
+// retryTestClient builds a client against server whose waits are recorded
+// instead of slept.
+func retryTestClient(server *httptest.Server) (*Client, *sleepRecorder) {
+	rec := &sleepRecorder{}
+	client := New(server.URL)
+	client.Sleeper = rec.sleep
+	return client, rec
+}
+
+// TestRetryGetThenSuccess pins the core contract: a 429 on a body-less GET
+// is retried once and the command succeeds; exactly one backoff wait within
+// the first window (≤ DefaultRetryBaseDelay, full jitter) is requested, and
+// the decoded payload is the second attempt's body.
+func TestRetryGetThenSuccess(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"Too many requests. Please try again shortly."}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := client.Do(context.Background(), "GET", "/x", nil, nil, &out); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("ok = false, want the retry's decoded body")
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("attempts = %d, want 2 (429 then success)", got)
+	}
+	if len(rec.waits) != 1 {
+		t.Fatalf("sleeps = %d (%v), want exactly 1", len(rec.waits), rec.waits)
+	}
+	if rec.waits[0] < 0 || rec.waits[0] > DefaultRetryBaseDelay {
+		t.Errorf("first wait = %v, want a full-jitter draw in [0, %v]", rec.waits[0], DefaultRetryBaseDelay)
+	}
+}
+
+// TestRetryReusesCallerRequestID pins the `api request` observability
+// contract: a caller-supplied correlation ID (one per invocation) rides
+// every attempt, so the echoed ID on the final error traces the whole
+// retry chain.
+func TestRetryReusesCallerRequestID(t *testing.T) {
+	var ids []string
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids = append(ids, r.Header.Get("X-Request-Id"))
+		if hits.Add(1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client, _ := retryTestClient(server)
+	err := client.DoWithHeaders(context.Background(), "GET", "/x", nil,
+		map[string]string{"X-Request-Id": "agent-correlation-1"}, nil, nil)
+	if err != nil {
+		t.Fatalf("DoWithHeaders: %v", err)
+	}
+	if len(ids) != 3 || ids[0] != "agent-correlation-1" || ids[1] != "agent-correlation-1" || ids[2] != "agent-correlation-1" {
+		t.Errorf("request ids = %v, want the caller-supplied id on every attempt", ids)
+	}
+}
+
+// TestRetryExhaustedAlways429 pins the exhaustion contract: 1 initial
+// attempt + 3 retries, three backoff waits, and the final error keeps the
+// rate-limited wrapping and hint while stamping the attempt count.
+func TestRetryExhaustedAlways429(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"Too many requests. Please try again shortly."}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected the always-429 request to fail")
+	}
+	if got := hits.Load(); got != 4 {
+		t.Errorf("attempts = %d, want 4 (1 + DefaultMaxRetries)", got)
+	}
+	if len(rec.waits) != 3 {
+		t.Fatalf("sleeps = %d (%v), want 3", len(rec.waits), rec.waits)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if apiErr.Attempts != 4 {
+		t.Errorf("APIError.Attempts = %d, want 4", apiErr.Attempts)
+	}
+	for _, want := range []string{"rate limited", "back off exponentially"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestRetryExhaustedAlways503 proves the 5xx transient class (gateway/
+// overload) gets the same retry budget as throttling.
+func TestRetryExhaustedAlways503(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected the always-503 request to fail")
+	}
+	if got := hits.Load(); got != 4 {
+		t.Errorf("attempts = %d, want 4", got)
+	}
+	if len(rec.waits) != 3 {
+		t.Fatalf("sleeps = %d (%v), want 3", len(rec.waits), rec.waits)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if apiErr.Attempts != 4 || apiErr.Status != http.StatusServiceUnavailable {
+		t.Errorf("apiErr = %+v, want a 503 with Attempts=4", apiErr)
+	}
+}
+
+// TestMutationNeverRetried pins the safety scope: a POST carrying a body is
+// a single wire attempt even on a retryable status — replaying mutations
+// could double-apply them.
+func TestMutationNeverRetried(t *testing.T) {
+	var hits atomic.Int32
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"upstream unavailable"}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	err := client.Do(context.Background(), "POST", "/api/v1/feature-requests", nil, map[string]any{"appKey": "k"}, nil)
+	if err == nil {
+		t.Fatal("expected the always-503 POST to fail")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("attempts = %d, want exactly 1 for a mutation", got)
+	}
+	if len(rec.waits) != 0 {
+		t.Errorf("sleeps = %v, want none for a mutation", rec.waits)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Attempts != 1 {
+		t.Errorf("apiErr = %+v, want Attempts=1", apiErr)
+	}
+}
+
+// TestOnlyIdempotentMethodsRetried sweeps the verb matrix: GET and HEAD
+// retry, every mutation verb stays single-shot.
+func TestOnlyIdempotentMethodsRetried(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		want   int32
+	}{
+		{"GET", 4},
+		{"HEAD", 4},
+		{"PUT", 1},
+		{"PATCH", 1},
+		{"DELETE", 1},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			var hits atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer server.Close()
+
+			client, rec := retryTestClient(server)
+			_ = client.Do(context.Background(), tc.method, "/x", nil, nil, nil)
+			if got := hits.Load(); got != tc.want {
+				t.Errorf("%s attempts = %d, want %d", tc.method, got, tc.want)
+			}
+			wantSleeps := int(tc.want) - 1
+			if len(rec.waits) != wantSleeps {
+				t.Errorf("%s sleeps = %d, want %d", tc.method, len(rec.waits), wantSleeps)
+			}
+		})
+	}
+}
+
+// TestRetryAfterSecondsHonored: when the server supplies Retry-After the
+// client waits exactly that long (no jitter) — here 1 s.
+func TestRetryAfterSecondsHonored(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	if err := client.Do(context.Background(), "GET", "/x", nil, nil, nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(rec.waits) != 1 || rec.waits[0] != time.Second {
+		t.Errorf("waits = %v, want exactly [1s] from Retry-After", rec.waits)
+	}
+}
+
+// TestRetryAfterCappedAtMaximum: an absurd Retry-After is clamped to
+// DefaultRetryMaxDelay so a server cannot stall the CLI for minutes.
+func TestRetryAfterCappedAtMaximum(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.Header().Set("Retry-After", "9999")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	if err := client.Do(context.Background(), "GET", "/x", nil, nil, nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(rec.waits) != 1 || rec.waits[0] != DefaultRetryMaxDelay {
+		t.Errorf("waits = %v, want the %v cap", rec.waits, DefaultRetryMaxDelay)
+	}
+}
+
+// TestNoRetryFieldSingleShot: Client.NoRetry restores exact single-shot
+// semantics — one wire attempt, no waits.
+func TestNoRetryFieldSingleShot(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client, rec := retryTestClient(server)
+	client.NoRetry = true
+	err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected the always-429 request to fail")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("attempts = %d, want exactly 1 with NoRetry", got)
+	}
+	if len(rec.waits) != 0 {
+		t.Errorf("sleeps = %v, want none with NoRetry", rec.waits)
+	}
+}
+
+// TestRetryNoticeGoesToStderr: each retry writes one human-readable line to
+// Stderr (never stdout) and a nil Stderr — structured mode — stays silent.
+func TestRetryNoticeGoesToStderr(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client, _ := retryTestClient(server)
+	var buf bytes.Buffer
+	client.Stderr = &buf
+	if err := client.Do(context.Background(), "GET", "/items", nil, nil, nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	line := buf.String()
+	for _, want := range []string{"GET /items got HTTP 429", "retrying (attempt 2/4", "waiting 0s"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("stderr notice %q missing %q", line, want)
+		}
+	}
+	if strings.Count(line, "\n") != 1 {
+		t.Errorf("stderr notice = %q, want exactly one line", line)
+	}
+}
+
+// TestRetryAbortsOnCanceledContext: Ctrl-C during a backoff wait aborts the
+// command instead of finishing the sleep first — one wire attempt, then a
+// context-canceled error.
+func TestRetryAbortsOnCanceledContext(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := New(server.URL)
+	client.RetryBaseDelay = 30 * time.Second // real sleep path, canceled mid-wait
+	go func() {
+		// Let the first attempt land and the backoff sleep begin.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	err := client.Do(ctx, "GET", "/x", nil, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+		t.Fatalf("err = %v, want a context-canceled failure", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1 (no retry after cancellation)", got)
+	}
+}
+
+// TestBackoffDelayFullJitterBounds: computed waits are full-jitter draws —
+// uniformly bounded by min(base·2^attempt, max), never exceeding the cap
+// even for large attempt numbers.
+func TestBackoffDelayFullJitterBounds(t *testing.T) {
+	client := &Client{RetryBaseDelay: 10 * time.Millisecond, RetryMaxDelay: 40 * time.Millisecond}
+	for attempt := 0; attempt < 10; attempt++ {
+		ceiling := 10 * time.Millisecond << attempt
+		if ceiling > 40*time.Millisecond {
+			ceiling = 40 * time.Millisecond
+		}
+		for i := 0; i < 200; i++ {
+			d := client.backoffDelay(attempt)
+			if d < 0 || d > ceiling {
+				t.Fatalf("backoffDelay(%d) = %v, want a draw in [0, %v]", attempt, d, ceiling)
+			}
+		}
+	}
+	// A max below the base clamps every window immediately.
+	clamped := &Client{RetryBaseDelay: time.Second, RetryMaxDelay: 5 * time.Millisecond}
+	for i := 0; i < 200; i++ {
+		if d := clamped.backoffDelay(3); d > 5*time.Millisecond {
+			t.Fatalf("backoffDelay(3) = %v, want ≤ 5ms under the tiny cap", d)
+		}
+	}
+}
+
+// TestParseRetryAfter covers the header grammar the client accepts:
+// delay-seconds (trimmed, non-negative) and HTTP-date, with absent,
+// negative, and garbage values rejected.
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	future := now.Add(90 * time.Second).UTC().Format(http.TimeFormat)
+	for _, tc := range []struct {
+		name    string
+		value   string
+		wantOK  bool
+		wantMin time.Duration
+		wantMax time.Duration
+	}{
+		{"absent", "", false, 0, 0},
+		{"seconds", "120", true, 120 * time.Second, 120 * time.Second},
+		{"zero", "0", true, 0, 0},
+		{"negative", "-5", false, 0, 0},
+		{"padded", " 90 ", true, 90 * time.Second, 90 * time.Second},
+		{"garbage", "soon", false, 0, 0},
+		{"http-date future", future, true, 88 * time.Second, 91 * time.Second},
+		{"http-date past", now.Add(-time.Hour).Format(http.TimeFormat), true, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, ok := parseRetryAfter(tc.value, now)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+			}
+			if ok && (d < tc.wantMin || d > tc.wantMax) {
+				t.Errorf("delay = %v, want within [%v, %v]", d, tc.wantMin, tc.wantMax)
+			}
+		})
 	}
 }

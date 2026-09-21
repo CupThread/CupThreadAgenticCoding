@@ -277,12 +277,9 @@ bin/cupthread skills link /path/to/project
 | Variable | Purpose |
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
-<<<<<<< HEAD
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
-=======
 | `CUPTHREAD_SDK_SIGNING_SECRET` | SDK signing secret fallback for `api sign-user-attrs`; an explicit `--secret` wins |
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
->>>>>>> origin/main
+| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
+| `CUPTHREAD_NO_RETRY` | Set to `1` to disable automatic retry/backoff on transient failures (same as `--no-retry`) |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
 
 ### Development

@@ -7,13 +7,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+)
+
+// Transient-failure retry defaults: a body-less GET/HEAD that answers
+// 429/502/503/504 is retried up to DefaultMaxRetries times with capped
+// exponential backoff (≈3.5 s worst-case added latency), so a mid-batch
+// blip no longer aborts a whole command.
+const (
+	// DefaultMaxRetries is the number of retries after the initial attempt.
+	DefaultMaxRetries = 3
+	// DefaultRetryBaseDelay caps the first computed backoff window; the
+	// window doubles every retry.
+	DefaultRetryBaseDelay = 500 * time.Millisecond
+	// DefaultRetryMaxDelay caps both computed backoff and a server-supplied
+	// Retry-After, so a hostile or clumsy hint cannot stall the CLI.
+	DefaultRetryMaxDelay = 30 * time.Second
 )
 
 // Client talks to the CupThread API. It is safe for concurrent use.
@@ -30,6 +47,25 @@ type Client struct {
 	// Token returns the bearer credential. It is consulted per request so
 	// OAuth tokens can be refreshed transparently.
 	Token func(ctx context.Context) (string, error)
+
+	// NoRetry disables the transient-failure retry loop and restores exact
+	// single-shot semantics. The CLI sets it from --no-retry or
+	// $CUPTHREAD_NO_RETRY for scripted pipelines that need one request to
+	// mean one request.
+	NoRetry bool
+	// MaxRetries overrides DefaultMaxRetries when positive.
+	MaxRetries int
+	// RetryBaseDelay overrides DefaultRetryBaseDelay when positive.
+	RetryBaseDelay time.Duration
+	// RetryMaxDelay overrides DefaultRetryMaxDelay when positive.
+	RetryMaxDelay time.Duration
+	// Sleeper, when set, replaces the wait between retries (tests record
+	// the requested delays instead of sleeping).
+	Sleeper func(time.Duration)
+	// Stderr, when set, receives one human-readable line per retry; the
+	// CLI leaves it nil in --json/-o yaml mode so the machine stream and
+	// stdout stay parse-clean.
+	Stderr io.Writer
 }
 
 // New creates a client for baseURL.
@@ -79,6 +115,11 @@ type APIError struct {
 	// otherwise a server-generated UUID. Quote it in bug reports and support
 	// requests so the server side can find the exact request.
 	RequestID string
+	// Attempts is how many wire attempts produced this error: 1 unless the
+	// transient-failure retry loop ran (429/502/503/504 on idempotent
+	// requests), so agents can distinguish exhausted retries from a
+	// single-shot permanent failure.
+	Attempts int
 }
 
 func (e *APIError) Error() string {
@@ -169,73 +210,246 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 }
 
 // DoWithHeaders performs an API request with optional extra request headers.
+//
+// Idempotent requests (body-less GET/HEAD) are retried with capped
+// exponential backoff when the API answers 429/502/503/504, honoring a
+// server Retry-After when present; Client.NoRetry restores single-shot
+// semantics. Mutations (POST/PUT/PATCH/DELETE) — including the OAuth
+// token/refresh POSTs — are always a single attempt.
 func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
-	var reader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if data, err = json.Marshal(body); err != nil {
 			return fmt.Errorf("encode request body: %w", err)
 		}
-		reader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	// The path id is authoritative on workspace-scoped endpoints; the
-	// redundant header is dropped so a mismatch can never trigger a 400.
-	if c.WorkspaceID != "" && !strings.HasPrefix(path, workspaceScopedPrefix) {
-		req.Header.Set("X-Workspace-Id", c.WorkspaceID)
-	}
-	if c.AppKey != "" {
-		req.Header.Set("X-App-Key", c.AppKey)
-	}
-	if c.UserToken != "" {
-		req.Header.Set("X-User-Token", c.UserToken)
-	}
-	// OPS-01: send a fresh correlation ID unless the caller supplied one; the
-	// server echoes the valid value back so any error can be traced.
-	if !hasRequestIDHeader(headers) {
-		req.Header.Set(requestIDHeader, NewRequestID())
-	}
-	for k, v := range headers {
-		if v != "" {
-			req.Header.Set(k, v)
+	// The bearer credential is resolved once per logical request: retries
+	// only follow 429/5xx responses, never auth failures, so re-consulting
+	// the (possibly refreshing) provider between attempts buys nothing.
+	var token string
+	if c.Token != nil {
+		var err error
+		if token, err = c.Token(ctx); err != nil {
+			return err
 		}
 	}
-	if c.Token != nil {
-		token, err := c.Token(ctx)
+
+	// buildRequest materializes a fresh request per attempt: a replay needs
+	// an unread body, and a client-generated correlation ID is per wire
+	// attempt while a caller-supplied one (e.g. one id per `api request`
+	// invocation) is reused verbatim.
+	buildRequest := func() (*http.Request, error) {
+		var reader io.Reader
+		if data != nil {
+			reader = bytes.NewReader(data)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
 		if err != nil {
-			return err
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		// The path id is authoritative on workspace-scoped endpoints; the
+		// redundant header is dropped so a mismatch can never trigger a 400.
+		if c.WorkspaceID != "" && !strings.HasPrefix(path, workspaceScopedPrefix) {
+			req.Header.Set("X-Workspace-Id", c.WorkspaceID)
+		}
+		if c.AppKey != "" {
+			req.Header.Set("X-App-Key", c.AppKey)
+		}
+		if c.UserToken != "" {
+			req.Header.Set("X-User-Token", c.UserToken)
+		}
+		// OPS-01: send a fresh correlation ID unless the caller supplied one; the
+		// server echoes the valid value back so any error can be traced.
+		if !hasRequestIDHeader(headers) {
+			req.Header.Set(requestIDHeader, NewRequestID())
+		}
+		for k, v := range headers {
+			if v != "" {
+				req.Header.Set(k, v)
+			}
 		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-	}
-	if query != nil {
-		req.URL.RawQuery = query.Encode()
-	}
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("%s %s: read response: %w", method, path, err)
+		if query != nil {
+			req.URL.RawQuery = query.Encode()
+		}
+		return req, nil
 	}
 
+	retries := 0
+	if !c.NoRetry && idempotentAttempt(method, body != nil) {
+		retries = c.maxRetries()
+	}
+	for attempt := 0; ; attempt++ {
+		req, err := buildRequest()
+		if err != nil {
+			return fmt.Errorf("build request: %w", err)
+		}
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", method, path, err)
+		}
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("%s %s: read response: %w", method, path, err)
+		}
+
+		if attempt < retries && retryableStatus(resp.StatusCode) {
+			wait := c.retryWait(resp.Header.Get("Retry-After"), attempt)
+			c.notifyRetry(method, path, resp.StatusCode, attempt+2, retries+1, wait)
+			if err := c.sleep(ctx, wait); err != nil {
+				return fmt.Errorf("%s %s: %w", method, path, err)
+			}
+			continue
+		}
+		return decodeResponse(method, path, resp, respBody, out, attempt+1)
+	}
+}
+
+// idempotentAttempt reports whether a request is safe to replay when the
+// server answers a transient failure: the scope is body-less GET/HEAD, so
+// mutations and every request carrying a body stay single-shot.
+func idempotentAttempt(method string, hasBody bool) bool {
+	return !hasBody && (method == http.MethodGet || method == http.MethodHead)
+}
+
+// retryableStatus reports whether an HTTP status is a transient failure
+// worth retrying: throttling plus the gateway/overload 5xx class.
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// maxRetries resolves the retry budget.
+func (c *Client) maxRetries() int {
+	if c.MaxRetries > 0 {
+		return c.MaxRetries
+	}
+	return DefaultMaxRetries
+}
+
+// retryMaxDelay resolves the ceiling applied to computed backoff and to a
+// server Retry-After alike.
+func (c *Client) retryMaxDelay() time.Duration {
+	if c.RetryMaxDelay > 0 {
+		return c.RetryMaxDelay
+	}
+	return DefaultRetryMaxDelay
+}
+
+// retryWait chooses the wait before a retry: the server's Retry-After when
+// present (seconds or HTTP-date, capped), otherwise full-jitter exponential
+// backoff so parallel agent sessions desynchronize instead of retrying in
+// lockstep.
+func (c *Client) retryWait(retryAfter string, attempt int) time.Duration {
+	if d, ok := parseRetryAfter(retryAfter, time.Now()); ok {
+		if ceiling := c.retryMaxDelay(); d > ceiling {
+			d = ceiling
+		}
+		return d
+	}
+	return c.backoffDelay(attempt)
+}
+
+// parseRetryAfter reads a Retry-After header value in delay-seconds or
+// HTTP-date form. It reports false for absent, negative, or unparseable
+// values so the caller falls back to its own backoff.
+func parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		d := t.Sub(now)
+		if d < 0 {
+			d = 0
+		}
+		return d, true
+	}
+	return 0, false
+}
+
+// backoffDelay returns a uniform random wait in [0, cap] where cap is
+// min(RetryBaseDelay·2^attempt, RetryMaxDelay): full jitter over the
+// exponential window.
+func (c *Client) backoffDelay(attempt int) time.Duration {
+	base := c.RetryBaseDelay
+	if base <= 0 {
+		base = DefaultRetryBaseDelay
+	}
+	ceiling := c.retryMaxDelay()
+	d := base
+	for i := 0; i < attempt && d < ceiling; i++ {
+		d *= 2
+	}
+	if d > ceiling {
+		d = ceiling
+	}
+	return time.Duration(rand.Int63n(int64(d) + 1))
+}
+
+// sleep waits out a retry delay, aborting early when the caller's context
+// is canceled (Ctrl-C must not feel sluggish). An injected Sleeper replaces
+// the real wait entirely (tests).
+func (c *Client) sleep(ctx context.Context, d time.Duration) error {
+	if c.Sleeper != nil {
+		c.Sleeper(d)
+		return nil
+	}
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// notifyRetry writes one human-readable line to Stderr per retry — stdout
+// stays parse-clean, and structured mode leaves Stderr nil and stays silent
+// on successful retries.
+func (c *Client) notifyRetry(method, path string, status, attempt, total int, wait time.Duration) {
+	if c.Stderr == nil {
+		return
+	}
+	fmt.Fprintf(c.Stderr, "cupthread: %s %s got HTTP %d — retrying (attempt %d/%d, waiting %s)\n",
+		method, path, status, attempt, total, wait.Round(time.Millisecond))
+}
+
+// decodeResponse maps a finished attempt onto the caller's contract: 2xx
+// decodes into out, anything else becomes an *APIError stamped with the
+// number of wire attempts spent.
+func decodeResponse(method, path string, resp *http.Response, data []byte, out any, attempts int) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{
-			Status:  resp.StatusCode,
-			Message: strings.TrimSpace(http.StatusText(resp.StatusCode)),
+			Status:   resp.StatusCode,
+			Message:  strings.TrimSpace(http.StatusText(resp.StatusCode)),
+			Attempts: attempts,
 		}
 		var parsed struct {
 			Error string `json:"error"`
