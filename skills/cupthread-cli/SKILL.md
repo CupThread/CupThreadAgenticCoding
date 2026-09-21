@@ -70,7 +70,10 @@ non-default endpoint is stored, `auth status` shows it as "Credential issued for
 Switching accounts: `cupthread auth logout` clears the credential plus the saved default workspace,
 per-workspace app defaults and base URL (back to pristine first-run state); `cupthread auth login`
 drops saved defaults the new account cannot see (with a warning) instead of silently targeting the
-previous user's workspace.
+previous user's workspace. The interactive OAuth flows store the token pair as soon as the server
+issues it; the post-login session check is advisory — if it fails, login still succeeds with a
+warning on stderr and saved workspace defaults are cleared because they could not be verified
+(`cupthread auth status` confirms the session once the API is reachable again).
 
 ---
 
