@@ -8,10 +8,12 @@ import (
 )
 
 // meFixture carries two workspace entries (one owned, one member-only) and
-// the additive maxWorkspaces field from issue #18.
+// the additive maxWorkspaces field from issue #18, with a verified email
+// (SEC-08 ships emailVerified unconditionally).
 const meFixture = `{
 	"clerkUserId": "user_1",
 	"email": "dev@example.com",
+	"emailVerified": true,
 	"maxWorkspaces": 3,
 	"workspaces": [
 		{
@@ -57,11 +59,12 @@ const meFixture = `{
 	]
 }`
 
-// meWithoutMaxWorkspacesFixture keeps the payload shape the API served
-// before BILL-02 so the quota line stays opt-in.
+// meWithoutMaxWorkspacesFixture keeps the pre-BILL-02 payload shape (no
+// quota field) while carrying the unconditional SEC-08 emailVerified flag.
 const meWithoutMaxWorkspacesFixture = `{
 	"clerkUserId": "user_1",
 	"email": "dev@example.com",
+	"emailVerified": true,
 	"workspaces": []
 }`
 
@@ -100,6 +103,46 @@ func TestMeJSONIncludesMaxWorkspaces(t *testing.T) {
 	}
 	if !strings.Contains(out, `"maxWorkspaces": 3`) {
 		t.Errorf("JSON output missing \"maxWorkspaces\": 3:\n%s", out)
+	}
+	if !strings.Contains(out, `"emailVerified": true`) {
+		t.Errorf("JSON output missing \"emailVerified\": true:\n%s", out)
+	}
+}
+
+// meUnverifiedFixture carries the SEC-08 emailVerified=false shape: no
+// server-verified email exists, so invitation claiming fails closed.
+const meUnverifiedFixture = `{
+	"clerkUserId": "user_1",
+	"email": "dev@example.com",
+	"emailVerified": false,
+	"workspaces": []
+}`
+
+// TestMeSurfacesUnverifiedEmailMarker covers the issue #79 human-output
+// contract: when emailVerified is false the email carries an "(unverified)"
+// marker (the flag that explains failed invitation claiming), and --json
+// echoes the field verbatim.
+func TestMeSurfacesUnverifiedEmailMarker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(meUnverifiedFixture))
+	}))
+	defer server.Close()
+
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	out, err := runRoot(t, server.URL, "me")
+	if err != nil {
+		t.Fatalf("me: %v", err)
+	}
+	if !strings.Contains(out, "User: dev@example.com (unverified) (user_1)") {
+		t.Errorf("output missing the unverified marker:\n%s", out)
+	}
+
+	out, err = runRoot(t, server.URL, "me", "--json")
+	if err != nil {
+		t.Fatalf("me --json: %v", err)
+	}
+	if !strings.Contains(out, `"emailVerified": false`) {
+		t.Errorf("JSON output missing \"emailVerified\": false:\n%s", out)
 	}
 }
 

@@ -46,6 +46,10 @@ type MeWorkspaceEntry struct {
 type MeResponse struct {
 	ClerkUserID string  `json:"clerkUserId"`
 	Email       *string `json:"email"`
+	// EmailVerified reports whether the identity has at least one
+	// server-verified email (SEC-08); invitation claiming fails closed
+	// without one. Always present on the wire.
+	EmailVerified bool `json:"emailVerified"`
 	// MaxWorkspaces, when present, is the per-developer cap on owned
 	// workspaces enforced by POST /api/v1/console/workspaces (BILL-02).
 	// It is additive and optional; only owner-role memberships count.
@@ -266,6 +270,10 @@ type AdminFeatureRequest struct {
 type AdminListFeatureRequestsResponse struct {
 	Requests []AdminFeatureRequest `json:"requests"`
 	Total    int                   `json:"total"`
+	// UnassignedTotal counts requests with no version assigned
+	// (version_id IS NULL); it feeds the Console triage backlog badge
+	// (QUAL-03). Always present on the wire.
+	UnassignedTotal int `json:"unassignedTotal"`
 }
 
 type RecentCommenter struct {
@@ -319,8 +327,15 @@ type FeatureRequestComment struct {
 	CreatedAt          string  `json:"createdAt"`
 }
 
+// ListCommentsResponse is the page shape shared by the public thread listing
+// (GET /api/v1/feature-requests/{id}/comments) and the Console moderation
+// listing; PROD-31 made both keyset-paginated. nextCursor is null when the
+// page is the last one.
 type ListCommentsResponse struct {
-	Comments []FeatureRequestComment `json:"comments"`
+	Comments   []FeatureRequestComment `json:"comments"`
+	Total      int                     `json:"total"`
+	HasMore    bool                    `json:"hasMore"`
+	NextCursor *string                 `json:"nextCursor"`
 }
 
 // HideCommentInput is the body of PATCH .../comments/{commentId}/hide.
