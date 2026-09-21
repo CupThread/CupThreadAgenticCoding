@@ -256,7 +256,8 @@ func (a *app) rememberLoginBaseURL() {
 }
 
 func newAuthLogoutCmd() *cobra.Command {
-	return &cobra.Command{
+	var revoke bool
+	logout := &cobra.Command{
 		Use:   "logout",
 		Short: "Remove stored credentials from this machine",
 		Long: `Remove stored credentials from this machine.
@@ -264,19 +265,30 @@ func newAuthLogoutCmd() *cobra.Command {
 Also forgets the API base URL a non-default login stored, so the next login
 starts from the default endpoint again.
 
-This only clears local state. To revoke the token server-side, delete it in
-the Console (Settings → API Tokens / Authorized Apps) or use
-'cupthread api request DELETE /api/v1/console/tokens/<id>' once the token
-management API is available.
-
 Logout also clears the saved default workspace, per-workspace app defaults
 and base URL, so the next login starts from a clean slate instead of
 inheriting the previous account's context.
+
+By default this only clears local state. Pass --revoke to also invalidate
+the stored credential server-side before it is removed: for an OAuth login
+the CLI posts the stored refresh token to the server's RFC 7009 revocation
+endpoint, which disables the whole token pair (the access token dies with
+it). Revocation is best-effort — a network failure or server error prints a
+warning and the local credentials are removed anyway, so logout never gets
+stuck on a unreachable server.
+
+Personal access tokens (auth login --token) have no CLI-reachable
+revocation endpoint: --revoke then prints the Console path that revokes
+them (Settings → API Tokens) instead of sending a request that cannot
+succeed.
 
 With --json/--output yaml, stdout carries a single
 {"loggedOut":true,"configPath":…,"cleared":[…]} document.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if revoke {
+				revokeStoredCredential(cmd.Context(), A)
+			}
 			var cleared []string
 			if A.cfg.DefaultWorkspace != "" {
 				cleared = append(cleared, "default workspace "+A.cfg.DefaultWorkspace)
@@ -308,6 +320,51 @@ With --json/--output yaml, stdout carries a single
 			return nil
 		},
 	}
+	logout.Flags().BoolVar(&revoke, "revoke", false, "Also revoke the stored OAuth token pair server-side (RFC 7009) before clearing local state")
+	return logout
+}
+
+// revokeStoredCredential invalidates the stored credential server-side, as
+// far as the API allows, before logout clears the local config. OAuth
+// credentials are revoked through the public RFC 7009 endpoint: posting the
+// refresh token cascades to its paired access token, killing the whole
+// chain. Personal access tokens have no CLI-reachable revocation (the
+// console token-management routes require an interactive session and 403
+// every cpt_ credential), so the warning names the Console path and prints
+// the stored prefix so the user can find the right row. Best-effort by
+// design: every outcome lets logout proceed with clearing local state,
+// because a failed revocation must never trap credentials on the machine.
+func revokeStoredCredential(ctx context.Context, a *app) {
+	authState := a.cfg.Auth
+	if authState == nil {
+		a.out.Printf("No stored credential to revoke; clearing local state only.")
+		return
+	}
+	if authState.Method != "oauth" {
+		prefix := authState.TokenPrefix
+		if prefix == "" {
+			prefix = mask(authState.AccessToken)
+		}
+		a.out.Printf("⚠ Personal access tokens cannot be revoked from the CLI — revoke it in the Console (Settings → API Tokens, prefix %s…) if it should die now. Local credentials are removed anyway.", orDash(prefix))
+		return
+	}
+	token, kind := authState.RefreshToken, "token pair"
+	if token == "" {
+		token, kind = authState.AccessToken, "access token"
+	}
+	if token == "" {
+		a.out.Printf("⚠ Stored OAuth credential holds no tokens to revoke; clearing local state only.")
+		return
+	}
+	clientID := authState.ClientID
+	if clientID == "" {
+		clientID = auth.FirstPartyClientID
+	}
+	if err := auth.Revoke(ctx, auth.RevokeEndpoint(a.baseURL()), clientID, token); err != nil {
+		a.out.Printf("⚠ Server-side revocation failed (%v): the credential may still be live — revoke it in the Console (Settings → Authorized Apps). Local credentials are removed anyway.", err)
+		return
+	}
+	a.out.Printf("✓ Revoked the server-side %s at %s", kind, a.baseURL())
 }
 
 // logoutResult is the machine-readable payload of 'auth logout'. Cleared

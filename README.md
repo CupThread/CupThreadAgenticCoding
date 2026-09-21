@@ -199,9 +199,15 @@ How the environment variable behaves:
   static credential, so simply create one with a suitable expiry for the job.
 
 `cupthread auth logout` removes stored credentials from this machine (an env
-token simply stops being set) and forgets a remembered non-default base URL;
-it never revokes anything server-side — revoke
-tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
+token simply stops being set) and forgets a remembered non-default base URL.
+Pass `--revoke` to also invalidate the stored credential server-side before
+the local state is cleared: for an OAuth login the CLI posts the stored
+refresh token to the server's RFC 7009 revocation endpoint
+(`/api/v1/oauth/revoke`), which disables the whole token pair. Revocation is
+best-effort — a network failure prints a warning and logout still completes.
+Personal access tokens cannot be revoked from the CLI (the token-management
+API requires an interactive Console session), so `--revoke` prints the Console
+path (Settings → API Tokens) instead of sending a request that cannot succeed.
 Logout also clears the saved default workspace, per-workspace app defaults and
 base URL, so the next account on the machine starts from a clean slate. When a
 login inherits saved defaults the new account cannot see, they are cleared with
