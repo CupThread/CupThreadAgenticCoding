@@ -114,6 +114,9 @@ cupthread apps create --name "My App"      # Create a new app
 cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPEG/WebP/GIF, or screened SVG;
                                            # requires workspace admin/owner). A declared type that does not
                                            # match the file content fails with 415 "unsupported image type".
+                                           # Size cap (SEC-36): files over 10 MB are rejected client-side
+                                           # (nothing is sent); the server answers larger payloads with
+                                           # 413 payload_too_large.
                                            # Update order: metadata flags are PUT first, icon uploaded last;
                                            # name/slug/URL/platform values are validated locally first and a
                                            # failed icon upload after an applied PUT reports
@@ -133,6 +136,8 @@ cupthread apps public-feature-requests <app-key>  # Fetch the public feature-req
 cupthread inbox list                       # List recent feedback submissions
 cupthread inbox list --triage-status open --json  # Filter: open | in_progress | resolved | archived | active
 cupthread inbox list --assigned-to unassigned --q "crash"  # Assignee filter + title search
+                                           # --q is a literal substring: %, _ and \ are escaped
+                                           # server-side, so "100%" matches "100%" only (QUAL-05)
 cupthread inbox get <feedback-id>          # Triage detail: attachments, delivery attempts, activity log
 cupthread inbox priority <feedback-id> !!! # Raise priority (! / !! / !!!)
 cupthread inbox triage <feedback-id> in_progress   # Set triage status: open | in_progress | resolved | archived
@@ -213,6 +218,8 @@ require the admin/owner `changelog.publish` capability (SEC-40): with a
 cupthread search "crash on login"          # Global fuzzy search across apps, feedback, and roadmap
 ```
 
+`search` covers workspaces, apps, feature requests, roadmap versions, changelog entries, and **feedback submissions** (QUAL-06): a `feedback_submission` result matches the submission title/description/reporter name and carries its triage status — `--json` output passes the type through verbatim, so parse `type` as an open string.
+
 ### Raw API Passthrough
 Agents can invoke any API endpoint directly:
 ```sh
@@ -221,7 +228,7 @@ cupthread api request GET /api/v1/console/me --json
 
 Every CLI request carries an `X-Request-Id` correlation header (`cli-<uuid>`; the API echoes it on every response). CLI errors quote the server-echoed value as `request-id=…`, and `api request` prints it on success lines — include that value verbatim in bug reports and support requests so the exact request can be found server-side.
 
-`--input @file` (or `"-"`/`"@"` for stdin) sends the body as JSON and is strict: the file must contain exactly one JSON value. A second value or stray text after it fails the command with `parse input JSON: unexpected trailing data` before anything is sent — fix the file rather than retrying.
+`--input @file` (or `"-"`/`"@"` for stdin) sends the body as JSON and is strict: the file must contain exactly one JSON value. A second value or stray text after it fails the command with `parse input JSON: unexpected trailing data` before anything is sent — fix the file rather than retrying. Request bodies are size-capped server-side (SEC-36): 1 MB on console routes, 256 KB on public routes — over-limit bodies answer `413 {"error": "Payload exceeds size limit", "code": "payload_too_large"}`.
 
 ### Repository & Skills Management
 ```sh
@@ -255,6 +262,6 @@ printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12
 2. **Set context once**: Use `cupthread workspaces use <id>` and `cupthread apps use <id>` to avoid repeating `-w` and `-a` on every command.
 3. **Use `$CUPTHREAD_TOKEN` in CI**: Inject credentials via environment variable rather than storing them in config files.
 4. **Handle `402 Payment Required`**: Writes are rejected by two kinds of quotas. Submission endpoints (`features create`, `inbox`-fed feedback) reject when the workspace hits its plan limits (`tier_limit_submissions` → upgrade the plan in Console → Billing; `subscription_inactive` → renew the subscription). `cupthread workspaces create` rejects with `workspace_limit_reached` when the developer account already owns the maximum number of workspaces (see `maxWorkspaces` on `cupthread me`; only owner-role memberships count) — delete or transfer ownership of one you own, then retry. In `--json` mode, the `api request` escape hatch returns the same guidance as `{error, code, status, hint}`. Treat 402 as a deterministic business rule — do not retry automatically.
-5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/unsubscribe: 10 req/min; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
+5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/confirm and GETs: 10 req/min; token-bearing one-click unsubscribe POSTs: 300 req/min on a dedicated budget, PRIV-08; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
 6. **Handle `403 Forbidden` (AUTH-01 workspace RBAC)**: Every console workspace route declares a capability checked against the caller's workspace role, and the high-impact ones (`members.manage`, `billing.manage`, `integration.manage`) additionally reject `cpt_` API tokens regardless of role. Two structured codes come back with HTTP 403: `capability_required` — the role lacks the capability; ask a workspace admin/owner to perform the action or have an owner upgrade the role (Console → Members) — and `interactive_session_required` — a `cpt_` token can never do this; sign in interactively with `cupthread auth login` (browser/device OAuth) or use the Console web UI. Affected commands: `workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`, `billing checkout/portal/addons`, and integration auth-url/connect/disconnect/sync — reads like `workspaces members list`, `billing show`, and `integrations status` are unaffected. The checks are ordered role-first-then-token-type, so a member-role token on a members route reports `capability_required` while an admin/owner token reports `interactive_session_required`. The CLI renders the guidance as `forbidden: <error> (HTTP 403, code=…) — <hint>` and, in `--json` mode via `api request`, as `{error, code, status, hint}`.
 7. **Pass `--yes` to destructive commands after checking the target**: `features delete`, `columns delete`, `versions delete`, `changelog delete`, `workspaces members remove`, and `imports cancel` are hard, server-side, unrestorable deletes. On a non-interactive stdin they refuse with `… re-run with --yes to confirm` BEFORE resolving ids or sending any request (also in `--json` mode); on an interactive terminal they prompt `Continue? [yN]` on stderr. When automating, resolve the id first (`features get`, `changelog list`, …), verify it is the record you mean, and only then pass `--yes` — never loop these commands over an unverified generated id list.

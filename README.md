@@ -227,7 +227,7 @@ cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
                                              # interactive session; cpt_ tokens can create drafts only
 cupthread imports create --source github_issues --mode preview
 cupthread billing show
-cupthread search "dark mode"
+cupthread search "dark mode"               # also matches feedback submissions (--json passes type through)
 ```
 
 **Destructive commands ask before they destroy.** `features delete`,

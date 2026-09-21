@@ -386,16 +386,19 @@ func newAppsUpdateCmd() *cobra.Command {
 Field flags (--name, --slug, --store-url, --app-store-url, --google-play-url,
 --public, --platforms) are validated locally against the server's rules and
 applied with one PUT before the icon is uploaded, so a rejected field update
-commits nothing. If the metadata PUT succeeds but the icon upload fails, the
-command reports "partially applied" — in --json/--yaml mode the error payload
-carries "applied" and "failed" lists so scripts can tell what went live.
+commits nothing. The icon file itself is checked before any request is sent:
+a missing path or a file over the 10 MB server-side image cap fails the
+command up front instead of after the metadata PUT has applied. If the
+metadata PUT succeeds but the icon upload still fails, the command reports
+"partially applied" — in --json/--yaml mode the error payload carries
+"applied" and "failed" lists so scripts can tell what went live.
 Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Issue #91: mirror the server's field rules locally so bad
 			// flag values fail before any request — the app lookup
 			// included — can commit anything.
-			if err := validateAppsUpdateFlags(cmd, name, slug, storeURL, appStoreURL, googlePlayURL, platforms); err != nil {
+			if err := validateAppsUpdateFlags(cmd, name, slug, storeURL, appStoreURL, googlePlayURL, platforms, iconPath); err != nil {
 				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
@@ -483,7 +486,7 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 	update.Flags().StringVar(&storeURL, "store-url", "", "Legacy store URL (\"\" clears it)")
 	update.Flags().StringVar(&appStoreURL, "app-store-url", "", "App Store URL (\"\" clears it)")
 	update.Flags().StringVar(&googlePlayURL, "google-play-url", "", "Google Play URL (\"\" clears it)")
-	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon (PNG, JPEG, WebP, GIF, or screened SVG; a declared type that does not match the file content fails with 415)")
+	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon (PNG, JPEG, WebP, GIF, or screened SVG; a declared type that does not match the file content fails with 415; files over 10 MB are rejected before upload)")
 	update.Flags().BoolVar(&public, "public", false, "Show the app on the public showcase (Pro feature)")
 	update.Flags().StringSliceVar(&platforms, "platforms", nil, "Allowed platforms: ios,macos,android,universal")
 	return update
@@ -500,7 +503,13 @@ var appPlatformSet = map[string]bool{"ios": true, "macos": true, "android": true
 // URLs, 1-4 platforms) so a rejected update fails before any request is sent.
 // Clearing a URL with "" is allowed (sent as null); only values meant to be
 // set are checked.
-func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreURL, googlePlayURL string, platforms []string) error {
+// maxIconBytes mirrors the server-side app-icon cap (SEC-36): the console
+// icon route reads the multipart body through an 11 MB bounded reader and
+// Cloudflare Images stores at most 10 MB per image, so a larger file can
+// never succeed and is rejected before any request is sent.
+const maxIconBytes = 10 << 20
+
+func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreURL, googlePlayURL string, platforms []string, iconPath string) error {
 	if cmd.Flags().Changed("name") && (len(name) < 2 || len(name) > 120) {
 		return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", len(name))
 	}
@@ -529,6 +538,18 @@ func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreU
 			if !appPlatformSet[p] {
 				return fmt.Errorf("invalid --platforms value %q: must be one of ios, macos, android, universal", p)
 			}
+		}
+	}
+	if cmd.Flags().Changed("icon") && iconPath != "" {
+		info, err := os.Stat(iconPath)
+		if err != nil {
+			return fmt.Errorf("invalid --icon: %w", err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("invalid --icon %q: is a directory", iconPath)
+		}
+		if info.Size() > maxIconBytes {
+			return fmt.Errorf("invalid --icon %q: is %d bytes; the app-icon limit is %d MB (the server rejects larger uploads with 413 payload_too_large)", iconPath, info.Size(), maxIconBytes>>20)
 		}
 	}
 	return nil
