@@ -79,6 +79,10 @@ func newFeaturesListCmd() *cobra.Command {
 			}
 			A.out.Table([]string{"ID", "Title", "Column", "Version", "Votes", "Approved", "Revenue", "Created"}, featureRows(resp.Requests))
 			A.out.Printf("(%d shown, %d total)", len(resp.Requests), resp.Total)
+			// Always printed (even at 0) so the line's presence is a stable
+			// part of the output shape; it is the Console triage backlog
+			// badge's count (QUAL-03).
+			A.out.Printf("(%d of %d unassigned)", resp.UnassignedTotal, resp.Total)
 			return nil
 		},
 	}
