@@ -60,6 +60,11 @@ Check current authentication status:
 cupthread auth status
 ```
 
+Switching accounts: `cupthread auth logout` clears the credential plus the saved default workspace,
+per-workspace app defaults and base URL (back to pristine first-run state); `cupthread auth login`
+drops saved defaults the new account cannot see (with a warning) instead of silently targeting the
+previous user's workspace.
+
 ---
 
 ## 3. Global Flags & Output Options
