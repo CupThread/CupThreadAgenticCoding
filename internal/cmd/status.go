@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,15 +10,45 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// repoModulePath is the go.mod module path that identifies this repository's
+// checkout. Foreign Go modules are never accepted.
+const repoModulePath = "github.com/CupThread/CupThreadAgenticCoding"
+
 // repoRoot locates the CupThreadAgenticCoding checkout by walking up from the
-// working directory (then from the executable) until a go.mod is found.
+// working directory (then from the executable) until a go.mod declaring this
+// repository's module path is found; unrelated go.mod files are skipped.
 func repoRoot() (string, error) {
 	for _, start := range []string{mustWD(), executableDir()} {
-		if dir, ok := findFileUp(start, "go.mod"); ok {
-			return dir, nil
+		dir := start
+		for {
+			if modulePathIn(dir) == repoModulePath {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
-	return "", errors.New("could not locate the CupThreadAgenticCoding repository (no go.mod above the current directory)")
+	return "", fmt.Errorf("could not locate the CupThreadAgenticCoding repository (no go.mod declaring module %s above the current directory)", repoModulePath)
+}
+
+// modulePathIn reads dir/go.mod and returns its module path, or "" when the
+// file is missing or declares no module.
+func modulePathIn(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module")
+		if !ok {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(rest), `"`)
+	}
+	return ""
 }
 
 func mustWD() string {
@@ -35,20 +65,6 @@ func executableDir() string {
 		return "."
 	}
 	return filepath.Dir(exe)
-}
-
-func findFileUp(start, name string) (string, bool) {
-	dir := start
-	for {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return dir, true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
 }
 
 // gitIn runs a git command inside dir and returns trimmed stdout.

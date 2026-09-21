@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
+	"github.com/CupThread/CupThreadAgenticCoding/skills"
 	"github.com/spf13/cobra"
 )
 
@@ -17,29 +20,62 @@ func newSkillsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skills",
 		Short: "List and link this repo's agent skills",
+		Long: `List and install the bundled CupThread agent skills.
+
+The skills are read from a verified CupThreadAgenticCoding checkout when one
+exists (a go.mod declaring module ` + repoModulePath + ` above the current
+directory or the executable); otherwise the copy embedded in this binary is
+used, so Homebrew and go install builds work from anywhere.`,
 	}
 	cmd.AddCommand(newSkillsListCmd(), newSkillsLinkCmd())
 	return cmd
 }
 
-// skillsDir returns <repoRoot>/skills.
-func skillsDir() (string, error) {
-	root, err := repoRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "skills"), nil
+// skillSource describes where the bundled skills are read from: a verified
+// source checkout on disk, or the copy embedded in the binary.
+type skillSource struct {
+	// dir is the checkout's skills directory; empty in embedded mode.
+	dir string
 }
 
-// listSkillDirs returns the sorted names of the skill directories.
-func listSkillDirs() ([]string, error) {
-	dir, err := skillsDir()
+// resolveSkillSource returns the checkout's skills directory, or the embedded
+// source when no verified CupThreadAgenticCoding checkout exists.
+func resolveSkillSource() skillSource {
+	root, err := repoRoot()
 	if err != nil {
-		return nil, err
+		return skillSource{}
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read skills directory: %w", err)
+	dir := filepath.Join(root, "skills")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return skillSource{}
+	}
+	return skillSource{dir: dir}
+}
+
+func (s skillSource) embedded() bool { return s.dir == "" }
+
+// label names the source for human output.
+func (s skillSource) label() string {
+	if s.embedded() {
+		return "embedded copy"
+	}
+	return s.dir
+}
+
+// list returns the sorted names of the skill directories.
+func (s skillSource) list() ([]string, error) {
+	var entries []fs.DirEntry
+	var err error
+	if s.embedded() {
+		entries, err = skills.FS.ReadDir(".")
+		if err != nil {
+			return nil, fmt.Errorf("read embedded skills: %w", err)
+		}
+	} else {
+		entries, err = os.ReadDir(s.dir)
+		if err != nil {
+			return nil, fmt.Errorf("read skills directory: %w", err)
+		}
 	}
 	var names []string
 	for _, e := range entries {
@@ -51,20 +87,58 @@ func listSkillDirs() ([]string, error) {
 	return names, nil
 }
 
+// install places the named skill at link. From a checkout it symlinks; the
+// embedded copy is materialized as a real directory tree.
+func (s skillSource) install(name, link string) error {
+	if s.embedded() {
+		return copyEmbeddedSkill(name, link)
+	}
+	return os.Symlink(filepath.Join(s.dir, name), link)
+}
+
+// copyEmbeddedSkill copies the named skill directory from the embedded FS to
+// dest, which must not exist yet.
+func copyEmbeddedSkill(name, dest string) error {
+	return fs.WalkDir(skills.FS, name, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dest, strings.TrimPrefix(path, name))
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := skills.FS.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read embedded %s: %w", path, err)
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
+}
+
 func newSkillsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List the bundled agent skills",
+		Long: `List the bundled agent skills.
+
+The skills come from a verified CupThreadAgenticCoding checkout when one
+exists, and from the copy embedded in this binary otherwise; the active
+source is included in the output.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			names, err := listSkillDirs()
+			src := resolveSkillSource()
+			names, err := src.list()
 			if err != nil {
 				return err
 			}
 			if A.structured() {
-				return A.out.Structured(map[string]any{"count": len(names), "skills": names})
+				source := "checkout"
+				if src.embedded() {
+					source = "embedded"
+				}
+				return A.out.Structured(map[string]any{"count": len(names), "skills": names, "source": source})
 			}
-			A.out.Printf("%d skills:", len(names))
+			A.out.Printf("%d skills (%s):", len(names), src.label())
 			for _, n := range names {
 				A.out.Printf("  • %s", n)
 			}
@@ -76,15 +150,20 @@ func newSkillsListCmd() *cobra.Command {
 func newSkillsLinkCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "link [targetDir]",
-		Short: "Symlink the skills into .agents, .claude and .zcode of a project",
-		Long: `Symlink every skill in this repository into the agent skill directories of
-the target project (default: the current directory):
+		Short: "Link the bundled skills into .agents, .claude and .zcode of a project",
+		Long: `Link every bundled skill into the agent skill directories of the target
+project (default: the current directory):
 
   <target>/.agents/skills/<skill>
   <target>/.claude/skills/<skill>
   <target>/.zcode/skills/<skill>
 
-Existing links at those paths are replaced.`,
+The skills come from a verified CupThreadAgenticCoding checkout when one
+exists (a go.mod declaring module ` + repoModulePath + ` above the current
+directory or the executable) and are symlinked from there; without a
+checkout — e.g. for Homebrew or go install binaries — the skills embedded
+in this binary are copied into place instead. Either way, existing links
+at those paths are replaced.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "."
@@ -100,11 +179,8 @@ Existing links at those paths are replaced.`,
 				return fmt.Errorf("target directory %s does not exist", absTarget)
 			}
 
-			skills, err := skillsDir()
-			if err != nil {
-				return err
-			}
-			names, err := listSkillDirs()
+			src := resolveSkillSource()
+			names, err := src.list()
 			if err != nil {
 				return err
 			}
@@ -119,8 +195,8 @@ Existing links at those paths are replaced.`,
 					if err := os.RemoveAll(link); err != nil {
 						return fmt.Errorf("replace %s: %w", link, err)
 					}
-					if err := os.Symlink(filepath.Join(skills, name), link); err != nil {
-						return fmt.Errorf("symlink %s: %w", link, err)
+					if err := src.install(name, link); err != nil {
+						return fmt.Errorf("link %s: %w", link, err)
 					}
 				}
 				rel, err := filepath.Rel(mustWD(), dest)
@@ -128,6 +204,9 @@ Existing links at those paths are replaced.`,
 					rel = dest
 				}
 				A.out.Printf("✓ Linked %d skills into %s", len(names), rel)
+			}
+			if src.embedded() {
+				A.out.Printf("  (copied from the skills embedded in this binary; no source checkout found)")
 			}
 			return nil
 		},
