@@ -151,12 +151,21 @@ func newColumnsUpdateCmd() *cobra.Command {
 }
 
 func newColumnsDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "delete <column-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a roadmap column",
-		Args:    cobra.ExactArgs(1),
+		Long: `Delete a roadmap column permanently.
+
+The server hard-deletes the column (its feature requests move back to the
+review queue) and it cannot be restored. On an interactive terminal you are
+asked to confirm before anything is sent; non-interactive callers must pass
+--yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete roadmap column %q", args[0])); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -170,6 +179,8 @@ func newColumnsDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
 
 func newVersionsCmd() *cobra.Command {
@@ -302,12 +313,20 @@ func newVersionsUpdateCmd() *cobra.Command {
 }
 
 func newVersionsDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "delete <version-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a version",
-		Args:    cobra.ExactArgs(1),
+		Long: `Delete a release version permanently.
+
+The server hard-deletes the version and it cannot be restored. On an
+interactive terminal you are asked to confirm before anything is sent;
+non-interactive callers must pass --yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete version %q", args[0])); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -321,4 +340,6 @@ func newVersionsDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
