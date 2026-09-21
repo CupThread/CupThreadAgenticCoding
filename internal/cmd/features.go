@@ -62,6 +62,13 @@ func newFeaturesListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The server clamps the page size to 200 silently; clamp here
+			// too so --limit 500 does not imply it did anything more.
+			if limit < 1 {
+				limit = 1
+			} else if limit > featureRequestPageSize {
+				limit = featureRequestPageSize
+			}
 			appID := flagApp
 			resp, err := listFeatureRequests(cmd.Context(), ws, appID, limit, offset, sort, payerOnly)
 			if err != nil {
@@ -75,7 +82,7 @@ func newFeaturesListCmd() *cobra.Command {
 			return nil
 		},
 	}
-	list.Flags().IntVar(&limit, "limit", 50, "Maximum requests to list")
+	list.Flags().IntVar(&limit, "limit", 50, "Maximum requests to list (1-200, server page cap 200)")
 	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
 	list.Flags().StringVar(&sort, "sort", "newest", "Sort order: newest or revenue (revenue is Pro-gated)")
 	list.Flags().BoolVar(&payerOnly, "payer-only", false, "Only requests from paying users (Pro-gated)")
@@ -108,7 +115,23 @@ func featureRows(reqs []api.AdminFeatureRequest) [][]string {
 	return rows
 }
 
+// featureRequestPageSize is the page size used while resolving a single
+// request ID; the console listing endpoint clamps limit to 200.
+const featureRequestPageSize = 200
+
+// maxFeatureRequestPages caps ID-resolution paging (50 pages ≈ 10k requests)
+// so a server reporting a bogus total cannot keep the client paging forever.
+const maxFeatureRequestPages = 50
+
 // fetchOneFeatureRequest finds a request by exact ID or ID prefix.
+//
+// The console API has no single-item endpoint, so resolution pages through
+// the workspace feature-request listing (newest first) until the reference
+// resolves or the listing is exhausted — any request in the workspace is
+// addressable, not just the newest page. An exact ID match returns
+// immediately; prefix matches accumulate across every page before the
+// ambiguity decision, so a prefix that looks unique on the first page still
+// errors once a later page adds a second match.
 //
 // The lookup is scoped to the resolved app (--app flag, else the saved
 // default from 'apps use') so ID resolution cannot cross into another app's
@@ -119,17 +142,26 @@ func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureR
 		return nil, err
 	}
 	appID := A.optionalAppID()
-	resp, err := listFeatureRequests(ctx, ws, appID, 200, 0, "", false)
-	if err != nil {
-		return nil, err
-	}
 	var matches []api.AdminFeatureRequest
-	for i := range resp.Requests {
-		if resp.Requests[i].ID == ref {
-			return &resp.Requests[i], nil
+	scanned := 0
+	exhausted := false
+	for page := 0; page < maxFeatureRequestPages && !exhausted; page++ {
+		offset := page * featureRequestPageSize
+		resp, err := listFeatureRequests(ctx, ws, appID, featureRequestPageSize, offset, "", false)
+		if err != nil {
+			return nil, err
 		}
-		if strings.HasPrefix(resp.Requests[i].ID, ref) {
-			matches = append(matches, resp.Requests[i])
+		for i := range resp.Requests {
+			if resp.Requests[i].ID == ref {
+				return &resp.Requests[i], nil
+			}
+			if strings.HasPrefix(resp.Requests[i].ID, ref) {
+				matches = append(matches, resp.Requests[i])
+			}
+		}
+		scanned += len(resp.Requests)
+		if len(resp.Requests) < featureRequestPageSize || offset+len(resp.Requests) >= resp.Total {
+			exhausted = true
 		}
 	}
 	if len(matches) == 1 {
@@ -138,7 +170,10 @@ func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureR
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("ambiguous request prefix %q matches %d requests; use a longer prefix", ref, len(matches))
 	}
-	return nil, fmt.Errorf("feature request %q not found (check --app and try 'features list')", ref)
+	if !exhausted {
+		return nil, fmt.Errorf("feature request %q not found in the first %d requests (resolution scans at most %d pages); narrow the search with --app", ref, scanned, maxFeatureRequestPages)
+	}
+	return nil, fmt.Errorf("feature request %q not found (scanned %d requests in workspace %s)", ref, scanned, ws)
 }
 
 func newFeaturesGetCmd() *cobra.Command {
