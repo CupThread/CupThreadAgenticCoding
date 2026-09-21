@@ -230,6 +230,19 @@ cupthread billing show
 cupthread search "dark mode"
 ```
 
+**Destructive commands ask before they destroy.** `features delete`,
+`columns delete`, `versions delete`, `changelog delete`, `workspaces members
+remove`, and `imports cancel` are hard, server-side deletes with no undo.
+On an interactive terminal each prints `About to … Continue? [yN]` on stderr
+before sending anything. Scripts and agents must pass `--yes` (`-y`)
+explicitly; without it — and without a terminal — the command refuses before
+resolving ids or making any request:
+
+```sh
+cupthread features delete fr_123        # refused: "… re-run with --yes to confirm"
+cupthread features delete fr_123 --yes  # confirmed, deletes
+```
+
 Every command accepts `--json`; agents and scripts can also call any endpoint
 directly:
 

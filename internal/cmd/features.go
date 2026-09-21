@@ -299,12 +299,20 @@ func newFeaturesApproveCmd() *cobra.Command {
 }
 
 func newFeaturesDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "delete <request-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a feature request",
-		Args:    cobra.ExactArgs(1),
+		Long: `Delete a feature request permanently, including its votes and comments.
+
+The server hard-deletes the request and it cannot be restored. On an
+interactive terminal you are asked to confirm before anything is sent;
+non-interactive callers (scripts, agents) must pass --yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete feature request %q", args[0])); err != nil {
+				return err
+			}
 			r, err := fetchOneFeatureRequest(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -322,6 +330,8 @@ func newFeaturesDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
 
 func newFeaturesForwardCmd() *cobra.Command {
