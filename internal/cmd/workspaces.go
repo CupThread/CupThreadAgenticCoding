@@ -129,10 +129,28 @@ func newWorkspacesUseCmd() *cobra.Command {
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			if A.structured() {
+				return A.out.Structured(workspaceUseResult{
+					DefaultWorkspace: workspaceRef{ID: ws.ID, Name: ws.Name, Slug: ws.Slug},
+				})
+			}
 			A.out.Printf("✓ Default workspace: %s (%s)", ws.Name, ws.ID)
 			return nil
 		},
 	}
+}
+
+// workspaceUseResult is the machine-readable payload of 'workspaces use',
+// carrying the resolved record so a caller that passed a slug learns its ID.
+type workspaceUseResult struct {
+	DefaultWorkspace workspaceRef `json:"defaultWorkspace"`
+}
+
+// workspaceRef names a resolved workspace without its timestamps.
+type workspaceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
 }
 
 // workspaceClient returns a client scoped to the resolved workspace.
@@ -157,9 +175,11 @@ func newWorkspaceMembersCmd() *cobra.Command {
 
 List works for every workspace role and with cpt_ API tokens. invite, add,
 set-role, and remove require a workspace admin or owner signed in
-interactively: with a cpt_ API token they fail with 403
-interactive_session_required (use 'cupthread auth login'), and for
-member-role callers they fail with 403 capability_required.`,
+interactively, and no CLI credential qualifies — personal access tokens and
+OAuth logins are both cpt_ tokens, so they fail with 403
+interactive_session_required; perform these actions in the Console web UI
+(Workspace → Members). For member-role callers they fail with 403
+capability_required.`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{
@@ -338,8 +358,10 @@ func newWorkspaceInvitationsCmd() *cobra.Command {
 		Long: `Manage pending workspace invitations.
 
 List works for every workspace role and with cpt_ API tokens. Revoke
-requires a workspace admin or owner signed in interactively: cpt_ API
-tokens are rejected with 403 interactive_session_required.`,
+requires a workspace admin or owner signed in interactively, and no CLI
+credential qualifies — personal access tokens and OAuth logins are both
+cpt_ tokens, so they fail with 403 interactive_session_required; revoke in
+the Console web UI (Workspace → Members).`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{

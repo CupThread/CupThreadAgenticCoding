@@ -1,7 +1,9 @@
 // Package auth implements the CLI login flows against the CupThread OAuth
 // server: Authorization Code + PKCE with a local loopback callback (primary)
 // and the Device Authorization Grant (fallback for headless environments).
-// The server-side contract is specified in SaaS/docs/CLI-OAuth.md.
+// The server-side contract is specified in SaaS/docs/CLI-OAuth.md and
+// mirrored in the OpenAPI 3.1 spec (GET /api/v1/openapi.json, RFC 8414
+// metadata at /.well-known/oauth-authorization-server).
 package auth
 
 import (
@@ -38,6 +40,16 @@ const (
 // The port is chosen at runtime (loopback port variation is allowed by the
 // OAuth spec for native apps, RFC 8252 §7.3).
 const CallbackPath = "/cupthread/callback"
+
+// loopbackRedirectURI builds the CLI's redirect_uri for a local callback
+// port. The authorization server (SEC-46) only accepts absolute https: URLs
+// or loopback http://127.0.0.1 / http://[::1] / http://localhost with any
+// port, so this loopback shape is the CLI's one supported redirect; pointing
+// it anywhere else makes every authorize request fail with 400
+// invalid_request.
+func loopbackRedirectURI(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, CallbackPath)
+}
 
 // TokenSet is a successful token endpoint response.
 type TokenSet struct {
@@ -118,7 +130,7 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 		return nil, fmt.Errorf("start local callback server: %w", err)
 	}
 	defer listener.Close()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", listener.Port, CallbackPath)
+	redirectURI := loopbackRedirectURI(listener.Port)
 
 	q := url.Values{
 		"response_type":         {"code"},
@@ -239,7 +251,7 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 		return nil, fmt.Errorf("decode device authorization: %w", err)
 	}
 	if parsed.DeviceCode == "" || parsed.UserCode == "" {
-		return nil, errors.New("device authorization endpoint did not return device_code/user_code (not implemented server-side yet?)")
+		return nil, errors.New("device authorization endpoint did not return device_code/user_code")
 	}
 	interval := time.Duration(parsed.Interval) * time.Second
 	if interval <= 0 {
