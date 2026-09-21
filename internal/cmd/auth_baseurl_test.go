@@ -262,7 +262,7 @@ func TestOAuthLoginPersistsBaseURL(t *testing.T) {
 		AccessToken:  "cpt_oauth_access_tok",
 		RefreshToken: "cpt_oauth_refresh_tok",
 		ExpiresIn:    3600,
-	})
+	}, loginResult{Method: "oauth"})
 
 	os.Stdout = oldStdout
 	if err := w.Close(); err != nil {

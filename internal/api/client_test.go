@@ -178,6 +178,57 @@ func TestDoEncodesJSONBody(t *testing.T) {
 	}
 }
 
+// TestDoSendsRawJSONBodyVerbatim covers issue #75: a json.RawMessage (or
+// *json.RawMessage) request body must reach the server byte-identical —
+// re-encoding through json.Marshal would round-trip every number through
+// float64 and silently rewrite integers a float64 cannot represent exactly.
+// An empty RawMessage means "no body"; plain values keep going through
+// json.Marshal.
+func TestDoSendsRawJSONBodyVerbatim(t *testing.T) {
+	var gotBody, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotContentType = r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	const body = `{"big":12345678901234567890, "pad": [1, 2]}`
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage(body), nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("wire body = %q, want the RawMessage bytes %q verbatim", gotBody, body)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+
+	rawPtr := json.RawMessage(body)
+	if err := client.Do(context.Background(), "POST", "/x", nil, &rawPtr, nil); err != nil {
+		t.Fatalf("Do with *json.RawMessage: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("*json.RawMessage wire body = %q, want %q verbatim", gotBody, body)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage{}, nil); err != nil {
+		t.Fatalf("Do with empty RawMessage: %v", err)
+	}
+	if gotBody != "" || gotContentType != "" {
+		t.Errorf("empty RawMessage sent body %q (Content-Type %q), want no body at all", gotBody, gotContentType)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, map[string]string{"name": "app"}, nil); err != nil {
+		t.Fatalf("Do with a plain map: %v", err)
+	}
+	if gotBody != `{"name":"app"}` {
+		t.Errorf("plain map wire body = %q, want the marshaled form", gotBody)
+	}
+}
+
 func TestDoMapsAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -377,6 +428,119 @@ func TestHintEmptyForOrdinary4xxErrors(t *testing.T) {
 			if tc.err.Status != http.StatusPaymentRequired {
 				if hint := tc.err.Hint(); hint != "" {
 					t.Errorf("Hint() = %q for a plain %d error, want \"\"", hint, tc.err.Status)
+				}
+			}
+		})
+	}
+}
+
+// TestDoPublicSurfaceAuthenticationRequiredHint covers the PRIV-12 contract
+// from issue #77: when an app disables anonymous access, the public end-user
+// surfaces (roadmap columns/versions, feature-request comment threads,
+// changelog subscribe) answer 401 with code authentication_required. The CLI
+// cannot present an end-user Clerk session, so the error must render the
+// actionable hint. The code travels only on end-user-surface 401s — console
+// 401s mean "cpt_ token invalid or expired" and carry no code, and DATA-03
+// signing failures carry their own codes — so those must stay bare.
+func TestDoPublicSurfaceAuthenticationRequiredHint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		status  int
+		body    string
+		wantSub []string
+		notWant []string
+	}{
+		{
+			name:   "columns 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/columns/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"Sign in is required to view this roadmap",
+				"requires a signed-in session",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "versions 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/versions/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "comments 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/feature-requests/fr_1/comments",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "changelog subscribe 403 email_not_verified",
+			method: "POST",
+			path:   "/api/v1/public/apps/app_key_1/changelog/subscribe",
+			status: http.StatusForbidden,
+			body:   `{"error":"Subscriptions on this changelog are bound to your signed-in email address","code":"email_not_verified"}`,
+			wantSub: []string{
+				"forbidden",
+				"Subscriptions on this changelog are bound to your signed-in email address",
+				"verified email",
+				"third-party emails are not accepted",
+			},
+		},
+		{
+			name:    "console 401 without a code stays bare",
+			method:  "GET",
+			path:    "/api/v1/console/workspaces/ws_1/apps",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Authentication required"}`,
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+		{
+			name:    "DATA-03 signing 401 keeps its own code, no anonymous-access hint",
+			method:  "PUT",
+			path:    "/api/v1/public/apps/app_key_1/user",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Signature mismatch","code":"invalid_signature"}`,
+			wantSub: []string{"invalid_signature"},
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != tc.method {
+					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.method, tc.path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			err := client.Do(context.Background(), tc.method, tc.path, nil, nil, nil)
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			for _, want := range tc.wantSub {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to contain %q", err, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("err = %q, want it to NOT contain %q", err, notWant)
 				}
 			}
 		})
@@ -680,11 +844,16 @@ func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	// Issue #58: re-login advice is a dead end — the browser OAuth login also
+	// issues a cpt_ token, which the interactive-only capabilities reject.
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -714,7 +883,7 @@ func TestHintForbiddenCodes(t *testing.T) {
 		want   string
 	}{
 		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
-		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "Console web UI"},
 		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
 		{"403 without code", http.StatusForbidden, "", ""},
 		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},
@@ -749,5 +918,166 @@ func TestUploadAppIconForbiddenHint(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+}
+
+// --- Validation-details rendering (issue #73) ---
+
+// TestDoSurfacesValidationFieldErrors covers issue #73: a 400 whose body
+// carries the server's zod-flatten `details` must name every offending field
+// and reason in the error line, fields in sorted key order, and keep the raw
+// payload on APIError.Details for programmatic use.
+func TestDoSurfacesValidationFieldErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	got := apiErr.Error()
+	if !strings.Contains(got, "title: Title must be at least 3 characters") {
+		t.Errorf("Error() = %q, want the title reason", got)
+	}
+	if !strings.Contains(got, "versionId: Invalid version") {
+		t.Errorf("Error() = %q, want the versionId reason", got)
+	}
+	if i, j := strings.Index(got, "title:"), strings.Index(got, "versionId:"); i < 0 || j < 0 || i > j {
+		t.Errorf("Error() = %q, want fields in sorted key order (title before versionId)", got)
+	}
+	if !strings.HasPrefix(got, "Validation failed (HTTP 400): ") {
+		t.Errorf("Error() = %q, want the bare rendering as prefix", got)
+	}
+	// The raw server JSON is retained verbatim for programmatic consumers.
+	wantDetails := `{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}`
+	if string(apiErr.Details) != wantDetails {
+		t.Errorf("Details = %s, want raw server JSON %s", apiErr.Details, wantDetails)
+	}
+}
+
+// TestDoSurfacesValidationFormErrors covers issue #73: form-level messages
+// (no field attached) render before the field errors.
+func TestDoSurfacesValidationFormErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":["Body is not valid JSON"],"fieldErrors":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	got := apiErr.Error()
+	if !strings.Contains(got, `Validation failed (HTTP 400): Body is not valid JSON`) {
+		t.Errorf("Error() = %q, want the form error appended", got)
+	}
+}
+
+// TestAPIErrorWithoutDetailsByteIdentical pins the regression contract: with
+// no `details` on the wire (or an empty flatten), Error() output is exactly
+// the pre-issue rendering — many call sites and tests quote these strings.
+func TestAPIErrorWithoutDetailsByteIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
+	}
+}
+
+// TestAPIErrorEmptyDetailsObjectByteIdentical pins the empty-flatten case: a
+// details object without any messages must not add a dangling colon.
+func TestAPIErrorEmptyDetailsObjectByteIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
+	}
+}
+
+// TestAPIErrorDetailsRenderingCaps pins the flood guards on Error(): at most
+// five groups are shown followed by a "+N more" tail, each group truncated,
+// and control characters are stripped so server text cannot inject terminal
+// sequences into the error line.
+func TestAPIErrorDetailsRenderingCaps(t *testing.T) {
+	msg := "x" + strings.Repeat("y", 200)
+	e := &APIError{
+		Status:  http.StatusBadRequest,
+		Message: "Validation failed",
+		Details: json.RawMessage(`{"formErrors":[],"fieldErrors":{` +
+			`"f1":["` + msg + `"],"f2":["two"],"f3":["three"],"f4":["four"],"f5":["five"],"f6":["six"],"f7":["seven"]` +
+			`}}`),
+	}
+	got := e.Error()
+	if !strings.Contains(got, "f1: ") || !strings.Contains(got, "f5: five") {
+		t.Errorf("Error() = %q, want the first five field groups", got)
+	}
+	if strings.Contains(got, "f6:") || strings.Contains(got, "f7:") {
+		t.Errorf("Error() = %q, want groups past the cap dropped", got)
+	}
+	if !strings.Contains(got, "(+2 more)") {
+		t.Errorf("Error() = %q, want the +N more tail", got)
+	}
+	// The whole "f1: <msg>" group is truncated to detailsMaxRunes runes
+	// (the 5-rune "f1: x" prefix leaves 115 y's before the ellipsis).
+	if !strings.Contains(got, "f1: x"+strings.Repeat("y", 115)+"…") {
+		t.Errorf("Error() = %q, want the long group truncated at %d runes", got, detailsMaxRunes)
+	}
+}
+
+// TestSanitizeErrorText unit-covers the control-character stripper used when
+// server text is inlined into human-readable errors.
+func TestSanitizeErrorText(t *testing.T) {
+	got := sanitizeErrorText("a\x1b]8;;http://evil\b7\x07 ESC \r\nline\x7f")
+	for _, bad := range []string{"\x1b", "\x07", "\b", "\r", "\n", "\x7f"} {
+		if strings.ContainsAny(got, bad) {
+			t.Errorf("sanitizeErrorText = %q, still contains control char %q", got, bad)
+		}
+	}
+	if got := sanitizeErrorText("plain text"); got != "plain text" {
+		t.Errorf("sanitizeErrorText = %q, want it unchanged", got)
+	}
+}
+
+// TestUploadAppIconCapturesValidationDetails covers the multipart error path
+// (postMultipartFile): it must decode `details` the same as DoWithHeaders so
+// icon-upload 400s name the offending metadata.
+func TestUploadAppIconCapturesValidationDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"icon":["File exceeds the maximum size"]}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("big"))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !strings.Contains(apiErr.Error(), "icon: File exceeds the maximum size") {
+		t.Errorf("Error() = %q, want the field reason", apiErr.Error())
+	}
+	if len(apiErr.Details) == 0 {
+		t.Error("Details = empty, want the raw server JSON retained")
 	}
 }

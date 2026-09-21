@@ -229,6 +229,13 @@ func newCommentsListCmd() *cobra.Command {
 				}
 				var page api.ListCommentsResponse
 				if err := A.client.DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
+					// PRIV-12: the public thread endpoint answers 404 both for a
+					// missing id and for an unapproved request (existence
+					// hiding), so the message must not imply the request never
+					// existed.
+					if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+						return nil, fmt.Errorf("comments for feature request %q are not available: the request may not exist, may be private, or may not be approved yet (unapproved requests are hidden from the public board)", args[0])
+					}
 					return nil, err
 				}
 				return &page, nil
