@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -74,7 +75,8 @@ func newSkillsListCmd() *cobra.Command {
 }
 
 func newSkillsLinkCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	cmd := &cobra.Command{
 		Use:   "link [targetDir]",
 		Short: "Symlink the skills into .agents, .claude and .zcode of a project",
 		Long: `Symlink every skill in this repository into the agent skill directories of
@@ -84,7 +86,12 @@ the target project (default: the current directory):
   <target>/.claude/skills/<skill>
   <target>/.zcode/skills/<skill>
 
-Existing links at those paths are replaced.`,
+Existing symlinks at those paths are replaced. A path holding a real file or
+directory (for example a locally customized copy of a skill) is never deleted:
+the skill is skipped with a warning and the command exits non-zero. Pass
+--force to replace such entries anyway; the previous entry is moved aside to
+<skill>.bak-<timestamp> instead of being deleted, so even a forced
+replacement stays recoverable.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "."
@@ -109,27 +116,78 @@ Existing links at those paths are replaced.`,
 				return err
 			}
 
+			total := len(names) * len(agentSkillDirs)
+			var skipped int
 			for _, agentDir := range agentSkillDirs {
 				dest := filepath.Join(absTarget, agentDir)
 				if err := os.MkdirAll(dest, 0o755); err != nil {
 					return fmt.Errorf("create %s: %w", dest, err)
 				}
+				linked := 0
 				for _, name := range names {
-					link := filepath.Join(dest, name)
-					if err := os.RemoveAll(link); err != nil {
-						return fmt.Errorf("replace %s: %w", link, err)
+					ok, err := installSkillLink(filepath.Join(dest, name), filepath.Join(skills, name), force)
+					if err != nil {
+						return err
 					}
-					if err := os.Symlink(filepath.Join(skills, name), link); err != nil {
-						return fmt.Errorf("symlink %s: %w", link, err)
+					if !ok {
+						skipped++
+						rel, err := filepath.Rel(mustWD(), dest)
+						if err != nil {
+							rel = dest
+						}
+						A.out.Printf("⚠ Skipped %s in %s: exists and is not a symlink (use --force to replace)", name, rel)
+						continue
 					}
+					linked++
 				}
 				rel, err := filepath.Rel(mustWD(), dest)
 				if err != nil {
 					rel = dest
 				}
-				A.out.Printf("✓ Linked %d skills into %s", len(names), rel)
+				if linked == len(names) {
+					A.out.Printf("✓ Linked %d skills into %s", linked, rel)
+				} else {
+					A.out.Printf("✓ Linked %d of %d skills into %s", linked, len(names), rel)
+				}
+			}
+			if skipped > 0 {
+				return fmt.Errorf("skipped %d of %d skill destinations: existing entries are not symlinks (use --force to replace)", skipped, total)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&force, "force", false, "replace existing non-symlink files/directories (moved to <skill>.bak-<timestamp>, not deleted)")
+	return cmd
+}
+
+// installSkillLink points link at target as a symlink and reports whether the
+// link was installed. An existing symlink — including a broken one — is
+// replaced; only the link is removed, never its referent. A real file or
+// directory is never deleted: without force the install is skipped (false,
+// nil), with force the entry is moved to a <name>.bak-<timestamp> sibling
+// first so the replacement stays recoverable.
+func installSkillLink(link, target string, force bool) (bool, error) {
+	info, err := os.Lstat(link)
+	switch {
+	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		if err := os.Remove(link); err != nil {
+			return false, fmt.Errorf("replace %s: %w", link, err)
+		}
+	case err == nil:
+		if !force {
+			return false, nil
+		}
+		backup := fmt.Sprintf("%s.bak-%d", link, time.Now().UnixNano())
+		if err := os.Rename(link, backup); err != nil {
+			return false, fmt.Errorf("back up %s: %w", link, err)
+		}
+	case os.IsNotExist(err):
+		// nothing to preserve; fall through to the symlink
+	default:
+		return false, fmt.Errorf("inspect %s: %w", link, err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		return false, fmt.Errorf("symlink %s: %w", link, err)
+	}
+	return true, nil
 }
