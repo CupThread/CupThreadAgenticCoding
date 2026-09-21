@@ -190,6 +190,56 @@ func TestCommentsModerationListJSON(t *testing.T) {
 	}
 }
 
+// TestCommentsListNotFoundCoversUnapproved covers the PRIV-12 existence
+// hiding (issue #77): the public thread endpoint answers 404 both for a
+// missing id and for an unapproved request, so the CLI must present that as
+// "not available" instead of implying the request never existed.
+func TestCommentsListNotFoundCoversUnapproved(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/feature-requests/fr_pending/comments" {
+			t.Errorf("request path = %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Feature request not found"}`))
+	}))
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL, "comments", "list", "fr_pending")
+	if err == nil {
+		t.Fatal("expected a not-available error for the 404 response")
+	}
+	for _, want := range []string{"not available", "may not exist", "may not be approved yet"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "never existed") {
+		t.Errorf("error = %q, must not imply the request never existed", err)
+	}
+}
+
+// TestCommentsListAuthenticationRequiredHint covers the PRIV-12 401 (issue
+// #77): a sign-in-only board rejects anonymous thread reads with
+// authentication_required, and the CLI error must surface the actionable
+// hint instead of a bare status line.
+func TestCommentsListAuthenticationRequiredHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`))
+	}))
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL, "comments", "list", "fr_1")
+	if err == nil {
+		t.Fatal("expected an authentication-required error")
+	}
+	for _, want := range []string{"authentication required", "Sign in is required to view this roadmap", "requires a signed-in session", "re-enable anonymous access"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
 // poisonedAuthor is the issue #70 injection payload: an OSC 8 hyperlink
 // labeled "CupThread Security" pointing at an attacker URL, an SGR color
 // sequence, and a CR-forged line mimicking CLI success output.
