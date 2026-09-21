@@ -27,10 +27,11 @@ const FirstPartyClientID = "cupthread-cli"
 
 // Endpoint paths on the API server.
 const (
-	AuthorizePath    = "/api/v1/oauth/authorize"
-	TokenPath        = "/api/v1/oauth/token"
+	AuthorizePath       = "/api/v1/oauth/authorize"
+	TokenPath           = "/api/v1/oauth/token"
 	DeviceAuthorizePath = "/api/v1/oauth/device/authorize"
-	DeviceTokenPath  = "/api/v1/oauth/device/token"
+	DeviceTokenPath     = "/api/v1/oauth/device/token"
+	RevokePath          = "/api/v1/oauth/revoke"
 )
 
 // CallbackPath is the path registered for the CLI's loopback redirect URI.
@@ -51,6 +52,27 @@ type TokenSet struct {
 func Endpoints(baseURL string) (authorize, token, deviceAuthorize, deviceToken string) {
 	base := strings.TrimRight(baseURL, "/")
 	return base + AuthorizePath, base + TokenPath, base + DeviceAuthorizePath, base + DeviceTokenPath
+}
+
+// RevokeEndpoint derives the RFC 7009 revocation endpoint URL from the API
+// base URL. The server exposes it in its RFC 8414 metadata as
+// revocation_endpoint and requires no interactive session, unlike the
+// console token-management API.
+func RevokeEndpoint(baseURL string) string {
+	return strings.TrimRight(baseURL, "/") + RevokePath
+}
+
+// Revoke posts an RFC 7009 revocation request for token (the refresh token
+// when one is stored, so the server cascades to the paired access token).
+// The server intentionally answers 200 even for unknown or already-revoked
+// tokens so existence is not disclosed; a nil error therefore means "the
+// server accepted the request", not "a live token was destroyed".
+func Revoke(ctx context.Context, revokeURL, clientID, token string) error {
+	_, err := postForm(ctx, revokeURL, url.Values{
+		"token":     {token},
+		"client_id": {clientID},
+	})
+	return err
 }
 
 // OpenBrowser opens url in the default browser, returning an error when no
@@ -197,13 +219,13 @@ type deviceAuthorizeResponse struct {
 
 // DeviceStart is the pending device-flow session shown to the user.
 type DeviceStart struct {
-	deviceCode     string
-	tokenURL       string
-	clientID       string
-	UserCode       string
+	deviceCode      string
+	tokenURL        string
+	clientID        string
+	UserCode        string
 	VerificationURI string
-	Interval       time.Duration
-	ExpiresAt      time.Time
+	Interval        time.Duration
+	ExpiresAt       time.Time
 }
 
 // StartDevice begins a device-flow login.

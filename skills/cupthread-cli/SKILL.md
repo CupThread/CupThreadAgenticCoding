@@ -68,7 +68,11 @@ non-default endpoint is stored, `auth status` shows it as "Credential issued for
 Switching accounts: `cupthread auth logout` clears the credential plus the saved default workspace,
 per-workspace app defaults and base URL (back to pristine first-run state); `cupthread auth login`
 drops saved defaults the new account cannot see (with a warning) instead of silently targeting the
-previous user's workspace.
+previous user's workspace. Add `--revoke` to also invalidate the stored OAuth token pair server-side
+(best-effort POST of the refresh token to the RFC 7009 `/api/v1/oauth/revoke` endpoint, which
+cascades to the paired access token). PATs cannot be revoked from the CLI — the token-management API
+requires an interactive Console session — so `--revoke` then prints the Console path
+(Settings → API Tokens) instead of sending a request.
 
 ---
 
