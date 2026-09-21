@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"gopkg.in/yaml.v3"
@@ -117,13 +118,37 @@ func convertNumbers(v any) any {
 
 // Table prints a header row plus data rows with aligned columns.
 // In JSON/YAML mode callers are expected to print structured output instead.
+// Cells hold user-generated content, so every field passes through sanitize
+// before rendering.
 func (w *Writer) Table(headers []string, rows [][]string) {
 	tw := tabwriter.NewWriter(w.w, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, joinTabs(headers))
+	fmt.Fprintln(tw, joinTabs(sanitizeCells(headers)))
 	for _, row := range rows {
-		fmt.Fprintln(tw, joinTabs(row))
+		fmt.Fprintln(tw, joinTabs(sanitizeCells(row)))
 	}
 	tw.Flush()
+}
+
+func sanitizeCells(fields []string) []string {
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = sanitize(f)
+	}
+	return out
+}
+
+// sanitize strips control characters that turn user-generated content into
+// terminal commands: ESC drives CSI/SGR/OSC sequences (including OSC 8
+// hyperlinks), and the remaining C0 controls plus DEL forge or rewrite output
+// lines (CR, BEL). Tab and newline are layout, not terminal commands, and
+// stay. Structured JSON/YAML output bypasses this and remains byte-faithful.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Printf writes a formatted line.

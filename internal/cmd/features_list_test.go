@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -95,5 +96,47 @@ func TestFeaturesListJSONIncludesUnassignedTotal(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %s:\n%s", want, out)
 		}
+	}
+}
+
+// TestFeaturesListSanitizesTruncatedEscapeSequence covers the truncate-then-
+// sanitize order from issue #70: truncate() cuts the poisoned title inside
+// the unterminated OSC 8 sequence, and sanitizing afterwards must still leave
+// zero control bytes on stdout (the dangling ESC is stripped, not emitted).
+func TestFeaturesListSanitizesTruncatedEscapeSequence(t *testing.T) {
+	titleJSON, err := json.Marshal("\x1b]8;;https://evil.example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1b\\Legit Title Text")
+	if err != nil {
+		t.Fatalf("marshal title: %v", err)
+	}
+	fixture := `{
+		"requests": [{
+			"id": "fr_evil1",
+			"appId": "app_a",
+			"title": ` + string(titleJSON) + `,
+			"description": "Please",
+			"status": "open",
+			"voteCount": 3,
+			"createdAt": "2026-09-01T12:00:00.000Z",
+			"updatedAt": "2026-09-01T12:00:00.000Z"
+		}],
+		"total": 1,
+		"unassignedTotal": 1
+	}`
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	server := httptest.NewServer(unassignedListHandler(t, fixture))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "features", "list", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("features list: %v", err)
+	}
+	for i := 0; i < len(out); i++ {
+		b := out[i]
+		if (b < 0x20 && b != '\t' && b != '\n') || b == 0x7f {
+			t.Fatalf("output contains control byte 0x%02x: %q", b, out)
+		}
+	}
+	if !strings.Contains(out, "fr_evil1") || !strings.Contains(out, "(1 shown, 1 total)") {
+		t.Errorf("row did not render:\n%s", out)
 	}
 }
