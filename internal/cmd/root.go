@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -42,10 +44,20 @@ type app struct {
 
 var A *app
 
-// Execute builds the command tree and runs it.
+// oauthRefreshTimeout bounds the transparent token refresh even when the
+// caller's context is unbounded (cobra's context.Background), so a stalled
+// token endpoint cannot hang an authenticated command; the auth package's
+// HTTP client has its own timeout on top.
+var oauthRefreshTimeout = 30 * time.Second
+
+// Execute builds the command tree and runs it on a signal-aware context so
+// Ctrl-C cancels in-flight HTTP requests cleanly instead of relying on the
+// default process kill.
 func Execute() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	root := newRootCmd()
-	return root.Execute()
+	return root.ExecuteContext(ctx)
 }
 
 func newRootCmd() *cobra.Command {
@@ -174,7 +186,9 @@ func (a *app) buildClient() *api.Client {
 			return a.cfg.Auth.AccessToken, nil
 		}
 		_, tokenURL, _, _ := auth.Endpoints(a.baseURL())
-		set, err := auth.Refresh(ctx, tokenURL, authState.ClientID, a.cfg.Auth.RefreshToken)
+		refreshCtx, cancel := context.WithTimeout(ctx, oauthRefreshTimeout)
+		defer cancel()
+		set, err := auth.Refresh(refreshCtx, tokenURL, authState.ClientID, a.cfg.Auth.RefreshToken)
 		if err != nil {
 			return "", fmt.Errorf("refresh OAuth token (run 'cupthread auth login' again): %w", err)
 		}

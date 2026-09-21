@@ -100,7 +100,7 @@ func loginWithPKCE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
 func loginWithDevice(ctx context.Context) error {
@@ -115,14 +115,14 @@ func loginWithDevice(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
-func finishOAuthLogin(set *auth.TokenSet) error {
+func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
 	A.applyTokenSet(set)
 
 	var me api.MeResponse
-	if err := A.client.Do(context.Background(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
+	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 		return fmt.Errorf("login succeeded but session check failed: %w", err)
 	}
 	if err := A.saveConfig(); err != nil {
