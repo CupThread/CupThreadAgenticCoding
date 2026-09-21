@@ -38,6 +38,16 @@ const (
 // OAuth spec for native apps, RFC 8252 §7.3).
 const CallbackPath = "/cupthread/callback"
 
+// loopbackRedirectURI builds the CLI's redirect_uri for a local callback
+// port. The authorization server (SEC-46) only accepts absolute https: URLs
+// or loopback http://127.0.0.1 / http://[::1] / http://localhost with any
+// port, so this loopback shape is the CLI's one supported redirect; pointing
+// it anywhere else makes every authorize request fail with 400
+// invalid_request.
+func loopbackRedirectURI(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, CallbackPath)
+}
+
 // TokenSet is a successful token endpoint response.
 type TokenSet struct {
 	AccessToken  string `json:"access_token"`
@@ -96,7 +106,7 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 		return nil, fmt.Errorf("start local callback server: %w", err)
 	}
 	defer listener.Close()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", listener.Port, CallbackPath)
+	redirectURI := loopbackRedirectURI(listener.Port)
 
 	q := url.Values{
 		"response_type":         {"code"},

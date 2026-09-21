@@ -480,3 +480,21 @@ The free-form `metadata` field on feedback submissions (`POST /api/v1/feedback` 
 5. **8 KB budget**: the total serialized object is capped at 8192 bytes. Whole keys are dropped — never sliced mid-value — in deterministic **sorted-key order**: a key that does not fit is skipped, and a smaller later key can still be kept.
 
 Sanitization is deterministic (same input always yields the same output) and runs **before any other validation**, so even submissions that later fail (`402` quota, `403` public feedback disabled, `401` anonymous feedback disabled, `404` unknown app, `422` `scan_rejected`) never persist unsanitized metadata. Console triage reads back only the sanitized result: pre-rendered string entries carrying `redacted` / `truncated` flags.
+
+---
+
+## OAuth Redirect-URI Scheme Policy (SEC-46)
+
+The OAuth authorization server enforces a scheme policy on every `redirect_uri` — at application registration, on the authorize endpoints, and again on the authorization-code exchange (legacy rows registered before the policy fail closed). The shared rule (`isAllowedRedirectUri` in the SaaS `packages/shared/src/oauthUrlPolicy.ts`):
+
+- **Allowed:** absolute `https:` URLs (any host, any port — no userinfo, no fragment), or loopback `http://127.0.0.1` / `http://[::1]` / `http://localhost` with **any port** (RFC 8252 §7.3, the native-app/CLI exception). A query string is allowed — the authorization response appends `?code=…&state=…` on top of it.
+- **Rejected:** `javascript:`, `data:`, `file:`, `vbscript:`, custom app schemes (`myapp://callback`), non-loopback `http:` (including look-alikes like `http://localhost.evil.com`), protocol-relative URLs (`//host/cb`), userinfo (`https://user:pass@…`), fragments, and relative paths.
+
+Wire behavior:
+
+- `GET` / `POST /api/v1/oauth/authorize` answer a disallowed `redirect_uri` with `400` and the RFC 6749 §5.2 JSON error `invalid_request` (the `error_description` names the https/loopback rule) — **never a redirect**. The scheme check runs *before* the client's registered-URI list is consulted, so a legacy registered row cannot authorize a bad scheme either.
+- `GET /api/v1/oauth/authorize` forwards only the seven recognized OAuth query parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge`, `code_challenge_method`) to the Console consent page; arbitrary extra query parameters are dropped instead of reflected.
+- Application registration (`POST /api/v1/console/oauth/applications`) applies the same policy to each `redirectUris` entry (1–10 items, each ≤ 500 chars). `homepageUrl` / `logoUrl` are deliberately stricter — absolute `https:` only, loopback `http:` rejected — because they render as a link / `<img>` on the consent page (`isAllowedDisplayUrl`).
+- The OpenAPI 3.1 spec (`GET /api/v1/openapi.json`) documents the scheme rule on the authorize endpoints.
+
+**CLI/SDK impact: none.** The CLI's authorization-code flow binds a random loopback port and uses `http://127.0.0.1:<port>/cupthread/callback`, which stays fully supported; the device flow (`cupthread auth login --device`) uses no redirect URI at all. A third-party integration that pointed a redirect at a non-loopback `http:` host now fails fast with `invalid_request` — switch it to `https:`.
