@@ -244,6 +244,8 @@ cupthread api sign-user-attrs --app-key app_demo12345 --secret cpt_sk_... \
 bin/cupthread status [--json]
 
 # Link the agent skills into any project (.agents, .claude, .zcode)
+# From a CupThreadAgenticCoding checkout the skills are symlinked; any other
+# build (brew, go install) copies the skills embedded in the binary.
 bin/cupthread skills link /path/to/project
 ```
 

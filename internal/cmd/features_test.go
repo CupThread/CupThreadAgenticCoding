@@ -93,9 +93,9 @@ func requestsHandler(t *testing.T, mutations *int, forwardedTo *string) http.Han
 	}
 }
 
-// runRootWithConfig behaves like runRoot but seeds the throwaway config file
+// runRootWithSeededConfig behaves like runRoot but seeds the throwaway config file
 // with cfgJSON, so tests can exercise the saved default workspace/app path.
-func runRootWithConfig(t *testing.T, serverURL, cfgJSON string, args ...string) (string, error) {
+func runRootWithSeededConfig(t *testing.T, serverURL, cfgJSON string, args ...string) (string, error) {
 	t.Helper()
 
 	oldStdout := os.Stdout
@@ -137,7 +137,7 @@ func TestFeaturesGetScopesToSavedDefaultApp(t *testing.T) {
 	server := httptest.NewServer(requestsHandler(t, &mutations, nil))
 	t.Cleanup(server.Close)
 
-	out, err := runRootWithConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_a_1")
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_a_1")
 	if err != nil {
 		t.Fatalf("features get: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestFeaturesGetScopesToSavedDefaultApp(t *testing.T) {
 	}
 
 	// A request from app B is invisible under the saved default app.
-	_, err = runRootWithConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_b_1")
+	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_b_1")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("features get fr_b_1 error = %v, want not-found under app_a", err)
 	}
@@ -165,7 +165,7 @@ func TestFeaturesLookupSendsSavedDefaultAppID(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	if _, err := runRootWithConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_a_1"); err != nil {
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_a_1"); err != nil {
 		t.Fatalf("features get: %v", err)
 	}
 	if gotAppID != "app_a" {
@@ -194,7 +194,7 @@ func TestFeaturesMutationsScopedToSavedDefaultApp(t *testing.T) {
 			server := httptest.NewServer(requestsHandler(t, &mutations, nil))
 			t.Cleanup(server.Close)
 
-			_, err := runRootWithConfig(t, server.URL, defaultAppConfig, tc.args...)
+			_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, tc.args...)
 			if err == nil || !strings.Contains(err.Error(), "not found") {
 				t.Fatalf("%s fr_b_1 error = %v, want not-found under app_a", tc.name, err)
 			}
@@ -218,7 +218,7 @@ func TestFeaturesAppFlagWinsOverSavedDefault(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	out, err := runRootWithConfig(t, server.URL, defaultAppConfig,
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"features", "get", "fr_b_1", "--app", "app_b")
 	if err != nil {
 		t.Fatalf("features get -a app_b: %v", err)
@@ -244,7 +244,7 @@ func TestFeaturesNoAppKeepsWorkspaceWideResolution(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	out, err := runRootWithConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`,
+	out, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`,
 		"features", "get", "fr_b_1")
 	if err != nil {
 		t.Fatalf("features get without default app: %v", err)
@@ -270,7 +270,7 @@ func TestFeaturesForwardPathUsesResolvedApp(t *testing.T) {
 
 	// Consistent resolution: fr_a_1 lives under app_a (the saved default), so
 	// the forward path must use app_a — the same app the lookup was scoped to.
-	out, err := runRootWithConfig(t, server.URL, defaultAppConfig,
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"features", "forward", "fr_a_1", "--target", "discussion")
 	if err != nil {
 		t.Fatalf("features forward fr_a_1: %v", err)
@@ -285,7 +285,7 @@ func TestFeaturesForwardPathUsesResolvedApp(t *testing.T) {
 	// fr_b_1 is not under the resolved app: the lookup misses and forward
 	// fails before the forward endpoint is hit.
 	forwardedTo = ""
-	_, err = runRootWithConfig(t, server.URL, defaultAppConfig,
+	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"features", "forward", "fr_b_1", "--target", "discussion")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("features forward fr_b_1 error = %v, want not-found under app_a", err)
