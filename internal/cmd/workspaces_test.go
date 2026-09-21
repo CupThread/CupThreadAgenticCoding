@@ -112,7 +112,8 @@ func TestWorkspacesCreateOtherErrorsPassThrough(t *testing.T) {
 
 // TestMembersInviteInteractiveSessionRequired covers the AUTH-01 end-to-end
 // path: a cpt_ token calling a members.manage endpoint surfaces the server's
-// 403 interactive_session_required with the actionable sign-in hint.
+// 403 interactive_session_required with the Console-web-UI hint and no
+// re-login advice (issue #58 — an OAuth login cannot help either).
 func TestMembersInviteInteractiveSessionRequired(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/console/workspaces/ws_1/members" || r.Method != http.MethodPost {
@@ -132,11 +133,14 @@ func TestMembersInviteInteractiveSessionRequired(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 

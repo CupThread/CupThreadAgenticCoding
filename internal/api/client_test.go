@@ -178,6 +178,57 @@ func TestDoEncodesJSONBody(t *testing.T) {
 	}
 }
 
+// TestDoSendsRawJSONBodyVerbatim covers issue #75: a json.RawMessage (or
+// *json.RawMessage) request body must reach the server byte-identical —
+// re-encoding through json.Marshal would round-trip every number through
+// float64 and silently rewrite integers a float64 cannot represent exactly.
+// An empty RawMessage means "no body"; plain values keep going through
+// json.Marshal.
+func TestDoSendsRawJSONBodyVerbatim(t *testing.T) {
+	var gotBody, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotContentType = r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	const body = `{"big":12345678901234567890, "pad": [1, 2]}`
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage(body), nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("wire body = %q, want the RawMessage bytes %q verbatim", gotBody, body)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+
+	rawPtr := json.RawMessage(body)
+	if err := client.Do(context.Background(), "POST", "/x", nil, &rawPtr, nil); err != nil {
+		t.Fatalf("Do with *json.RawMessage: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("*json.RawMessage wire body = %q, want %q verbatim", gotBody, body)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage{}, nil); err != nil {
+		t.Fatalf("Do with empty RawMessage: %v", err)
+	}
+	if gotBody != "" || gotContentType != "" {
+		t.Errorf("empty RawMessage sent body %q (Content-Type %q), want no body at all", gotBody, gotContentType)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, map[string]string{"name": "app"}, nil); err != nil {
+		t.Fatalf("Do with a plain map: %v", err)
+	}
+	if gotBody != `{"name":"app"}` {
+		t.Errorf("plain map wire body = %q, want the marshaled form", gotBody)
+	}
+}
+
 func TestDoMapsAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -377,6 +428,119 @@ func TestHintEmptyForOrdinary4xxErrors(t *testing.T) {
 			if tc.err.Status != http.StatusPaymentRequired {
 				if hint := tc.err.Hint(); hint != "" {
 					t.Errorf("Hint() = %q for a plain %d error, want \"\"", hint, tc.err.Status)
+				}
+			}
+		})
+	}
+}
+
+// TestDoPublicSurfaceAuthenticationRequiredHint covers the PRIV-12 contract
+// from issue #77: when an app disables anonymous access, the public end-user
+// surfaces (roadmap columns/versions, feature-request comment threads,
+// changelog subscribe) answer 401 with code authentication_required. The CLI
+// cannot present an end-user Clerk session, so the error must render the
+// actionable hint. The code travels only on end-user-surface 401s — console
+// 401s mean "cpt_ token invalid or expired" and carry no code, and DATA-03
+// signing failures carry their own codes — so those must stay bare.
+func TestDoPublicSurfaceAuthenticationRequiredHint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		status  int
+		body    string
+		wantSub []string
+		notWant []string
+	}{
+		{
+			name:   "columns 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/columns/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"Sign in is required to view this roadmap",
+				"requires a signed-in session",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "versions 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/versions/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "comments 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/feature-requests/fr_1/comments",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "changelog subscribe 403 email_not_verified",
+			method: "POST",
+			path:   "/api/v1/public/apps/app_key_1/changelog/subscribe",
+			status: http.StatusForbidden,
+			body:   `{"error":"Subscriptions on this changelog are bound to your signed-in email address","code":"email_not_verified"}`,
+			wantSub: []string{
+				"forbidden",
+				"Subscriptions on this changelog are bound to your signed-in email address",
+				"verified email",
+				"third-party emails are not accepted",
+			},
+		},
+		{
+			name:    "console 401 without a code stays bare",
+			method:  "GET",
+			path:    "/api/v1/console/workspaces/ws_1/apps",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Authentication required"}`,
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+		{
+			name:    "DATA-03 signing 401 keeps its own code, no anonymous-access hint",
+			method:  "PUT",
+			path:    "/api/v1/public/apps/app_key_1/user",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Signature mismatch","code":"invalid_signature"}`,
+			wantSub: []string{"invalid_signature"},
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != tc.method {
+					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.method, tc.path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			err := client.Do(context.Background(), tc.method, tc.path, nil, nil, nil)
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			for _, want := range tc.wantSub {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to contain %q", err, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("err = %q, want it to NOT contain %q", err, notWant)
 				}
 			}
 		})
@@ -680,11 +844,16 @@ func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	// Issue #58: re-login advice is a dead end — the browser OAuth login also
+	// issues a cpt_ token, which the interactive-only capabilities reject.
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -714,7 +883,7 @@ func TestHintForbiddenCodes(t *testing.T) {
 		want   string
 	}{
 		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
-		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "Console web UI"},
 		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
 		{"403 without code", http.StatusForbidden, "", ""},
 		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},

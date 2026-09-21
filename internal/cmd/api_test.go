@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,12 +11,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestAPIRequestSurfacesQuotaHint covers issue #21: when the API rejects a
 // submission with 402 (POST /api/v1/feature-requests quota contract), the
 // `api request --json` escape hatch must surface the machine-readable code
-// plus an actionable hint so agents can react without guessing.
+// plus an actionable hint so agents can react without guessing. Issue #72:
+// the invocation must also fail (non-nil error drives exit 1 in main.go) —
+// the payload on stdout never excuses a zero exit code.
 func TestAPIRequestSurfacesQuotaHint(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -29,8 +34,8 @@ func TestAPIRequestSurfacesQuotaHint(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/feature-requests", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 402, want a non-nil error so the process exits 1")
 	}
 	var payload struct {
 		Error  string `json:"error"`
@@ -79,7 +84,8 @@ func TestAPIRequestQuotesRequestIDOnSuccess(t *testing.T) {
 
 // TestAPIRequestJSONErrorIncludesRequestID covers issue #6: the structured
 // error payload of the escape hatch carries the correlation ID so agents can
-// file reproducible bug reports.
+// file reproducible bug reports. Issue #72: the 404 must also fail the
+// invocation in --json mode.
 func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -93,8 +99,8 @@ func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "GET", "/api/v1/x", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 404, want a non-nil error so the process exits 1")
 	}
 	var payload struct {
 		Error     string `json:"error"`
@@ -109,6 +115,92 @@ func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	}
 	if payload.RequestID != got {
 		t.Errorf("requestId = %q, want the echoed %q", payload.RequestID, got)
+	}
+}
+
+// TestAPIRequestJSONValidationErrorExitsNonZero covers issue #72: a 400 in
+// --json mode must fail the invocation while the {error, code, status}
+// payload still reaches stdout, so scripts get both the exit-code signal and
+// a parseable failure description.
+func TestAPIRequestJSONValidationErrorExitsNonZero(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/console/workspaces/ws_1/feature-requests", "--json")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
+	}
+	var payload struct {
+		Error  string `json:"error"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode structured output %q: %v", out, err)
+	}
+	if payload.Status != http.StatusBadRequest || payload.Error != "Validation failed" {
+		t.Errorf("payload = %+v, want status 400 / Validation failed", payload)
+	}
+}
+
+// TestAPIRequestYAMLErrorExitsNonZero covers issue #72 for -o yaml: the yaml
+// error payload must still reach stdout while the invocation fails.
+func TestAPIRequestYAMLErrorExitsNonZero(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/console/workspaces/ws_1/feature-requests", "-o", "yaml")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400 in yaml mode, want a non-nil error so the process exits 1")
+	}
+	var payload struct {
+		Error  string `yaml:"error"`
+		Status int    `yaml:"status"`
+	}
+	if err := yaml.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode yaml output %q: %v", out, err)
+	}
+	if payload.Status != http.StatusBadRequest || payload.Error != "Validation failed" {
+		t.Errorf("payload = %+v, want status 400 / Validation failed", payload)
+	}
+}
+
+// TestAPIRequestJSONSuccessPassthrough pins the issue #72 success path: a 200
+// in --json mode keeps exit 0 and passes the raw response body through
+// faithfully — identical once indentation is removed, with every number
+// preserved exactly as the server sent it.
+func TestAPIRequestJSONSuccessPassthrough(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	const body = `{"me":{"id":"usr_1","email":"dev@example.com"},"bigNumber":1699999999999999999}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "GET", "/api/v1/console/me", "--json")
+	if err != nil {
+		t.Fatalf("api request: %v", err)
+	}
+	compact := func(s string) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(s)); err != nil {
+			t.Fatalf("compact output %q: %v", s, err)
+		}
+		return buf.String()
+	}
+	if got := compact(out); got != body {
+		t.Errorf("stdout = %q, want the raw body compacted to %q", got, body)
 	}
 }
 
@@ -356,5 +448,122 @@ func TestFeaturesCreateSurfacesValidationField(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "title: Title must be at least 3 characters") {
 		t.Errorf("error = %v, want the field-level reason", err)
+	}
+}
+
+// TestAPIRequestInputSendsNumbersByteIdentical covers issue #75: the escape
+// hatch must forward the --input bytes verbatim. The previous decode-into-any
+// path rebuilt every number through float64, silently rewriting integers
+// beyond 2^53, nanosecond timestamps and number formatting before the request
+// left the CLI.
+func TestAPIRequestInputSendsNumbersByteIdentical(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	const body = `{"bigId":12345678901234567890,"ts":1699999999999999999,` +
+		`"exp":1e21,"neg":-9007199254740993,"frac":0.30000000000000004, "pad": [1, 2]}`
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/anything",
+		"--input", writeInputFile(t, body)); err != nil {
+		t.Fatalf("api request: %v", err)
+	}
+	if got != body {
+		t.Errorf("wire body =\n%q\nwant the input file's exact bytes:\n%q", got, body)
+	}
+}
+
+// TestSettingsSetInputPreservesNumbersAndFlagsOverride covers issue #75 for
+// `apps settings set --input` (raw JSON values must not round-trip through
+// float64) and the documented merge order: the --input body supplies the
+// base, boolean flags override their keys.
+func TestSettingsSetInputPreservesNumbersAndFlagsOverride(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var gotPut string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/apps"):
+			_, _ = w.Write([]byte(`{"apps":[{"appId":"app_1","appKey":"key_1","slug":"app-one","name":"App One"}]}`))
+		case r.Method == http.MethodPut:
+			b, _ := io.ReadAll(r.Body)
+			gotPut = string(b)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "settings", "set", "app_1", "--workspace", "ws_1",
+		"--input", writeInputFile(t, `{"allowAnonymousRoadmap":true,"maxAttachments":12345678901234567890}`),
+		"--anon-roadmap=false"); err != nil {
+		t.Fatalf("apps settings set: %v", err)
+	}
+	if !strings.Contains(gotPut, `"maxAttachments":12345678901234567890`) {
+		t.Errorf("wire body = %s, want the big integer sent verbatim", gotPut)
+	}
+	if !strings.Contains(gotPut, `"allowAnonymousRoadmap":false`) {
+		t.Errorf("wire body = %s, want the boolean flag to override the --input key", gotPut)
+	}
+}
+
+// TestImportsCreateOptionsPreserveNumbers covers issue #75 for the second
+// decode-into-any consumer: numeric option values from --options must reach
+// the server unchanged.
+func TestImportsCreateOptionsPreserveNumbers(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job":{"id":"job_1","source":"linear","mode":"preview","status":"queued"},"drain":{"processed":0,"succeeded":0,"failed":0}}`))
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "imports", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--source", "linear", "--options", writeInputFile(t, `{"teamId":"t_1","limit":12345678901234567890}`)); err != nil {
+		t.Fatalf("imports create: %v", err)
+	}
+	if !strings.Contains(got, `"limit":12345678901234567890`) {
+		t.Errorf("wire body = %s, want the big integer sent verbatim", got)
+	}
+	if !strings.Contains(got, `"teamId":"t_1"`) {
+		t.Errorf("wire body = %s, want the raw options object carried through", got)
+	}
+}
+
+// TestImportsCreateFlagsStillReachOptions guards the flag branch after the
+// issue #75 raw-passthrough change: with --options absent, the per-source
+// flags keep building the options object.
+func TestImportsCreateFlagsStillReachOptions(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job":{"id":"job_1","source":"github_issues","mode":"preview","status":"queued"},"drain":{"processed":0,"succeeded":0,"failed":0}}`))
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "imports", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--source", "github_issues", "--owner", "acme", "--repo", "api", "--state", "open",
+		"--limit", "7"); err != nil {
+		t.Fatalf("imports create: %v", err)
+	}
+	for _, want := range []string{`"owner":"acme"`, `"repo":"api"`, `"state":"open"`, `"limit":7`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wire body = %s, missing %s", got, want)
+		}
 	}
 }

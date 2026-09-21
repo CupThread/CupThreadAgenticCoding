@@ -34,8 +34,9 @@ Path must start with "/" and is appended to the base URL, e.g.
 
 Authentication, the X-Workspace-Id header (when a workspace is resolved) and
 JSON output are handled the same as the high-level commands. Pass a JSON body
-with --input @file (or "-" for stdin). This is the escape hatch for endpoints
-the CLI does not wrap yet.
+with --input @file (or "-" for stdin); the body is sent byte-for-byte as
+given, so JSON numbers keep full precision (issue #75). This is the escape
+hatch for endpoints the CLI does not wrap yet.
 
 Every invocation sends an X-Request-Id correlation header (cli-<uuid>); the
 API echoes it on the response and CLI errors quote it as request-id=… —
@@ -49,13 +50,13 @@ include that value in bug reports and support requests.`,
 				return errors.New("path must start with '/'")
 			}
 
-			var body any
+			var body json.RawMessage
 			if inputPath != "" {
 				data, err := readInputFile(inputPath)
 				if err != nil {
 					return err
 				}
-				body, err = decodeStrictJSON(data)
+				body, err = decodeStrictRawJSON(data)
 				if err != nil {
 					return err
 				}
@@ -69,9 +70,12 @@ include that value in bug reports and support requests.`,
 			err := A.client.DoWithHeaders(cmd.Context(), method, path, nil,
 				map[string]string{"X-Request-Id": requestID}, body, &raw)
 			if err != nil {
-				// Still surface structured API errors as JSON when in JSON mode.
-				// errors.As is required because tier-limit (402) errors are
-				// wrapped by the client.
+				// Surface structured API errors as a machine-readable payload
+				// on stdout, but still return the error so the process exits
+				// non-zero: scripts and agents branch on the exit code, and
+				// exiting 0 on a failed request would hide the failure behind
+				// a parseable payload. errors.As is required because
+				// tier-limit (402) errors are wrapped by the client.
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) && A.structured() {
 					payload := map[string]any{
@@ -91,7 +95,9 @@ include that value in bug reports and support requests.`,
 					if len(apiErr.Details) > 0 {
 						payload["details"] = json.RawMessage(apiErr.Details)
 					}
-					return A.out.Structured(payload)
+					if perr := A.out.Structured(payload); perr != nil {
+						return perr
+					}
 				}
 				return err
 			}
