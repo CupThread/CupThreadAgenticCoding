@@ -159,7 +159,10 @@ commands (`features get/update/approve/delete/forward`) resolve
 `<request-id>` within the **resolved app** — the `--app` flag, else the saved
 default from `apps use` — so an ID from another app in the same workspace
 fails with "not found" instead of being mutated; with no app resolved the
-lookup stays workspace-wide. To walk the
+lookup stays workspace-wide. Resolution pages through the whole workspace
+listing (200 per page), so a request past the newest page still resolves;
+prefix ambiguity is judged across every page, and resolution gives up after
+50 pages (≈10k requests) with a clear error. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
