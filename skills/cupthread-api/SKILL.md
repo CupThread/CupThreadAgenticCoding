@@ -400,18 +400,19 @@ Every `/api/v1/console/workspaces/{wsId}/...` route declares one capability (ups
 | `integration.manage` (connect/disconnect integrations, manual tokens, sync) | ❌ | ✅ | ✅ |
 | `billing.manage` (checkout, portal, add-ons) | ❌ | ✅ | ✅ |
 | `members.manage` (member add/set-role/remove, invitation revoke) | ❌ | ✅ | ✅ |
+| `privacy.manage` (end-user erase/anonymize, attachment delete, export create / download-token / download — PRIV-01) | ❌ | ✅ | ✅ |
 | `workspace.delete` | ❌ | ❌ | ✅ (declared; no route uses it yet) |
 
 Two structured 403 codes can come back from these routes (both with HTTP 403):
 
 - `capability_required` — the caller's role does not include the route's capability:
   `{"error": "Access denied: your workspace role does not include the '<capability>' capability", "code": "capability_required"}`
-- `interactive_session_required` — the route's capability is in the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
+- `interactive_session_required` — the route's capability is in the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `privacy.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
   `{"error": "This action requires an interactive session; API tokens are not permitted", "code": "interactive_session_required"}`
 
 The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk web sessions (Console web UI) never see `interactive_session_required` — note that the CLI's `auth login` OAuth flow issues a `cpt_` access token too, so from the CLI every interactive-only capability is unreachable.
 
-Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage` (changelog **drafts and edits** included — only publishing/scheduling moved out into `changelog.publish`, see the next section), `app.configure`, and imports. Two GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`) and `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`). Public feedback/SDK endpoints are unchanged.
+Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage` (changelog **drafts and edits** included — only publishing/scheduling moved out into `changelog.publish`, see the next section), `app.configure`, and imports. Three GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`), `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`), and `GET .../export/:jobId/download` (export artifact download, `privacy.manage`). Public feedback/SDK endpoints are unchanged.
 
 ---
 
@@ -422,10 +423,10 @@ Publishing or scheduling a changelog entry emails every confirmed subscriber (a 
 | Endpoint | Gated request shape | Requirement |
 |---|---|---|
 | `POST .../changelog` | body has `publishNow: true` or non-null `scheduledAt` | `changelog.publish` (checked **in addition to** the route's `content.manage` access) |
-| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (`""`/null clears it) | `changelog.publish` |
+| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (setting a schedule only) | `changelog.publish` |
 | `POST .../changelog/:entryId/publish` | always | `changelog.publish` (route-wide; **changed** from `content.manage`) |
 
-Not gated: creating/updating/deleting **drafts** without publish/schedule intent, listing, and unpublishing stay under plain `content.manage` (members and `cpt_` tokens keep full draft workflow access).
+Not gated: creating/updating/deleting **drafts** without publish/schedule intent, listing, unpublishing, and **clearing** a schedule stay under plain `content.manage` (members and `cpt_` tokens keep full draft workflow access). The clear semantics on `PUT`: `scheduledAt: null` clears the schedule and is **not** gated — the gate checks `typeof scheduledAt === "string"`, so a JSON `null` skips it entirely and plain `content.manage` suffices (a member or `cpt_` token **can unschedule**); `""` never reaches the route — the schema is `z.string().datetime().nullable().optional()`, so an empty string fails validation with `400 {"error": "Validation failed"}`. The CLI's `changelog update <id> --schedule-at ""` sends exactly `{"scheduledAt": null}`.
 
 Denials follow the AUTH-01 order (role first, then token type):
 

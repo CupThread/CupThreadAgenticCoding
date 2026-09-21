@@ -246,8 +246,9 @@ cupthread inbox list                        # triage feedback
 cupthread features list --sort revenue      # Pro-gated revenue view
 cupthread comments moderation hide cmt_abc  # moderate comments in a workspace
 cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
-                                             # publish-now/schedule-at need a workspace admin/owner
-                                             # interactive session; cpt_ tokens can create drafts only
+                                             # publish-now/schedule-at <datetime> need a workspace admin/owner
+                                             # interactive session; clearing (--schedule-at "") and drafts need
+                                             # plain content.manage; cpt_ tokens can create drafts only
 cupthread features update fr_123 --column-slug planned  # moderate requests (also approve/forward/delete)
 cupthread changelog unpublish <entry-id>   # revert a published entry to draft (tokens OK)
 cupthread imports create --source github_issues --mode preview
