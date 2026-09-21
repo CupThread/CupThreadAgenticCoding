@@ -41,6 +41,10 @@ Use --token to log in with a personal access token created in the Console
 (Settings → API Tokens). Pass "-" to read the token from stdin, which avoids
 leaking it into your shell history.
 
+The token is trimmed of surrounding whitespace; a value that still contains
+embedded spaces, tabs, or control characters is rejected with a
+self-diagnosing error instead of a net/http transport failure.
+
 If a previous login on this machine saved a default workspace or app that the
 new account cannot see, those saved defaults are cleared with a warning
 instead of silently targeting the previous user's workspace.`,
@@ -67,9 +71,14 @@ func loginWithToken(ctx context.Context, token string) error {
 			return fmt.Errorf("read token from stdin: %w", err)
 		}
 		token = strings.TrimSpace(line)
+	} else {
+		token = strings.TrimSpace(token)
 	}
 	if token == "" {
 		return errors.New("empty token")
+	}
+	if err := config.ValidateToken(token); err != nil {
+		return fmt.Errorf("invalid --token: %w", err)
 	}
 
 	probe := api.New(A.baseURL())
@@ -106,7 +115,7 @@ func loginWithPKCE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
 func loginWithDevice(ctx context.Context) error {
@@ -121,14 +130,14 @@ func loginWithDevice(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
-func finishOAuthLogin(set *auth.TokenSet) error {
+func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
 	A.applyTokenSet(set)
 
 	var me api.MeResponse
-	if err := A.client.Do(context.Background(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
+	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 		return fmt.Errorf("login succeeded but session check failed: %w", err)
 	}
 	reconcileWorkspaceContext(&me, A.out.Printf)

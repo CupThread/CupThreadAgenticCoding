@@ -94,6 +94,8 @@ void initState() {
 
 ## Payment-Attribute Signing (HMAC-SHA256, DATA-03)
 
+**SDK status — the Flutter SDK signs automatically.** Configure `FeedbackClientConfig(sdkSigningSecret: …)` (alias `signingSecret`) and `updateUserAttributes` signs the payload itself whenever payment attributes are present. It is also the only SDK that accepts a precomputed pair: pass the explicit `signature` + `timestamp` parameters and they are sent as-is instead of auto-signing.
+
 `PUT /api/v1/public/apps/{appKey}/user` only persists paying status, plan, and MRR when the request is **signed with the app's SDK signing secret** (developer console: *App Access → App Credentials → SDK signing secret*). Whenever the body contains any of `isPaying`, `mrr`, or `plan` (an explicit JSON `null` counts), it must also carry `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch seconds) — both plain body fields. Identity-only and currency-only writes stay unsigned. Rejections happen before any profile row is created:
 
 - `422 payment_attributes_require_signature` — payment fields without `signature` + `timestamp`

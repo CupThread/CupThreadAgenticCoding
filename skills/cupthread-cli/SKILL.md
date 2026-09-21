@@ -101,6 +101,10 @@ cupthread apps create --name "My App"      # Create a new app
 cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPEG/WebP/GIF, or screened SVG;
                                            # requires workspace admin/owner). A declared type that does not
                                            # match the file content fails with 415 "unsupported image type".
+                                           # Update order: metadata flags are PUT first, icon uploaded last;
+                                           # name/slug/URL/platform values are validated locally first and a
+                                           # failed icon upload after an applied PUT reports
+                                           # "partially applied" (JSON errors carry applied/failed lists).
 cupthread apps public-config <app-key>     # Show the public portal config (no login required);
                                            # also accepts --workspace-slug <slug> --app-slug <slug>;
                                            # private apps fail with 404 like unknown keys (fail-closed)
@@ -137,7 +141,12 @@ cupthread features create --title "Dark mode" --description "Add dark theme supp
 cupthread columns list                     # List public roadmap columns
 cupthread versions list                    # List release milestones / versions
 ```
-`features list` reads the console (workspace-scoped) listing. To walk the
+`features list` reads the console (workspace-scoped) listing. The ID-taking
+commands (`features get/update/approve/delete/forward`) resolve
+`<request-id>` within the **resolved app** — the `--app` flag, else the saved
+default from `apps use` — so an ID from another app in the same workspace
+fails with "not found" instead of being mutated; with no app resolved the
+lookup stays workspace-wide. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
@@ -196,12 +205,16 @@ cupthread api request GET /api/v1/console/me --json
 
 Every CLI request carries an `X-Request-Id` correlation header (`cli-<uuid>`; the API echoes it on every response). CLI errors quote the server-echoed value as `request-id=…`, and `api request` prints it on success lines — include that value verbatim in bug reports and support requests so the exact request can be found server-side.
 
+`--input @file` (or `"-"`/`"@"` for stdin) sends the body as JSON and is strict: the file must contain exactly one JSON value. A second value or stray text after it fails the command with `parse input JSON: unexpected trailing data` before anything is sent — fix the file rather than retrying.
+
 ### Repository & Skills Management
 ```sh
 # Inspect git status of local CupThread repositories
 bin/cupthread status --json
 
 # Symlink skills into target project (.agents, .claude, .zcode)
+# Works from any installed binary: a verified CupThreadAgenticCoding checkout
+# is symlinked; otherwise the skills embedded in the binary are copied.
 bin/cupthread skills list
 bin/cupthread skills link /path/to/target/project
 ```
@@ -210,12 +223,13 @@ bin/cupthread skills link /path/to/target/project
 Bodies sent to `PUT /api/v1/public/apps/{appKey}/user` that report payment attributes (`isPaying`, `mrr`, `plan` — an explicit `null` counts) must carry an HMAC-SHA256 `signature` + `timestamp` (contract: API skill, "SDK Payment-Attribute Signing (DATA-03)"). The CLI computes reference signatures so coding agents can cross-check platform implementations:
 
 ```sh
-cupthread api sign-user-attrs --app-key app_demo12345 --secret cpt_sk_... \
-  --user-token 3fa85f64-5717-4562-b3fc-2c963f66afa6 \
-  --input ./user-attrs.json
+# Recommended: keep the signing secret off the command line (shell history / ps)
+printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12345 \
+  --user-token 3fa85f64-5717-4562-b3fc-2c963f66afa6 --secret - --input ./user-attrs.json
+# or export CUPTHREAD_SDK_SIGNING_SECRET=cpt_sk_... once, then omit --secret entirely
 ```
 
-`--input` takes the **exact JSON body you plan to send** (`"-"` or `"@"` reads stdin); `--user-token` is the `X-User-Token` header value used only when the body carries no `userToken`. Output: the canonical string, the lowercase-hex signature, and the epoch timestamp (pin with `--timestamp <epoch>` for reproducible vectors; `--json` emits `{appKey, userToken, timestamp, canonical, signature}`). Add the returned `signature` and `timestamp` fields to the body without changing the signed values, and send within ±300 seconds of the timestamp. A body with no payment attributes prints a note that it may be sent unsigned.
+`--secret` takes the SDK signing secret inline, as `-`/`@` (read from stdin, trailing whitespace trimmed), or falls back to `$CUPTHREAD_SDK_SIGNING_SECRET` (also trimmed) when omitted; precedence is flag > env, and the no-source error names all three forms. Prefer stdin/env — inline values land in shell history and are visible via `ps`. `--secret` and `--input` cannot both read stdin in one invocation. `--input` takes the **exact JSON body you plan to send** (`"-"` or `"@"` reads stdin); `--user-token` is the `X-User-Token` header value used only when the body carries no `userToken`. Output: the canonical string, the lowercase-hex signature, and the epoch timestamp (pin with `--timestamp <epoch>` for reproducible vectors; `--json` emits `{appKey, userToken, timestamp, canonical, signature}`). Add the returned `signature` and `timestamp` fields to the body without changing the signed values, and send within ±300 seconds of the timestamp. A body with no payment attributes prints a note that it may be sent unsigned.
 
 ---
 
