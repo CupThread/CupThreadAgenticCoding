@@ -26,7 +26,7 @@ func newAuthCmd() *cobra.Command {
 
 func newAuthLoginCmd() *cobra.Command {
 	var (
-		token    string
+		token     string
 		useDevice bool
 	)
 	login := &cobra.Command{
@@ -231,15 +231,16 @@ func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
 
 func newAuthStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show the current login and defaults",
+		Use:                   "status",
+		Short:                 "Show the current login and defaults",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			type statusRow struct {
-				BaseURL     string `json:"baseUrl"`
-				Method      string `json:"method"`
-				TokenPrefix string `json:"tokenPrefix,omitempty"`
-				ExpiresAt   string `json:"expiresAt,omitempty"`
+				BaseURL       string `json:"baseUrl"`
+				IssuedBaseURL string `json:"issuedBaseUrl,omitempty"`
+				Method        string `json:"method"`
+				TokenPrefix   string `json:"tokenPrefix,omitempty"`
+				ExpiresAt     string `json:"expiresAt,omitempty"`
 				// Stored* mirror the login saved in the config file. They are
 				// only set when $CUPTHREAD_TOKEN overrides it, so `method`
 				// always names the credential requests actually use.
@@ -251,6 +252,9 @@ func newAuthStatusCmd() *cobra.Command {
 				User              string `json:"user,omitempty"`
 			}
 			row := statusRow{BaseURL: A.baseURL(), Method: "not logged in"}
+			if stored := strings.TrimRight(A.cfg.BaseURL, "/"); stored != "" {
+				row.IssuedBaseURL = stored
+			}
 			env := config.EnvToken()
 			if env != "" {
 				row.Method = "token ($CUPTHREAD_TOKEN)"
@@ -299,6 +303,9 @@ func newAuthStatusCmd() *cobra.Command {
 					fmt.Sprintf("%s, token %s, expires %s",
 						row.StoredMethod, orDash(row.StoredTokenPrefix), orDash(row.StoredExpiresAt)),
 				})
+			}
+			if row.IssuedBaseURL != "" {
+				table = append(table, []string{"Credential issued for", row.IssuedBaseURL})
 			}
 			A.out.Table([]string{"Field", "Value"}, table)
 			return nil

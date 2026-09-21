@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,35 +38,6 @@ func writeStatusStoredLogin(t *testing.T) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
-}
-
-// runRootWithConfig is runRoot with an explicit config file, so tests can
-// pre-seed a stored login (runRoot always points --config at a fresh temp
-// file).
-func runRootWithConfig(t *testing.T, serverURL, configPath string, args ...string) (string, error) {
-	t.Helper()
-
-	oldStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("pipe: %v", err)
-	}
-	os.Stdout = w
-
-	root := newRootCmd()
-	full := append(append([]string{}, args...), "--base-url", serverURL, "--config", configPath)
-	root.SetArgs(full)
-	execErr := root.Execute()
-
-	os.Stdout = oldStdout
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe: %v", err)
-	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read pipe: %v", err)
-	}
-	return string(out), execErr
 }
 
 // statusMeServer serves /api/v1/console/me and records the Authorization
