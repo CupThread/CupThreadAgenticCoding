@@ -47,7 +47,13 @@ self-diagnosing error instead of a net/http transport failure.
 
 If a previous login on this machine saved a default workspace or app that the
 new account cannot see, those saved defaults are cleared with a warning
-instead of silently targeting the previous user's workspace.`,
+instead of silently targeting the previous user's workspace.
+
+Logging in against a non-default API endpoint (--base-url or
+$CUPTHREAD_BASE_URL) remembers that endpoint in the config file, so later
+invocations reach the same server without the flag. --base-url and
+$CUPTHREAD_BASE_URL still override it per invocation; 'cupthread auth
+logout' forgets it.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token != "" {
@@ -98,6 +104,7 @@ func loginWithToken(ctx context.Context, token string) error {
 		TokenPrefix: prefix,
 	}
 	reconcileWorkspaceContext(&me, A.out.Printf)
+	A.rememberLoginBaseURL()
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
@@ -141,6 +148,7 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
 		return fmt.Errorf("login succeeded but session check failed: %w", err)
 	}
 	reconcileWorkspaceContext(&me, A.out.Printf)
+	A.rememberLoginBaseURL()
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
@@ -152,11 +160,26 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
 	return nil
 }
 
+// rememberLoginBaseURL stores the base URL the credential was issued against,
+// so later invocations without --base-url/$CUPTHREAD_BASE_URL reach the same
+// server instead of silently falling back to production. The default URL is
+// never stored: an empty field keeps following config.DefaultBaseURL.
+func (a *app) rememberLoginBaseURL() {
+	if url := a.baseURL(); url != config.DefaultBaseURL {
+		a.cfg.BaseURL = url
+		return
+	}
+	a.cfg.BaseURL = ""
+}
+
 func newAuthLogoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Remove stored credentials from this machine",
 		Long: `Remove stored credentials from this machine.
+
+Also forgets the API base URL a non-default login stored, so the next login
+starts from the default endpoint again.
 
 This only clears local state. To revoke the token server-side, delete it in
 the Console (Settings → API Tokens / Authorized Apps) or use
