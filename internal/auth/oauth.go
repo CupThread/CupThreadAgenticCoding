@@ -327,6 +327,11 @@ func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet
 	return &set, nil
 }
 
+// httpClient bounds every OAuth/token request (PKCE code exchange, device
+// flow, transparent refresh) so a stalled token endpoint cannot hang the CLI
+// the way the timeout-less http.DefaultClient would.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
 func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -335,7 +340,7 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST %s: %w", rawURL, err)
 	}
