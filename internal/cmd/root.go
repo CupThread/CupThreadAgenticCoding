@@ -166,6 +166,9 @@ func (a *app) buildClient() *api.Client {
 	client.WorkspaceID = flagWorkspace
 	client.Token = func(ctx context.Context) (string, error) {
 		if env := config.EnvToken(); env != "" {
+			if err := config.ValidateToken(env); err != nil {
+				return "", fmt.Errorf("invalid $CUPTHREAD_TOKEN: %w", err)
+			}
 			return env, nil
 		}
 		authState := a.cfg.Auth
