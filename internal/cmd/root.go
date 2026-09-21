@@ -256,7 +256,11 @@ func (a *app) requireAppID() (string, error) {
 	return "", errors.New("no app selected: pass --app <id> or run 'cupthread apps use <id>'")
 }
 
-// lookupApp lists the workspace's apps and matches id, slug or name.
+// lookupApp lists the workspace's apps and matches id, slug or name. Ids and
+// slugs are unique server-side and short-circuit; name matches are collected
+// exhaustively because display names are not unique (the API only dedupes
+// slugs), so an ambiguous name must fail loudly instead of silently picking
+// the first list entry.
 func (a *app) lookupApp(ctx context.Context, ref string) (*api.AppRecord, error) {
 	ws, err := a.workspaceID()
 	if err != nil {
@@ -270,14 +274,35 @@ func (a *app) lookupApp(ctx context.Context, ref string) (*api.AppRecord, error)
 	}
 	for i := range resp.Apps {
 		appRec := &resp.Apps[i]
-		if appRec.AppID == ref || appRec.Slug == ref || appRec.Name == ref {
+		if appRec.AppID == ref || appRec.Slug == ref {
 			return appRec, nil
 		}
 	}
-	return nil, fmt.Errorf("app %q not found in workspace (see 'cupthread apps list')", ref)
+	var byName []*api.AppRecord
+	for i := range resp.Apps {
+		appRec := &resp.Apps[i]
+		if appRec.Name == ref {
+			byName = append(byName, appRec)
+		}
+	}
+	switch len(byName) {
+	case 1:
+		return byName[0], nil
+	case 0:
+		return nil, fmt.Errorf("app %q not found in workspace (see 'cupthread apps list')", ref)
+	default:
+		candidates := make([]string, len(byName))
+		for i, appRec := range byName {
+			candidates[i] = fmt.Sprintf("%s (%s, slug %s)", appRec.Name, appRec.AppID, appRec.Slug)
+		}
+		return nil, fmt.Errorf("app %q is ambiguous; it matches %d apps in this workspace:\n  - %s\nretry with the app id or slug instead (see 'cupthread apps list')",
+			ref, len(byName), strings.Join(candidates, "\n  - "))
+	}
 }
 
-// lookupWorkspace resolves a workspace reference (id or slug) via /console/me.
+// lookupWorkspace resolves a workspace reference (id, slug or name) via
+// /console/me, with the same unique-id/slug short-circuit and exhaustive,
+// ambiguity-checked name pass as lookupApp.
 func (a *app) lookupWorkspace(ctx context.Context, ref string) (*api.Workspace, error) {
 	var me api.MeResponse
 	if err := a.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
@@ -285,9 +310,28 @@ func (a *app) lookupWorkspace(ctx context.Context, ref string) (*api.Workspace, 
 	}
 	for i := range me.Workspaces {
 		entry := &me.Workspaces[i]
-		if entry.Workspace.ID == ref || entry.Workspace.Slug == ref || entry.Workspace.Name == ref {
+		if entry.Workspace.ID == ref || entry.Workspace.Slug == ref {
 			return &entry.Workspace, nil
 		}
 	}
-	return nil, fmt.Errorf("workspace %q not found (see 'cupthread workspaces list')", ref)
+	var byName []*api.Workspace
+	for i := range me.Workspaces {
+		entry := &me.Workspaces[i]
+		if entry.Workspace.Name == ref {
+			byName = append(byName, &entry.Workspace)
+		}
+	}
+	switch len(byName) {
+	case 1:
+		return byName[0], nil
+	case 0:
+		return nil, fmt.Errorf("workspace %q not found (see 'cupthread workspaces list')", ref)
+	default:
+		candidates := make([]string, len(byName))
+		for i, ws := range byName {
+			candidates[i] = fmt.Sprintf("%s (%s, slug %s)", ws.Name, ws.ID, ws.Slug)
+		}
+		return nil, fmt.Errorf("workspace %q is ambiguous; it matches %d of your workspaces:\n  - %s\nretry with the workspace id or slug instead (see 'cupthread workspaces list')",
+			ref, len(byName), strings.Join(candidates, "\n  - "))
+	}
 }
