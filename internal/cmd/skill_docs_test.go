@@ -74,3 +74,47 @@ func TestSDKSkillSigningGuidance(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsCommentThreadPagination pins the PROD-31 keyset-pagination
+// contract for both comment-thread endpoints in the API skill (limit/cursor
+// parameters, the {comments, total, hasMore, nextCursor} page shape, the
+// 400 Invalid cursor error) and the CLI skill's promise that both list
+// commands walk pages to the end and count with the server's total.
+func TestSkillDocsCommentThreadPagination(t *testing.T) {
+	cases := []struct {
+		skill string
+		want  []string
+	}{
+		{
+			skill: "cupthread-api",
+			want: []string{
+				"Keyset-paginated (PROD-31)",
+				"`{comments, total, hasMore, nextCursor}`",
+				"not `comments.length`",
+				"at most 200 rows",
+				`400 {"error": "Invalid cursor"}`,
+			},
+		},
+		{
+			skill: "cupthread-cli",
+			want: []string{
+				"walk the thread's keyset pagination (PROD-31",
+				"server's authoritative `total`",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.skill, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("..", "..", "skills", tc.skill, "SKILL.md"))
+			if err != nil {
+				t.Fatalf("read skill doc: %v", err)
+			}
+			doc := string(data)
+			for _, marker := range tc.want {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required comment-pagination marker %q", tc.skill, marker)
+				}
+			}
+		})
+	}
+}

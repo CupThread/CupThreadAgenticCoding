@@ -2,10 +2,78 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
 )
+
+// maxCommentPages caps thread paging (50 pages ≈ 10k comments at the
+// server's 200-per-request page cap, PROD-31) so a server that never stops
+// reporting pages cannot hang the CLI.
+const maxCommentPages = 50
+
+// fetchCommentThread walks a comment thread by feeding each page's
+// nextCursor back as the cursor query parameter until the server reports
+// the last page, aggregating every page's comments. The metadata of the
+// returned aggregate comes from the final page: Total is the thread's
+// authoritative size under the endpoint's visibility rules — not
+// len(Comments), which shrinks to the last page size once threads exceed
+// the per-request cap — and a completed walk by definition has no next
+// page. fetchPage must pass cursor through verbatim ("" on the first call).
+func fetchCommentThread(fetchPage func(cursor string) (*api.ListCommentsResponse, error)) (*api.ListCommentsResponse, error) {
+	aggregated := &api.ListCommentsResponse{}
+	cursor := ""
+	for page := 0; page < maxCommentPages; page++ {
+		resp, err := fetchPage(cursor)
+		if err != nil {
+			return nil, err
+		}
+		aggregated.Comments = append(aggregated.Comments, resp.Comments...)
+		aggregated.Total = resp.Total
+		if resp.NextCursor == nil {
+			aggregated.HasMore = false
+			aggregated.NextCursor = nil
+			return aggregated, nil
+		}
+		cursor = *resp.NextCursor
+	}
+	return nil, fmt.Errorf("comment thread did not end within %d pages (~%d comments fetched); giving up rather than paging forever", maxCommentPages, len(aggregated.Comments))
+}
+
+// commentCount reports the thread size for human output: the server's
+// authoritative total when the response carries one, falling back to
+// len(Comments) for a pre-pagination response with no total field.
+func commentCount(resp *api.ListCommentsResponse) int {
+	if resp.Total > 0 || len(resp.Comments) == 0 {
+		return resp.Total
+	}
+	return len(resp.Comments)
+}
+
+// commentRows renders the shared comment table body.
+func commentRows(comments []api.FeatureRequestComment) [][]string {
+	rows := make([][]string, 0, len(comments))
+	for _, c := range comments {
+		id := c.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		hidden := ""
+		if c.IsHidden {
+			hidden = "yes"
+		}
+		rows = append(rows, []string{
+			id,
+			orDash(deref(c.AuthorName)),
+			truncate(c.Body, 60),
+			orDash(deref(c.ReplyToAuthorName)),
+			hidden,
+			cutDate(c.CreatedAt),
+		})
+	}
+	return rows
+}
 
 func newCommentsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -45,37 +113,31 @@ func newCommentsModerationListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var resp api.ListCommentsResponse
-			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/feature-requests/"+args[0]+"/comments"), nil, nil, &resp); err != nil {
-				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
-					return notFoundErr("feature request", args[0], ws)
+			path := wsPath(ws, "/feature-requests/"+args[0]+"/comments")
+			resp, err := fetchCommentThread(func(cursor string) (*api.ListCommentsResponse, error) {
+				// Page 1 keeps the historic nil query; later pages echo
+				// the server's nextCursor back as the cursor parameter.
+				var q url.Values
+				if cursor != "" {
+					q = url.Values{"cursor": {cursor}}
 				}
+				var page api.ListCommentsResponse
+				if err := A.client.Do(cmd.Context(), "GET", path, q, nil, &page); err != nil {
+					if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+						return nil, notFoundErr("feature request", args[0], ws)
+					}
+					return nil, err
+				}
+				return &page, nil
+			})
+			if err != nil {
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			rows := make([][]string, 0, len(resp.Comments))
-			for _, c := range resp.Comments {
-				id := c.ID
-				if len(id) > 12 {
-					id = id[:12]
-				}
-				hidden := ""
-				if c.IsHidden {
-					hidden = "yes"
-				}
-				rows = append(rows, []string{
-					id,
-					orDash(deref(c.AuthorName)),
-					truncate(c.Body, 60),
-					orDash(deref(c.ReplyToAuthorName)),
-					hidden,
-					cutDate(c.CreatedAt),
-				})
-			}
-			A.out.Table([]string{"ID", "Author", "Body", "Reply To", "Hidden", "Created"}, rows)
-			A.out.Printf("(%d comments)", len(resp.Comments))
+			A.out.Table([]string{"ID", "Author", "Body", "Reply To", "Hidden", "Created"}, commentRows(resp.Comments))
+			A.out.Printf("(%d comments)", commentCount(resp))
 			return nil
 		},
 	}
@@ -160,34 +222,25 @@ func newCommentsListCmd() *cobra.Command {
 			if userToken != "" {
 				headers["X-User-Token"] = userToken
 			}
-			var resp api.ListCommentsResponse
-			if err := A.client.DoWithHeaders(cmd.Context(), "GET", path, nil, headers, nil, &resp); err != nil {
+			resp, err := fetchCommentThread(func(cursor string) (*api.ListCommentsResponse, error) {
+				var q url.Values
+				if cursor != "" {
+					q = url.Values{"cursor": {cursor}}
+				}
+				var page api.ListCommentsResponse
+				if err := A.client.DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
+					return nil, err
+				}
+				return &page, nil
+			})
+			if err != nil {
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			rows := make([][]string, 0, len(resp.Comments))
-			for _, c := range resp.Comments {
-				id := c.ID
-				if len(id) > 12 {
-					id = id[:12]
-				}
-				hidden := ""
-				if c.IsHidden {
-					hidden = "yes"
-				}
-				rows = append(rows, []string{
-					id,
-					orDash(deref(c.AuthorName)),
-					truncate(c.Body, 60),
-					orDash(deref(c.ReplyToAuthorName)),
-					hidden,
-					cutDate(c.CreatedAt),
-				})
-			}
-			A.out.Table([]string{"ID", "Author", "Body", "Reply To", "Hidden", "Created"}, rows)
-			A.out.Printf("(%d comments)", len(resp.Comments))
+			A.out.Table([]string{"ID", "Author", "Body", "Reply To", "Hidden", "Created"}, commentRows(resp.Comments))
+			A.out.Printf("(%d comments)", commentCount(resp))
 			return nil
 		},
 	}
