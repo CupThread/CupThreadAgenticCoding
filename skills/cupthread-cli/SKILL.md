@@ -60,6 +60,11 @@ Check current authentication status:
 cupthread auth status
 ```
 
+Logging in against a non-default API endpoint (`--base-url <url>` or `$CUPTHREAD_BASE_URL`) stores that
+endpoint in the config until `auth logout`, so later invocations without the flag reach the same server
+instead of silently falling back to production. Flags and env still override it per invocation; when a
+non-default endpoint is stored, `auth status` shows it as "Credential issued for".
+
 ---
 
 ## 3. Global Flags & Output Options
@@ -68,7 +73,8 @@ cupthread auth status
 - `-o, --output <table|json|yaml>`: Select output formatting (default `table`).
 - `-w, --workspace <id>`: Target workspace ID (overrides default).
 - `-a, --app <id>`: Target app ID (overrides default).
-- `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`).
+- `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`; a non-default login is
+  remembered until `auth logout`).
 
 ---
 

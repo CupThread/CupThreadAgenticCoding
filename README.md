@@ -184,7 +184,8 @@ How the environment variable behaves:
   static credential, so simply create one with a suitable expiry for the job.
 
 `cupthread auth logout` removes stored credentials from this machine (an env
-token simply stops being set); it never revokes anything server-side — revoke
+token simply stops being set) and forgets a remembered non-default base URL;
+it never revokes anything server-side — revoke
 tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
 
 ### Output formats
@@ -252,7 +253,7 @@ bin/cupthread skills link /path/to/project
 | Variable | Purpose |
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
+| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
 
 ### Development
