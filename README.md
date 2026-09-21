@@ -225,7 +225,13 @@ cupthread comments moderation hide cmt_abc  # moderate comments in a workspace
 cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
                                              # publish-now/schedule-at need a workspace admin/owner
                                              # interactive session; cpt_ tokens can create drafts only
+cupthread features update fr_123 --column-slug planned  # moderate requests (also approve/forward/delete)
+cupthread changelog unpublish <entry-id>   # revert a published entry to draft (tokens OK)
 cupthread imports create --source github_issues --mode preview
+cupthread imports get <job-id>             # poll the import job created above (also list/history/rerun/cancel)
+cupthread integrations status              # connection status of every integration (tokens OK)
+cupthread apps settings set my-app --anon-vote=false  # app settings (anonymous access, admin/owner)
+cupthread notifications list               # notifications: read / read-all / prefs show / prefs set (tokens OK)
 cupthread billing show
 cupthread search "dark mode"
 ```
@@ -277,12 +283,8 @@ bin/cupthread skills link /path/to/project
 | Variable | Purpose |
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
-<<<<<<< HEAD
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
-=======
 | `CUPTHREAD_SDK_SIGNING_SECRET` | SDK signing secret fallback for `api sign-user-attrs`; an explicit `--secret` wins |
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
->>>>>>> origin/main
+| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
 
 ### Development
