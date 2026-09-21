@@ -420,7 +420,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 	}
 
 	retries := 0
-	if !c.NoRetry && idempotentAttempt(method, body != nil) {
+	if !c.NoRetry && idempotentAttempt(method, data != nil) {
 		retries = c.maxRetries()
 	}
 	for attempt := 0; ; attempt++ {
