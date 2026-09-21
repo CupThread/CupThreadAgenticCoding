@@ -383,6 +383,119 @@ func TestHintEmptyForOrdinary4xxErrors(t *testing.T) {
 	}
 }
 
+// TestDoPublicSurfaceAuthenticationRequiredHint covers the PRIV-12 contract
+// from issue #77: when an app disables anonymous access, the public end-user
+// surfaces (roadmap columns/versions, feature-request comment threads,
+// changelog subscribe) answer 401 with code authentication_required. The CLI
+// cannot present an end-user Clerk session, so the error must render the
+// actionable hint. The code travels only on end-user-surface 401s — console
+// 401s mean "cpt_ token invalid or expired" and carry no code, and DATA-03
+// signing failures carry their own codes — so those must stay bare.
+func TestDoPublicSurfaceAuthenticationRequiredHint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		path    string
+		status  int
+		body    string
+		wantSub []string
+		notWant []string
+	}{
+		{
+			name:   "columns 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/columns/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"Sign in is required to view this roadmap",
+				"requires a signed-in session",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "versions 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/public/versions/app_key_1",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "comments 401 authentication_required",
+			method: "GET",
+			path:   "/api/v1/feature-requests/fr_1/comments",
+			status: http.StatusUnauthorized,
+			body:   `{"error":"Sign in is required to view this roadmap","code":"authentication_required"}`,
+			wantSub: []string{
+				"authentication required",
+				"re-enable anonymous access",
+			},
+		},
+		{
+			name:   "changelog subscribe 403 email_not_verified",
+			method: "POST",
+			path:   "/api/v1/public/apps/app_key_1/changelog/subscribe",
+			status: http.StatusForbidden,
+			body:   `{"error":"Subscriptions on this changelog are bound to your signed-in email address","code":"email_not_verified"}`,
+			wantSub: []string{
+				"forbidden",
+				"Subscriptions on this changelog are bound to your signed-in email address",
+				"verified email",
+				"third-party emails are not accepted",
+			},
+		},
+		{
+			name:    "console 401 without a code stays bare",
+			method:  "GET",
+			path:    "/api/v1/console/workspaces/ws_1/apps",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Authentication required"}`,
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+		{
+			name:    "DATA-03 signing 401 keeps its own code, no anonymous-access hint",
+			method:  "PUT",
+			path:    "/api/v1/public/apps/app_key_1/user",
+			status:  http.StatusUnauthorized,
+			body:    `{"error":"Signature mismatch","code":"invalid_signature"}`,
+			wantSub: []string{"invalid_signature"},
+			notWant: []string{"authentication required:", "re-enable anonymous access"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != tc.method {
+					t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.method, tc.path)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := New(server.URL)
+			err := client.Do(context.Background(), tc.method, tc.path, nil, nil, nil)
+			if err == nil {
+				t.Fatalf("expected an error for status %d", tc.status)
+			}
+			for _, want := range tc.wantSub {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %q, want it to contain %q", err, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(err.Error(), notWant) {
+					t.Errorf("err = %q, want it to NOT contain %q", err, notWant)
+				}
+			}
+		})
+	}
+}
+
 func TestDoRawMessagePassthrough(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"items":[1,2,3],"extra":"kept"}`))

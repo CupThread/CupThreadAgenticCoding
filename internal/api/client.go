@@ -115,26 +115,43 @@ var tierLimitHints = map[string]string{
 
 // forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
 // remediation: every /api/v1/console/workspaces/* route declares one
-// capability checked against the caller's role, and members.manage,
+// capability checked against the caller's role, members.manage,
 // billing.manage, integration.manage, and changelog.publish (SEC-40:
 // publishing or scheduling a changelog entry, admin/owner only)
 // additionally reject cpt_ API tokens outright (interactive Clerk session
-// required).
+// required), and PRIV-12 sign-in-only changelogs reject subscribe bodies
+// whose email is not the session's verified address.
 var forbiddenHints = map[string]string{
 	"capability_required":          "your workspace role does not include the capability this action requires; ask a workspace admin or owner to perform it, or have an owner change your role (Console → Members)",
 	"interactive_session_required": "this action rejects cpt_ API tokens; sign in interactively with 'cupthread auth login' (browser OAuth) or manage it in the Console web UI",
+	"email_not_verified":           "sign-in-only changelogs bind subscriptions to your account's verified email; retry with the signed-in account's own address (third-party emails are not accepted)",
+}
+
+// unauthorizedHints maps the 401 codes that mean "an end-user Clerk session
+// is required": the public end-user surfaces emit these under PRIV-12
+// anonymous-access enforcement (roadmap columns/versions, feature-request
+// comment threads, changelog subscribe) and on inherently signed-in actions
+// (voting, commenting, me/link). Console routes never carry a code on 401 —
+// theirs mean "cpt_ token invalid or expired" — so the hint cannot misfire
+// there.
+var unauthorizedHints = map[string]string{
+	"authentication_required": "this end-user surface requires a signed-in session (the app owner disabled anonymous access, or the action is signed-in-only); CLI credentials cannot satisfy it — perform the action in the CupThread web portal while signed in, or ask the app owner to re-enable anonymous access",
 }
 
 // Hint returns actionable remediation for known API error codes, e.g. 402
 // tier-limit responses on submission endpoints, 429 throttling on public
-// write endpoints, and 403 AUTH-01 workspace RBAC denials. It returns ""
-// when there is no specific guidance.
+// write endpoints, 401 PRIV-12 anonymous-access denials on end-user surfaces,
+// and 403 AUTH-01 workspace RBAC denials. It returns "" when there is no
+// specific guidance.
 func (e *APIError) Hint() string {
 	if e.RateLimited() {
 		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
 	}
 	if e.Forbidden() {
 		return forbiddenHints[e.Code]
+	}
+	if e.Unauthorized() {
+		return unauthorizedHints[e.Code]
 	}
 	if !e.TierLimit() {
 		return ""
@@ -151,9 +168,16 @@ func (e *APIError) NotFound() bool { return e.Status == http.StatusNotFound }
 
 // Forbidden returns true when the API rejected the caller's authorization
 // (403): a workspace role missing the endpoint's capability
-// (capability_required) or a cpt_ API token on an interactive-session-only
-// endpoint (interactive_session_required).
+// (capability_required), a cpt_ API token on an interactive-session-only
+// endpoint (interactive_session_required), or a changelog subscribe email
+// that is not the signed-in session's verified address (email_not_verified).
 func (e *APIError) Forbidden() bool { return e.Status == http.StatusForbidden }
+
+// Unauthorized returns true when the API demanded an end-user Clerk session
+// (401): PRIV-12 anonymous-access enforcement on roadmap columns/versions,
+// feature-request comment threads, and changelog subscribe, or inherently
+// signed-in end-user actions.
+func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthorized }
 
 // workspaceScopedPrefix marks paths that already carry the workspace id. For
 // these the API treats the path id as authoritative: X-Workspace-Id is
@@ -254,6 +278,12 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		}
 		if apiErr.RateLimited() {
 			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
+		}
+		if apiErr.Unauthorized() {
+			if hint := apiErr.Hint(); hint != "" {
+				return fmt.Errorf("authentication required: %w — %s", apiErr, hint)
+			}
+			return apiErr
 		}
 		if apiErr.Forbidden() {
 			if hint := apiErr.Hint(); hint != "" {
