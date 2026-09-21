@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -352,6 +353,102 @@ func TestImportsCreateOptionsRejectTrailingData(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse options JSON") {
 		t.Errorf("error = %q, want it to mention the options JSON parse failure", err.Error())
+	}
+}
+
+// TestAPIRequestJSONErrorIncludesValidationDetails covers issue #73: when the
+// API answers 400 with the zod-flatten details object, `api request --json`
+// must pass it through verbatim so programmatic consumers see exactly what
+// the server sent. Issue #72's contract still applies: the payload prints to
+// stdout AND the invocation fails, so the process exits 1.
+func TestAPIRequestJSONErrorIncludesValidationDetails(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	serverDetails := `{"formErrors":[],"fieldErrors":{"title":["Title must be at least 3 characters"],"versionId":["Invalid version"]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":` + serverDetails + `}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/x", "--json")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
+	}
+	var payload struct {
+		Error   string          `json:"error"`
+		Status  int             `json:"status"`
+		Details json.RawMessage `json:"details"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode structured output %q: %v", out, err)
+	}
+	if payload.Status != http.StatusBadRequest || payload.Error != "Validation failed" {
+		t.Errorf("payload = %+v", payload)
+	}
+	// The structured writer pretty-prints the whole payload (re-indenting
+	// raw JSON without re-parsing it), so compare the details semantically:
+	// it must carry exactly the server's keys and values.
+	var gotDetails, wantDetails any
+	if err := json.Unmarshal(payload.Details, &gotDetails); err != nil {
+		t.Fatalf("decode details %s: %v", payload.Details, err)
+	}
+	if err := json.Unmarshal([]byte(serverDetails), &wantDetails); err != nil {
+		t.Fatalf("decode expected details: %v", err)
+	}
+	if !reflect.DeepEqual(gotDetails, wantDetails) {
+		t.Errorf("details = %s, want the server's object %s", payload.Details, serverDetails)
+	}
+}
+
+// TestAPIRequestJSONErrorOmitsEmptyDetails pins the other half of issue #73's
+// contract: when the server sends no `details`, the structured error payload
+// must not grow a null/empty details key.
+func TestAPIRequestJSONErrorOmitsEmptyDetails(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/x", "--json")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode structured output %q: %v", out, err)
+	}
+	if _, ok := payload["details"]; ok {
+		t.Errorf("payload = %v, want no details key when the server sent none", payload)
+	}
+}
+
+// TestFeaturesCreateSurfacesValidationField covers issue #73's integration
+// expectation: a typed command failing with a detailed 400 names the
+// offending field in its error, so callers see why instead of a bare
+// "Validation failed (HTTP 400)".
+func TestFeaturesCreateSurfacesValidationField(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/console/workspaces/ws_1/feature-requests" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"title":["Title must be at least 3 characters"]}}}`))
+	}))
+	defer server.Close()
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"features", "create", "--title", "ab", "--description", "x")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "title: Title must be at least 3 characters") {
+		t.Errorf("error = %v, want the field-level reason", err)
 	}
 }
 
