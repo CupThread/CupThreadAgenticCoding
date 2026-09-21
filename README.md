@@ -258,6 +258,14 @@ cupthread api sign-user-attrs --app-key app_demo12345 --secret - \
 # or: CUPTHREAD_SDK_SIGNING_SECRET=cpt_sk_... cupthread api sign-user-attrs \
 #   --app-key app_demo12345 --input ./user-attrs.json
 # An inline --secret cpt_sk_... still works, but leaks via history and ps.
+
+# Connect an integration provider without exposing its token on the command
+# line (shell history / ps / CI logs): pipe it via stdin or set the
+# per-provider variable. Linear/Notion/Slack use CUPTHREAD_LINEAR_TOKEN,
+# CUPTHREAD_NOTION_TOKEN and CUPTHREAD_SLACK_TOKEN the same way.
+printf %s "$GITHUB_PAT" | cupthread integrations github connect --token -
+# or: CUPTHREAD_GITHUB_TOKEN=ghp_... cupthread integrations github connect
+# An inline --token ghp_... still works, but leaks via history and ps.
 ```
 
 ### Repo tooling
@@ -284,6 +292,10 @@ bin/cupthread skills link /path/to/project
 | `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
 >>>>>>> origin/main
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
+| `CUPTHREAD_GITHUB_TOKEN` | GitHub PAT fallback for `integrations github connect` (an explicit `--token` wins; `--token -`/`@` reads stdin) |
+| `CUPTHREAD_LINEAR_TOKEN` | Linear API token fallback for `integrations linear connect` (same rules) |
+| `CUPTHREAD_NOTION_TOKEN` | Notion API token fallback for `integrations notion connect` (same rules) |
+| `CUPTHREAD_SLACK_TOKEN` | Slack API token fallback for `integrations slack connect` (same rules) |
 
 ### Development
 
