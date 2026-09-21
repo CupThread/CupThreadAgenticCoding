@@ -91,6 +91,12 @@ warning on stderr and saved workspace defaults are cleared because they could no
 - `-a, --app <id>`: Target app ID (overrides default).
 - `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`; a non-default login is
   remembered until `auth logout`).
+- `--no-retry`: Disable automatic retry/backoff on transient failures. By default body-less GET requests
+  that answer 429/502/503/504 are retried up to 3 times with capped exponential backoff (honoring
+  `Retry-After` when present), so a mid-batch blip no longer aborts a command; mutations (POST/PUT/
+  PATCH/DELETE) are always single-shot. Each retry logs one line to stderr (never stdout); `api request
+  --json` error payloads add `"attempts"` when retries were exhausted. `$CUPTHREAD_NO_RETRY=1` is the
+  env equivalent.
 
 ---
 

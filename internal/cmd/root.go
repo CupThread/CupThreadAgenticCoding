@@ -35,6 +35,7 @@ var (
 	flagConfig    string
 	flagWorkspace string
 	flagApp       string
+	flagNoRetry   bool
 )
 
 // app carries shared state to all commands, built once per execution.
@@ -122,6 +123,7 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 	pf.StringVar(&flagConfig, "config", "", "Config file path (default $CUPTHREAD_CONFIG, then ~/.config/cupthread/config.json)")
 	pf.StringVarP(&flagWorkspace, "workspace", "w", "", "Workspace ID (default: saved default from 'workspaces use')")
 	pf.StringVarP(&flagApp, "app", "a", "", "App ID (default: saved default from 'apps use')")
+	pf.BoolVar(&flagNoRetry, "no-retry", false, "Disable automatic retry/backoff on transient failures (429/502/503/504 on idempotent requests); also $CUPTHREAD_NO_RETRY=1")
 
 	root.AddCommand(
 		newAuthCmd(),
@@ -145,6 +147,18 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 		newSkillsCmd(),
 	)
 	return root
+}
+
+// noRetryEnv reports whether $CUPTHREAD_NO_RETRY opts out of the
+// transient-failure retry loop; any non-empty value except 0/false enables
+// the opt-out.
+func noRetryEnv() bool {
+	switch os.Getenv("CUPTHREAD_NO_RETRY") {
+	case "", "0", "false":
+		return false
+	default:
+		return true
+	}
 }
 
 // structured reports whether output should be machine-formatted (json/yaml)
@@ -175,6 +189,12 @@ func (a *app) baseURL() string {
 func (a *app) buildClient() *api.Client {
 	client := api.New(a.baseURL())
 	client.WorkspaceID = flagWorkspace
+	client.NoRetry = flagNoRetry || noRetryEnv()
+	// Retry notices go to stderr and only in human mode, so stdout and the
+	// machine-readable stream stay parse-clean.
+	if !a.structured() {
+		client.Stderr = os.Stderr
+	}
 	client.Token = func(ctx context.Context) (string, error) {
 		if env := config.EnvToken(); env != "" {
 			if err := config.ValidateToken(env); err != nil {

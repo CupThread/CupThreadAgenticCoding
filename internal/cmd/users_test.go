@@ -195,9 +195,12 @@ func TestUsersProfileJSONOutput(t *testing.T) {
 
 // TestUsersProfileRateLimited covers the SEC-34 per-IP rate limit on the
 // public profile GET: the CLI must map a 429 to the rate-limited error path
-// with the retry-with-backoff hint, not a generic HTTP failure.
+// with the retry-with-backoff hint, not a generic HTTP failure. The env opt
+// out keeps this a single-shot request — the retry loop itself is covered in
+// internal/api.
 func TestUsersProfileRateLimited(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	t.Setenv("CUPTHREAD_NO_RETRY", "1")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
