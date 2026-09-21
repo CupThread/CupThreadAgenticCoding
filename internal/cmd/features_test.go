@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -294,5 +297,230 @@ func TestFeaturesForwardPathUsesResolvedApp(t *testing.T) {
 	}
 	if forwardedTo != "" {
 		t.Errorf("forward endpoint hit at %s, want no request after the scoped lookup misses", forwardedTo)
+	}
+}
+
+// pagedRequests builds a synthetic workspace listing of n requests with IDs
+// req_0000…, all under app_a so the saved-default-app scoping matches.
+func pagedRequests(n int) []api.AdminFeatureRequest {
+	reqs := make([]api.AdminFeatureRequest, n)
+	for i := range reqs {
+		reqs[i] = api.AdminFeatureRequest{
+			ID:        fmt.Sprintf("req_%04d", i),
+			AppID:     "app_a",
+			Title:     fmt.Sprintf("Request %d", i),
+			Status:    "open",
+			CreatedAt: "2026-09-01T12:00:00.000Z",
+		}
+	}
+	return reqs
+}
+
+// pagedHandler answers the console feature-requests listing with the
+// server's paging contract: limit clamped to 200, limit/offset query
+// slicing, appId filtering, and an authoritative total. Listing offsets are
+// appended to *offsets in request order; non-GET requests are recorded in
+// *mutations as "METHOD path" and answered with an empty JSON object, which
+// update/approve/delete do not decode.
+func pagedHandler(reqs []api.AdminFeatureRequest, offsets *[]int, mutations *[]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			if mutations != nil {
+				*mutations = append(*mutations, r.Method+" "+r.URL.Path)
+			}
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		if offsets != nil {
+			*offsets = append(*offsets, offset)
+		}
+		if limit > featureRequestPageSize {
+			limit = featureRequestPageSize
+		}
+		start, end := offset, offset+limit
+		if start > len(reqs) {
+			start = len(reqs)
+		}
+		if end > len(reqs) {
+			end = len(reqs)
+		}
+		page := reqs[start:end]
+		if appID := r.URL.Query().Get("appId"); appID != "" {
+			filtered := make([]api.AdminFeatureRequest, 0, len(page))
+			for _, req := range page {
+				if req.AppID == appID {
+					filtered = append(filtered, req)
+				}
+			}
+			page = filtered
+		}
+		body, err := json.Marshal(api.AdminListFeatureRequestsResponse{Requests: page, Total: len(reqs)})
+		if err != nil {
+			panic(err)
+		}
+		_, _ = w.Write(body)
+	}
+}
+
+// TestFeaturesGetResolvesBeyondFirstPage covers the issue #59 core case: a
+// request living past the newest 200 resolves, and resolution walks the
+// listing pages in order (offset 0, 200, 400 for a 450-request workspace).
+func TestFeaturesGetResolvesBeyondFirstPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	reqs := pagedRequests(450)
+	var offsets []int
+	server := httptest.NewServer(pagedHandler(reqs, &offsets, nil))
+	t.Cleanup(server.Close)
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "req_0400")
+	if err != nil {
+		t.Fatalf("features get req_0400: %v", err)
+	}
+	if !strings.Contains(out, "Request 400") {
+		t.Errorf("output missing deep request title:\n%s", out)
+	}
+	if want := []int{0, 200, 400}; !reflect.DeepEqual(offsets, want) {
+		t.Errorf("listing offsets = %v, want %v", offsets, want)
+	}
+}
+
+// TestFeaturesApproveResolvesDeepRequest pins that a mutating command
+// operates on the resolved full ID of a request past the first page.
+func TestFeaturesApproveResolvesDeepRequest(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	reqs := pagedRequests(450)
+	var offsets []int
+	var mutations []string
+	server := httptest.NewServer(pagedHandler(reqs, &offsets, &mutations))
+	t.Cleanup(server.Close)
+
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "approve", "req_0209"); err != nil {
+		t.Fatalf("features approve req_0209: %v", err)
+	}
+	want := []string{"POST /api/v1/console/workspaces/ws_1/feature-requests/req_0209/approve"}
+	if !reflect.DeepEqual(mutations, want) {
+		t.Errorf("mutations = %v, want %v", mutations, want)
+	}
+	if want := []int{0, 200}; !reflect.DeepEqual(offsets, want) {
+		t.Errorf("listing offsets = %v, want %v", offsets, want)
+	}
+}
+
+// TestFeaturesAmbiguousPrefixAcrossPages pins the ambiguity decision over
+// the whole listing: a prefix that matches exactly one request on page 1
+// must still error once page 2 adds a second match (and vice versa: a
+// prefix matching only a page-2 request resolves).
+func TestFeaturesAmbiguousPrefixAcrossPages(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	reqs := pagedRequests(250)
+	reqs[0].ID = "dup_first"
+	reqs[220].ID = "dup_second"
+	server := httptest.NewServer(pagedHandler(reqs, nil, nil))
+	t.Cleanup(server.Close)
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "dup_")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous request prefix") {
+		t.Fatalf("features get dup_ error = %v, want ambiguous-prefix error spanning pages", err)
+	}
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "dup_seco")
+	if err != nil {
+		t.Fatalf("features get dup_seco: %v", err)
+	}
+	if !strings.Contains(out, "Request 220") {
+		t.Errorf("output missing page-2 request title:\n%s", out)
+	}
+}
+
+// TestFeaturesNotFoundReportsScannedScope pins the truthful not-found
+// error: it names the scanned request count and workspace instead of
+// blaming --app.
+func TestFeaturesNotFoundReportsScannedScope(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	server := httptest.NewServer(pagedHandler(pagedRequests(450), nil, nil))
+	t.Cleanup(server.Close)
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "req_9999")
+	if err == nil || !strings.Contains(err.Error(), "scanned 450 requests in workspace ws_1") {
+		t.Fatalf("features get req_9999 error = %v, want scanned-scope message", err)
+	}
+}
+
+// TestFeaturesSinglePageResolvesInOneRequest keeps small workspaces on the
+// fast path: resolution makes exactly one listing call and no extra
+// round-trips.
+func TestFeaturesSinglePageResolvesInOneRequest(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var offsets []int
+	server := httptest.NewServer(pagedHandler(pagedRequests(10), &offsets, nil))
+	t.Cleanup(server.Close)
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "req_0003")
+	if err != nil {
+		t.Fatalf("features get req_0003: %v", err)
+	}
+	if !strings.Contains(out, "Request 3") {
+		t.Errorf("output missing request title:\n%s", out)
+	}
+	if want := []int{0}; !reflect.DeepEqual(offsets, want) {
+		t.Errorf("listing offsets = %v, want %v (single listing call)", offsets, want)
+	}
+}
+
+// TestFeaturesResolutionPageCap pins the pathological-loop guard: when the
+// server keeps reporting more pages, resolution stops after the page cap
+// with a clear error instead of looping forever.
+func TestFeaturesResolutionPageCap(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	body, err := json.Marshal(api.AdminListFeatureRequestsResponse{Requests: pagedRequests(featureRequestPageSize), Total: 1_000_000})
+	if err != nil {
+		t.Fatalf("encode page: %v", err)
+	}
+	var served int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "zzz_unknown")
+	if err == nil || !strings.Contains(err.Error(), "scans at most 50 pages") || !strings.Contains(err.Error(), "first 10000 requests") {
+		t.Fatalf("features get error = %v, want page-cap message", err)
+	}
+	if served != maxFeatureRequestPages {
+		t.Errorf("served %d listing pages, want %d (the cap)", served, maxFeatureRequestPages)
+	}
+}
+
+// TestFeaturesListClampsLimitToServerPageCap pins the client-side clamp of
+// 'features list --limit': values beyond 200 go on the wire as 200 and
+// values below 1 as 1, matching the server's silent page-size clamp.
+func TestFeaturesListClampsLimitToServerPageCap(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("limit")
+		_, _ = w.Write(filteredFixture(t, ""))
+	}))
+	t.Cleanup(server.Close)
+
+	for _, tc := range []struct{ flag, want string }{{"500", "200"}, {"0", "1"}, {"-5", "1"}} {
+		if _, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "list", "--limit", tc.flag); err != nil {
+			t.Fatalf("features list --limit %s: %v", tc.flag, err)
+		}
+		if got != tc.want {
+			t.Errorf("--limit %s sent limit=%q, want %q", tc.flag, got, tc.want)
+		}
 	}
 }

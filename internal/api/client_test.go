@@ -178,6 +178,57 @@ func TestDoEncodesJSONBody(t *testing.T) {
 	}
 }
 
+// TestDoSendsRawJSONBodyVerbatim covers issue #75: a json.RawMessage (or
+// *json.RawMessage) request body must reach the server byte-identical —
+// re-encoding through json.Marshal would round-trip every number through
+// float64 and silently rewrite integers a float64 cannot represent exactly.
+// An empty RawMessage means "no body"; plain values keep going through
+// json.Marshal.
+func TestDoSendsRawJSONBodyVerbatim(t *testing.T) {
+	var gotBody, gotContentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		gotContentType = r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	const body = `{"big":12345678901234567890, "pad": [1, 2]}`
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage(body), nil); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("wire body = %q, want the RawMessage bytes %q verbatim", gotBody, body)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+
+	rawPtr := json.RawMessage(body)
+	if err := client.Do(context.Background(), "POST", "/x", nil, &rawPtr, nil); err != nil {
+		t.Fatalf("Do with *json.RawMessage: %v", err)
+	}
+	if gotBody != body {
+		t.Errorf("*json.RawMessage wire body = %q, want %q verbatim", gotBody, body)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, json.RawMessage{}, nil); err != nil {
+		t.Fatalf("Do with empty RawMessage: %v", err)
+	}
+	if gotBody != "" || gotContentType != "" {
+		t.Errorf("empty RawMessage sent body %q (Content-Type %q), want no body at all", gotBody, gotContentType)
+	}
+
+	if err := client.Do(context.Background(), "POST", "/x", nil, map[string]string{"name": "app"}, nil); err != nil {
+		t.Fatalf("Do with a plain map: %v", err)
+	}
+	if gotBody != `{"name":"app"}` {
+		t.Errorf("plain map wire body = %q, want the marshaled form", gotBody)
+	}
+}
+
 func TestDoMapsAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -680,11 +731,16 @@ func TestForbiddenInteractiveSessionRequiredHint(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	// Issue #58: re-login advice is a dead end — the browser OAuth login also
+	// issues a cpt_ token, which the interactive-only capabilities reject.
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -714,7 +770,7 @@ func TestHintForbiddenCodes(t *testing.T) {
 		want   string
 	}{
 		{"capability_required", http.StatusForbidden, "capability_required", "workspace admin or owner"},
-		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "cupthread auth login"},
+		{"interactive_session_required", http.StatusForbidden, "interactive_session_required", "Console web UI"},
 		{"unknown 403 code", http.StatusForbidden, "some_future_code", ""},
 		{"403 without code", http.StatusForbidden, "", ""},
 		{"hint does not leak across statuses", http.StatusPaymentRequired, "capability_required", "check the workspace subscription"},

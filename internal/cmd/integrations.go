@@ -3,12 +3,48 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
 )
 
 var importProviders = []string{"linear", "notion", "slack"}
+
+// integrationEnvToken maps a provider slug to the environment variable that
+// carries its connection token, so provider credentials never have to appear
+// on a command line.
+func integrationEnvToken(provider string) string {
+	return "CUPTHREAD_" + strings.ToUpper(provider) + "_TOKEN"
+}
+
+// resolveIntegrationToken applies the integration connect-token convention
+// (mirroring resolveSigningSecret): a "-" or "@" flag reads stdin (trailing
+// whitespace trimmed), an inline flag wins over the per-provider environment
+// fallback (also trimmed), and the error names every accepted source when
+// none is set.
+func resolveIntegrationToken(provider, tokenFlag string) (string, error) {
+	readsStdin := func(v string) bool { return v == "-" || v == "@" }
+	if readsStdin(tokenFlag) {
+		data, err := readInputFile(tokenFlag)
+		if err != nil {
+			return "", err
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" {
+			return "", fmt.Errorf("stdin carried no %s token", provider)
+		}
+		return token, nil
+	}
+	if tokenFlag != "" {
+		return tokenFlag, nil
+	}
+	if env := strings.TrimSpace(os.Getenv(integrationEnvToken(provider))); env != "" {
+		return env, nil
+	}
+	return "", fmt.Errorf("%s token is required: pass --token <value>, pipe it via --token - (stdin), or set $%s (or use auth-url for the OAuth flow)", provider, integrationEnvToken(provider))
+}
 
 func newIntegrationsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -18,10 +54,11 @@ func newIntegrationsCmd() *cobra.Command {
 
 status and the read-only lookups (repos, categories) work with cpt_ API
 tokens. Connecting or disconnecting an integration (auth-url, connect,
-disconnect) and running a GitHub sync require an interactive Clerk session:
-cpt_ API tokens are rejected with 403 interactive_session_required. The
-per-app github config needs the app.configure capability (workspace admin
-or owner) but accepts tokens.`,
+disconnect) and running a GitHub sync require an interactive Clerk session,
+and no CLI credential qualifies — personal access tokens and OAuth logins
+are both cpt_ tokens, so they fail with 403 interactive_session_required;
+manage integrations in the Console web UI. The per-app github config needs
+the app.configure capability (workspace admin or owner) but accepts tokens.`,
 	}
 	cmd.AddCommand(newIntegrationsStatusCmd(), newIntegrationsGitHubCmd())
 	for _, p := range importProviders {
@@ -167,16 +204,22 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 func newGitHubConnectCmd() *cobra.Command {
 	var token string
 	connect := &cobra.Command{
-		Use:   "connect --token <github-pat>",
+		Use:   "connect --token <github-pat|->",
 		Short: "Connect GitHub with a personal access token",
 		Long: `Connect the GitHub integration with a manual personal access token.
+
+Keep the token off the command line (shell history, ps, CI logs): pipe it
+via stdin ('printf %s "$GITHUB_PAT" | cupthread integrations github connect
+--token -') or set $CUPTHREAD_GITHUB_TOKEN. An inline --token <github-pat>
+still works but leaks the secret.
 
 Alternatively run 'cupthread integrations github auth-url', open the printed
 URL in a browser and finish the OAuth flow in the Console.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if token == "" {
-				return errors.New("--token is required (or use auth-url for the OAuth flow)")
+			token, err := resolveIntegrationToken("github", token)
+			if err != nil {
+				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -196,7 +239,7 @@ URL in a browser and finish the OAuth flow in the Console.`,
 			return nil
 		},
 	}
-	connect.Flags().StringVar(&token, "token", "", "GitHub personal access token (required)")
+	connect.Flags().StringVar(&token, "token", "", "GitHub personal access token: value, \"-\"/\"@\" for stdin (recommended); falls back to $CUPTHREAD_GITHUB_TOKEN")
 	return connect
 }
 
@@ -416,12 +459,19 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 func newProviderConnectCmd(prov string) *cobra.Command {
 	var token string
 	connect := &cobra.Command{
-		Use:   "connect --token <api-token>",
+		Use:   "connect --token <api-token|->",
 		Short: fmt.Sprintf("Connect %s with a manual API token", prov),
+		Long: fmt.Sprintf(`Connect the %s import integration with a manual API token.
+
+Keep the token off the command line (shell history, ps, CI logs): pipe it
+via stdin ('printf %%s "$%s_TOKEN" | cupthread integrations %s connect
+--token -') or set $%s. An inline --token <api-token> still works but leaks
+the secret.`, prov, strings.ToUpper(prov), prov, integrationEnvToken(prov)),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if token == "" {
-				return fmt.Errorf("--token is required (or use auth-url for the OAuth flow)")
+			token, err := resolveIntegrationToken(prov, token)
+			if err != nil {
+				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -441,6 +491,6 @@ func newProviderConnectCmd(prov string) *cobra.Command {
 			return nil
 		},
 	}
-	connect.Flags().StringVar(&token, "token", "", fmt.Sprintf("%s API token (required)", prov))
+	connect.Flags().StringVar(&token, "token", "", fmt.Sprintf("%s API token: value, \"-\"/\"@\" for stdin (recommended); falls back to $%s", prov, integrationEnvToken(prov)))
 	return connect
 }
