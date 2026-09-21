@@ -232,12 +232,20 @@ func newChangelogUpdateCmd() *cobra.Command {
 }
 
 func newChangelogDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "delete <entry-id>",
 		Aliases: []string{"rm"},
 		Short:   "Delete a changelog entry",
-		Args:    cobra.ExactArgs(1),
+		Long: `Delete a changelog entry permanently, including its links.
+
+The server hard-deletes the entry and it cannot be restored (unpublish is
+the reversible alternative). On an interactive terminal you are asked to
+confirm before anything is sent; non-interactive callers must pass --yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete changelog entry %q", args[0])); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -251,6 +259,8 @@ func newChangelogDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
 
 func newChangelogPublishCmd() *cobra.Command {

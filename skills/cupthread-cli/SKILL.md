@@ -98,6 +98,13 @@ changes (`billing checkout/portal/addons`) are interactive-session-only: every C
 personal access token and the browser OAuth login alike — fails with `403 interactive_session_required`;
 perform these actions in the Console web UI (see Agent Best Practices #6).
 
+**Destructive commands are confirm-guarded** (`features delete`, `columns delete`, `versions delete`,
+`changelog delete`, `workspaces members remove`, `imports cancel`): the server hard-deletes these objects with
+no undo, so the CLI refuses them on a non-interactive stdin unless `--yes`/`-y` is passed — the refusal fires
+BEFORE any id resolution or HTTP request, so a wrong id costs nothing. On an interactive terminal the command
+prints `About to … Continue? [yN]` on stderr instead (an answer other than `y`/`yes` aborts with nothing sent).
+Scripts and agents must pass `--yes` explicitly (see Agent Best Practices #7).
+
 ### Apps Management
 ```sh
 cupthread apps list                        # List apps in current workspace
@@ -152,7 +159,10 @@ commands (`features get/update/approve/delete/forward`) resolve
 `<request-id>` within the **resolved app** — the `--app` flag, else the saved
 default from `apps use` — so an ID from another app in the same workspace
 fails with "not found" instead of being mutated; with no app resolved the
-lookup stays workspace-wide. To walk the
+lookup stays workspace-wide. Resolution pages through the whole workspace
+listing (200 per page), so a request past the newest page still resolves;
+prefix ambiguity is judged across every page, and resolution gives up after
+50 pages (≈10k requests) with a clear error. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
@@ -248,3 +258,4 @@ printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12
 4. **Handle `402 Payment Required`**: Writes are rejected by two kinds of quotas. Submission endpoints (`features create`, `inbox`-fed feedback) reject when the workspace hits its plan limits (`tier_limit_submissions` → upgrade the plan in Console → Billing; `subscription_inactive` → renew the subscription). `cupthread workspaces create` rejects with `workspace_limit_reached` when the developer account already owns the maximum number of workspaces (see `maxWorkspaces` on `cupthread me`; only owner-role memberships count) — delete or transfer ownership of one you own, then retry. In `--json` mode, the `api request` escape hatch returns the same guidance as `{error, code, status, hint}`. Treat 402 as a deterministic business rule — do not retry automatically.
 5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/unsubscribe: 10 req/min; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
 6. **Handle `403 Forbidden` (AUTH-01 workspace RBAC)**: Every console workspace route declares a capability checked against the caller's workspace role, and the high-impact ones (`members.manage`, `billing.manage`, `integration.manage`) additionally reject `cpt_` API tokens regardless of role. Two structured codes come back with HTTP 403: `capability_required` — the role lacks the capability; ask a workspace admin/owner to perform the action or have an owner upgrade the role (Console → Members) — and `interactive_session_required` — no CLI credential can do this: the OAuth login also issues a `cpt_` token, so perform the action in the Console web UI. Affected commands: `workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`, `billing checkout/portal/addons`, and integration auth-url/connect/disconnect/sync — reads like `workspaces members list`, `billing show`, and `integrations status` are unaffected. The checks are ordered role-first-then-token-type, so a member-role token on a members route reports `capability_required` while an admin/owner token reports `interactive_session_required`. The CLI renders the guidance as `forbidden: <error> (HTTP 403, code=…) — <hint>` and, in `--json` mode via `api request`, as `{error, code, status, hint}`.
+7. **Pass `--yes` to destructive commands after checking the target**: `features delete`, `columns delete`, `versions delete`, `changelog delete`, `workspaces members remove`, and `imports cancel` are hard, server-side, unrestorable deletes. On a non-interactive stdin they refuse with `… re-run with --yes to confirm` BEFORE resolving ids or sending any request (also in `--json` mode); on an interactive terminal they prompt `Continue? [yN]` on stderr. When automating, resolve the id first (`features get`, `changelog list`, …), verify it is the record you mean, and only then pass `--yes` — never loop these commands over an unverified generated id list.

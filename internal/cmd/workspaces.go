@@ -302,12 +302,20 @@ func newMembersSetRoleCmd() *cobra.Command {
 }
 
 func newMembersRemoveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "remove <member-id>",
 		Aliases: []string{"rm"},
 		Short:   "Remove a member from the workspace",
-		Args:    cobra.ExactArgs(1),
+		Long: `Remove a member from the workspace.
+
+Their access is revoked immediately and must be re-granted by a new
+invitation to regain it. On an interactive terminal you are asked to
+confirm before anything is sent; non-interactive callers must pass --yes.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := confirmDestructive(cmd, fmt.Sprintf("permanently remove member %q from the workspace", args[0])); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -321,6 +329,8 @@ func newMembersRemoveCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	return cmd
 }
 
 func newWorkspaceInvitationsCmd() *cobra.Command {
