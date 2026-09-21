@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode"
 )
 
 // DefaultBaseURL is the production CupThread API.
@@ -109,9 +111,27 @@ func (c *Config) WorkspacePrefsFor(workspaceID string) *WorkspacePrefs {
 	return prefs
 }
 
-// EnvToken returns the token supplied via the environment, if any.
-// It takes precedence over stored credentials so CI and agents can inject
-// credentials without touching the config file.
+// EnvToken returns the token supplied via the environment, if any, trimmed
+// of surrounding whitespace. It takes precedence over stored credentials so
+// CI and agents can inject credentials without touching the config file.
+// A value that is only whitespace counts as unset, so a stray trailing
+// newline never shadows a valid stored credential.
 func EnvToken() string {
-	return os.Getenv("CUPTHREAD_TOKEN")
+	return strings.TrimSpace(os.Getenv("CUPTHREAD_TOKEN"))
+}
+
+// ValidateToken rejects credential values that cannot form a valid
+// Authorization header: after surrounding-whitespace trimming, any embedded
+// space, tab, line break, or other control character is either rejected by
+// net/http at the transport layer ("invalid header field value") or trimmed
+// inconsistently on its way to the server. Call sites wrap the error with
+// the credential's source ($CUPTHREAD_TOKEN or --token). Tokens are opaque,
+// so no format beyond "no whitespace/control characters" is enforced here.
+func ValidateToken(token string) error {
+	for _, r := range token {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return errors.New("contains whitespace or control characters — use the raw cpt_… value with no quotes, line breaks, or padding")
+		}
+	}
+	return nil
 }

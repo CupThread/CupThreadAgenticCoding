@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestS256Challenge(t *testing.T) {
@@ -67,6 +68,37 @@ func TestPostTokenSurfacesOAuthError(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_grant" {
 		t.Fatalf("expected APIError invalid_grant, got %v", err)
+	}
+}
+
+// TestRefreshBoundsStalledTokenEndpoint pins the issue #56 regression: postForm
+// used to send via http.DefaultClient, which has no timeout, so an endpoint
+// that accepts the connection but never answers hung Refresh — and with it
+// every authenticated command — forever.
+func TestRefreshBoundsStalledTokenEndpoint(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer server.Close()
+	defer close(release) // unblock the handler first so server.Close can finish
+
+	old := httpClient
+	httpClient = &http.Client{Timeout: 200 * time.Millisecond}
+	defer func() { httpClient = old }()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Refresh(context.Background(), server.URL, "cupthread-cli", "cpr_old")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from the stalled token endpoint, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Refresh still blocked after 2s against a stalled endpoint (client has no timeout?)")
 	}
 }
 

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -257,7 +258,7 @@ func TestOAuthLoginPersistsBaseURL(t *testing.T) {
 	A = &app{out: output.New(os.Stdout, output.FormatTable), cfg: &config.Config{}, cfgPath: cfgPath}
 	A.client = A.buildClient()
 
-	loginErr := finishOAuthLogin(&auth.TokenSet{
+	loginErr := finishOAuthLogin(context.Background(), &auth.TokenSet{
 		AccessToken:  "cpt_oauth_access_tok",
 		RefreshToken: "cpt_oauth_refresh_tok",
 		ExpiresIn:    3600,
