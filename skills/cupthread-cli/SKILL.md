@@ -46,6 +46,8 @@ cupthread auth login
 cupthread auth login --device
 ```
 
+The browser flow binds a random `127.0.0.1` port and uses `http://127.0.0.1:<port>/cupthread/callback` as its redirect URI — the loopback exception in the server's OAuth redirect-URI scheme policy (SEC-46); every non-loopback redirect URI must be `https:`.
+
 ### Method B: Personal Access Token (CI / Agents)
 ```sh
 # Stored token
