@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,12 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestAPIRequestSurfacesQuotaHint covers issue #21: when the API rejects a
 // submission with 402 (POST /api/v1/feature-requests quota contract), the
 // `api request --json` escape hatch must surface the machine-readable code
-// plus an actionable hint so agents can react without guessing.
+// plus an actionable hint so agents can react without guessing. Issue #72:
+// the invocation must also fail (non-nil error drives exit 1 in main.go) —
+// the payload on stdout never excuses a zero exit code.
 func TestAPIRequestSurfacesQuotaHint(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -28,8 +33,8 @@ func TestAPIRequestSurfacesQuotaHint(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/feature-requests", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 402, want a non-nil error so the process exits 1")
 	}
 	var payload struct {
 		Error  string `json:"error"`
@@ -78,7 +83,8 @@ func TestAPIRequestQuotesRequestIDOnSuccess(t *testing.T) {
 
 // TestAPIRequestJSONErrorIncludesRequestID covers issue #6: the structured
 // error payload of the escape hatch carries the correlation ID so agents can
-// file reproducible bug reports.
+// file reproducible bug reports. Issue #72: the 404 must also fail the
+// invocation in --json mode.
 func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -92,8 +98,8 @@ func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "GET", "/api/v1/x", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 404, want a non-nil error so the process exits 1")
 	}
 	var payload struct {
 		Error     string `json:"error"`
@@ -108,6 +114,92 @@ func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	}
 	if payload.RequestID != got {
 		t.Errorf("requestId = %q, want the echoed %q", payload.RequestID, got)
+	}
+}
+
+// TestAPIRequestJSONValidationErrorExitsNonZero covers issue #72: a 400 in
+// --json mode must fail the invocation while the {error, code, status}
+// payload still reaches stdout, so scripts get both the exit-code signal and
+// a parseable failure description.
+func TestAPIRequestJSONValidationErrorExitsNonZero(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/console/workspaces/ws_1/feature-requests", "--json")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
+	}
+	var payload struct {
+		Error  string `json:"error"`
+		Status int    `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode structured output %q: %v", out, err)
+	}
+	if payload.Status != http.StatusBadRequest || payload.Error != "Validation failed" {
+		t.Errorf("payload = %+v, want status 400 / Validation failed", payload)
+	}
+}
+
+// TestAPIRequestYAMLErrorExitsNonZero covers issue #72 for -o yaml: the yaml
+// error payload must still reach stdout while the invocation fails.
+func TestAPIRequestYAMLErrorExitsNonZero(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/console/workspaces/ws_1/feature-requests", "-o", "yaml")
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400 in yaml mode, want a non-nil error so the process exits 1")
+	}
+	var payload struct {
+		Error  string `yaml:"error"`
+		Status int    `yaml:"status"`
+	}
+	if err := yaml.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode yaml output %q: %v", out, err)
+	}
+	if payload.Status != http.StatusBadRequest || payload.Error != "Validation failed" {
+		t.Errorf("payload = %+v, want status 400 / Validation failed", payload)
+	}
+}
+
+// TestAPIRequestJSONSuccessPassthrough pins the issue #72 success path: a 200
+// in --json mode keeps exit 0 and passes the raw response body through
+// faithfully — identical once indentation is removed, with every number
+// preserved exactly as the server sent it.
+func TestAPIRequestJSONSuccessPassthrough(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	const body = `{"me":{"id":"usr_1","email":"dev@example.com"},"bigNumber":1699999999999999999}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "GET", "/api/v1/console/me", "--json")
+	if err != nil {
+		t.Fatalf("api request: %v", err)
+	}
+	compact := func(s string) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(s)); err != nil {
+			t.Fatalf("compact output %q: %v", s, err)
+		}
+		return buf.String()
+	}
+	if got := compact(out); got != body {
+		t.Errorf("stdout = %q, want the raw body compacted to %q", got, body)
 	}
 }
 
