@@ -102,6 +102,8 @@ client.presentLatestChangelog(activity)
 
 ## Payment-Attribute Signing (HMAC-SHA256, DATA-03)
 
+> **⚠️ SDK status — the Android SDK cannot sign payment attributes.** `updateUserAttributes` accepts `isPaying`/`plan`/`mrr`/`currency` only and exposes no `signature`/`timestamp` parameters, so **every call containing a payment attribute returns `422 payment_attributes_require_signature`** (the SDK's own KDoc example included) until [CupThreadAndroidSDK#28](https://github.com/CupThread/CupThreadAndroidSDK/issues/28) lands. Until then, either (a) keep the SDK for identity/currency-only updates and report payment attributes from a trusted backend, or (b) send the raw signed `PUT` yourself. The Kotlin snippet below is the **workaround** for option (b), not the normal integration path.
+
 `PUT /api/v1/public/apps/{appKey}/user` only persists paying status, plan, and MRR when the request is **signed with the app's SDK signing secret** (developer console: *App Access → App Credentials → SDK signing secret*). Whenever the body contains any of `isPaying`, `mrr`, or `plan` (an explicit JSON `null` counts), it must also carry `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch seconds) — both plain body fields. Identity-only and currency-only writes stay unsigned. Rejections happen before any profile row is created:
 
 - `422 payment_attributes_require_signature` — payment fields without `signature` + `timestamp`
@@ -125,6 +127,8 @@ cpt-user-attrs-v1
 - Absent fields sign as `unset`, explicit JSON `null` as `null` (omitting `plan` ≠ sending `"plan": null`). `userToken` is the body value when present, else the `X-User-Token` header value.
 - `canonicalNumber` follows JS `Number.prototype.toFixed(2)` with trailing zeros and a trailing `.` stripped (`1200.00 → "1200"`, `99.50 → "99.5"`); exact binary ties pick the larger n (`10.125 → "10.13"`). Compute it from the raw JSON value as sent.
 - Sign immediately before sending (±300 s freshness window) and don't mutate signed values when appending `signature`/`timestamp` to the body.
+
+**Workaround (b) — HMAC helper for the raw signed `PUT`** (the SDK call itself cannot sign):
 
 ```kotlin
 import javax.crypto.Mac
