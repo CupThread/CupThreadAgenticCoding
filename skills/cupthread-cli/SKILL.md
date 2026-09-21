@@ -272,6 +272,11 @@ cupthread comments list <featureRequestId> # List comments on a feature request
 cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
 ```
 
+Both list commands walk the thread's keyset pagination (PROD-31: 200
+comments per request, `limit`/`cursor`) to the end, so threads longer than
+one page still list completely, and the trailing count comes from the
+server's authoritative `total`.
+
 ### Comment Moderation (workspace)
 ```sh
 cupthread comments moderation list <featureRequestId>  # All comments incl. hidden ones (404 if not in workspace)
