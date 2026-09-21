@@ -109,12 +109,17 @@ func featureRows(reqs []api.AdminFeatureRequest) [][]string {
 }
 
 // fetchOneFeatureRequest finds a request by exact ID or ID prefix.
+//
+// The lookup is scoped to the resolved app (--app flag, else the saved
+// default from 'apps use') so ID resolution cannot cross into another app's
+// requests; with no app resolved it stays workspace-wide.
 func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureRequest, error) {
 	ws, err := workspaceClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := listFeatureRequests(ctx, ws, flagApp, 200, 0, "", false)
+	appID := A.optionalAppID()
+	resp, err := listFeatureRequests(ctx, ws, appID, 200, 0, "", false)
 	if err != nil {
 		return nil, err
 	}
