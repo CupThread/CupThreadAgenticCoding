@@ -256,6 +256,23 @@ func (a *app) requireAppID() (string, error) {
 	return "", errors.New("no app selected: pass --app <id> or run 'cupthread apps use <id>'")
 }
 
+// optionalAppID resolves the app like requireAppID but returns "" instead of
+// an error when neither the --app flag nor a saved default app is set, for
+// commands that fall back to workspace-wide scoping.
+func (a *app) optionalAppID() string {
+	if flagApp != "" {
+		return flagApp
+	}
+	ws, err := a.workspaceID()
+	if err != nil {
+		return ""
+	}
+	if prefs, ok := a.cfg.Workspaces[ws]; ok {
+		return prefs.DefaultApp
+	}
+	return ""
+}
+
 // lookupApp lists the workspace's apps and matches id, slug or name. Ids and
 // slugs are unique server-side and short-circuit; name matches are collected
 // exhaustively because display names are not unique (the API only dedupes
