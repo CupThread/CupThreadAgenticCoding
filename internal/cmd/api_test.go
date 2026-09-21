@@ -359,7 +359,8 @@ func TestImportsCreateOptionsRejectTrailingData(t *testing.T) {
 // TestAPIRequestJSONErrorIncludesValidationDetails covers issue #73: when the
 // API answers 400 with the zod-flatten details object, `api request --json`
 // must pass it through verbatim so programmatic consumers see exactly what
-// the server sent.
+// the server sent. Issue #72's contract still applies: the payload prints to
+// stdout AND the invocation fails, so the process exits 1.
 func TestAPIRequestJSONErrorIncludesValidationDetails(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -371,8 +372,8 @@ func TestAPIRequestJSONErrorIncludesValidationDetails(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/x", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
 	}
 	var payload struct {
 		Error   string          `json:"error"`
@@ -413,8 +414,8 @@ func TestAPIRequestJSONErrorOmitsEmptyDetails(t *testing.T) {
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "api", "request", "POST", "/api/v1/x", "--json")
-	if err != nil {
-		t.Fatalf("api request: %v", err)
+	if err == nil {
+		t.Fatal("api request exited 0 on a 400, want a non-nil error so the process exits 1")
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
