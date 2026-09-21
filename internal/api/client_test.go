@@ -751,3 +751,164 @@ func TestUploadAppIconForbiddenHint(t *testing.T) {
 		}
 	}
 }
+
+// --- Validation-details rendering (issue #73) ---
+
+// TestDoSurfacesValidationFieldErrors covers issue #73: a 400 whose body
+// carries the server's zod-flatten `details` must name every offending field
+// and reason in the error line, fields in sorted key order, and keep the raw
+// payload on APIError.Details for programmatic use.
+func TestDoSurfacesValidationFieldErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	got := apiErr.Error()
+	if !strings.Contains(got, "title: Title must be at least 3 characters") {
+		t.Errorf("Error() = %q, want the title reason", got)
+	}
+	if !strings.Contains(got, "versionId: Invalid version") {
+		t.Errorf("Error() = %q, want the versionId reason", got)
+	}
+	if i, j := strings.Index(got, "title:"), strings.Index(got, "versionId:"); i < 0 || j < 0 || i > j {
+		t.Errorf("Error() = %q, want fields in sorted key order (title before versionId)", got)
+	}
+	if !strings.HasPrefix(got, "Validation failed (HTTP 400): ") {
+		t.Errorf("Error() = %q, want the bare rendering as prefix", got)
+	}
+	// The raw server JSON is retained verbatim for programmatic consumers.
+	wantDetails := `{"formErrors":[],"fieldErrors":{"versionId":["Invalid version"],"title":["Title must be at least 3 characters"]}}`
+	if string(apiErr.Details) != wantDetails {
+		t.Errorf("Details = %s, want raw server JSON %s", apiErr.Details, wantDetails)
+	}
+}
+
+// TestDoSurfacesValidationFormErrors covers issue #73: form-level messages
+// (no field attached) render before the field errors.
+func TestDoSurfacesValidationFormErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":["Body is not valid JSON"],"fieldErrors":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	got := apiErr.Error()
+	if !strings.Contains(got, `Validation failed (HTTP 400): Body is not valid JSON`) {
+		t.Errorf("Error() = %q, want the form error appended", got)
+	}
+}
+
+// TestAPIErrorWithoutDetailsByteIdentical pins the regression contract: with
+// no `details` on the wire (or an empty flatten), Error() output is exactly
+// the pre-issue rendering — many call sites and tests quote these strings.
+func TestAPIErrorWithoutDetailsByteIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
+	}
+}
+
+// TestAPIErrorEmptyDetailsObjectByteIdentical pins the empty-flatten case: a
+// details object without any messages must not add a dangling colon.
+func TestAPIErrorEmptyDetailsObjectByteIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.Do(context.Background(), "POST", "/x", nil, nil, nil)
+	if err == nil || err.Error() != "Validation failed (HTTP 400)" {
+		t.Errorf("error = %v, want exactly %q", err, "Validation failed (HTTP 400)")
+	}
+}
+
+// TestAPIErrorDetailsRenderingCaps pins the flood guards on Error(): at most
+// five groups are shown followed by a "+N more" tail, each group truncated,
+// and control characters are stripped so server text cannot inject terminal
+// sequences into the error line.
+func TestAPIErrorDetailsRenderingCaps(t *testing.T) {
+	msg := "x" + strings.Repeat("y", 200)
+	e := &APIError{
+		Status:  http.StatusBadRequest,
+		Message: "Validation failed",
+		Details: json.RawMessage(`{"formErrors":[],"fieldErrors":{` +
+			`"f1":["` + msg + `"],"f2":["two"],"f3":["three"],"f4":["four"],"f5":["five"],"f6":["six"],"f7":["seven"]` +
+			`}}`),
+	}
+	got := e.Error()
+	if !strings.Contains(got, "f1: ") || !strings.Contains(got, "f5: five") {
+		t.Errorf("Error() = %q, want the first five field groups", got)
+	}
+	if strings.Contains(got, "f6:") || strings.Contains(got, "f7:") {
+		t.Errorf("Error() = %q, want groups past the cap dropped", got)
+	}
+	if !strings.Contains(got, "(+2 more)") {
+		t.Errorf("Error() = %q, want the +N more tail", got)
+	}
+	// The whole "f1: <msg>" group is truncated to detailsMaxRunes runes
+	// (the 5-rune "f1: x" prefix leaves 115 y's before the ellipsis).
+	if !strings.Contains(got, "f1: x"+strings.Repeat("y", 115)+"…") {
+		t.Errorf("Error() = %q, want the long group truncated at %d runes", got, detailsMaxRunes)
+	}
+}
+
+// TestSanitizeErrorText unit-covers the control-character stripper used when
+// server text is inlined into human-readable errors.
+func TestSanitizeErrorText(t *testing.T) {
+	got := sanitizeErrorText("a\x1b]8;;http://evil\b7\x07 ESC \r\nline\x7f")
+	for _, bad := range []string{"\x1b", "\x07", "\b", "\r", "\n", "\x7f"} {
+		if strings.ContainsAny(got, bad) {
+			t.Errorf("sanitizeErrorText = %q, still contains control char %q", got, bad)
+		}
+	}
+	if got := sanitizeErrorText("plain text"); got != "plain text" {
+		t.Errorf("sanitizeErrorText = %q, want it unchanged", got)
+	}
+}
+
+// TestUploadAppIconCapturesValidationDetails covers the multipart error path
+// (postMultipartFile): it must decode `details` the same as DoWithHeaders so
+// icon-upload 400s name the offending metadata.
+func TestUploadAppIconCapturesValidationDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"icon":["File exceeds the maximum size"]}}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("big"))
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !strings.Contains(apiErr.Error(), "icon: File exceeds the maximum size") {
+		t.Errorf("Error() = %q, want the field reason", apiErr.Error())
+	}
+	if len(apiErr.Details) == 0 {
+		t.Error("Details = empty, want the raw server JSON retained")
+	}
+}

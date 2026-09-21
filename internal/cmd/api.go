@@ -85,6 +85,12 @@ include that value in bug reports and support requests.`,
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
 					}
+					// Validation failures carry the server's field-level
+					// details (zod flatten); pass them through verbatim so
+					// programmatic consumers see exactly what the server sent.
+					if len(apiErr.Details) > 0 {
+						payload["details"] = json.RawMessage(apiErr.Details)
+					}
 					return A.out.Structured(payload)
 				}
 				return err

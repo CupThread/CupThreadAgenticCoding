@@ -12,6 +12,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -79,18 +80,98 @@ type APIError struct {
 	// otherwise a server-generated UUID. Quote it in bug reports and support
 	// requests so the server side can find the exact request.
 	RequestID string
+	// Details is the server's field-level validation payload from a 400
+	// response — the zod `.flatten()` object `{"formErrors": [...],
+	// "fieldErrors": {field: [reasons...]}}` — kept as raw JSON verbatim for
+	// programmatic consumers. Error() renders a capped, sanitized human
+	// summary; it is nil whenever the server sent no details.
+	Details json.RawMessage
+}
+
+// Limits for rendering APIError.Details so a large schema error cannot flood
+// the single error line: at most detailsMaxGroups groups (form errors count
+// as one group each), each truncated to detailsMaxRunes runes.
+const (
+	detailsMaxGroups = 5
+	detailsMaxRunes  = 120
+)
+
+// validationDetails mirrors the server's zod `.flatten()` payload sent as
+// `details` on every 400 Validation failed response.
+type validationDetails struct {
+	FormErrors  []string            `json:"formErrors"`
+	FieldErrors map[string][]string `json:"fieldErrors"`
+}
+
+// detailsSuffix renders Details as a single `: …` line suffix: form errors
+// first, then field errors in sorted key order with the field's reasons
+// joined by "; ". It returns "" when there is nothing to show (no details,
+// undecodable payload, or an empty flatten), which keeps Error() output
+// byte-identical to the pre-details rendering.
+func (e *APIError) detailsSuffix() string {
+	if len(e.Details) == 0 {
+		return ""
+	}
+	var d validationDetails
+	if json.Unmarshal(e.Details, &d) != nil {
+		return ""
+	}
+	groups := make([]string, 0, len(d.FormErrors)+len(d.FieldErrors))
+	groups = append(groups, d.FormErrors...)
+	keys := make([]string, 0, len(d.FieldErrors))
+	for k := range d.FieldErrors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		groups = append(groups, k+": "+strings.Join(d.FieldErrors[k], "; "))
+	}
+	if len(groups) == 0 {
+		return ""
+	}
+	if len(groups) > detailsMaxGroups {
+		groups = append(groups[:detailsMaxGroups:detailsMaxGroups],
+			fmt.Sprintf("(+%d more)", len(groups)-detailsMaxGroups))
+	}
+	for i, g := range groups {
+		groups[i] = truncateRunes(sanitizeErrorText(g), detailsMaxRunes)
+	}
+	return ": " + strings.Join(groups, "; ")
+}
+
+// sanitizeErrorText strips terminal control characters (C0, DEL, and the C1
+// range) from server-supplied text before it is inlined into an error
+// string, so a hostile response cannot forge output lines or emit OSC/SGR
+// escape sequences through validation messages.
+func sanitizeErrorText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// truncateRunes shortens s to max runes, marking the cut with an ellipsis.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 func (e *APIError) Error() string {
+	suffix := e.detailsSuffix()
 	switch {
 	case e.Code != "" && e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)", e.Message, e.Status, e.Code, e.RequestID)
+		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)%s", e.Message, e.Status, e.Code, e.RequestID, suffix)
 	case e.Code != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s)", e.Message, e.Status, e.Code)
+		return fmt.Sprintf("%s (HTTP %d, code=%s)%s", e.Message, e.Status, e.Code, suffix)
 	case e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, request-id=%s)", e.Message, e.Status, e.RequestID)
+		return fmt.Sprintf("%s (HTTP %d, request-id=%s)%s", e.Message, e.Status, e.RequestID, suffix)
 	default:
-		return fmt.Sprintf("%s (HTTP %d)", e.Message, e.Status)
+		return fmt.Sprintf("%s (HTTP %d)%s", e.Message, e.Status, suffix)
 	}
 }
 
@@ -238,12 +319,14 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 			Message: strings.TrimSpace(http.StatusText(resp.StatusCode)),
 		}
 		var parsed struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
+			Error   string          `json:"error"`
+			Code    string          `json:"code"`
+			Details json.RawMessage `json:"details"`
 		}
 		if json.Unmarshal(data, &parsed) == nil && parsed.Error != "" {
 			apiErr.Message = parsed.Error
 			apiErr.Code = parsed.Code
+			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = resp.Header.Get(requestIDHeader)
 		if apiErr.TierLimit() {
@@ -381,12 +464,14 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			Message: strings.TrimSpace(string(body)),
 		}
 		var parsed struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
+			Error   string          `json:"error"`
+			Code    string          `json:"code"`
+			Details json.RawMessage `json:"details"`
 		}
 		if json.Unmarshal(body, &parsed) == nil && parsed.Error != "" {
 			apiErr.Message = parsed.Error
 			apiErr.Code = parsed.Code
+			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = resp.Header.Get(requestIDHeader)
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
