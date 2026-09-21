@@ -218,4 +218,11 @@ The public profile page / hovercard reads `GET /api/v1/users/{userId}/profile`, 
 - **Handle `429` with exponential backoff** and render a friendly "try again shortly" state; never retry in a tight loop.
 - **Treat `404` on a `u_*` id as "no public profile for this id"** and fall back to the placeholder UI — the server no longer scans for unmatched ids, so retrying cannot change the answer. Raw `user_*` ids from old `/u/` links keep the opt-in placeholder behavior.
 
+## Request Body Limits & End-User Description Images (SEC-36 / PRIV-11)
+
+Two server-side behaviors every integration should know:
+
+- **Public JSON budget is 256 KB (SEC-36).** Public intake routes (feature requests, votes, comments, user-attribute upserts, feedback) parse the body through a bounded reader **before** rate limiting and validation; anything over the budget fails with `413 {"error": "Payload exceeds size limit", "code": "payload_too_large"}` without consuming a rate-limit slot. Keep request bodies — especially free-text description fields — well under 256 KB, truncating oversized input client-side instead of discovering the limit via `413`.
+- **Image embeds in end-user feature-request descriptions do not render (PRIV-11).** Public boards strip image embeds (`![alt](url)`, reference images, raw `<img>`) from end-user-submitted descriptions at ingest and render descriptions with images disabled — anti tracking-pixel/phishing hardening. Links still render (tagged `rel="nofollow ugc noopener noreferrer"`); submitting an image embed is not an error, it just will not display. Developer-authored content (changelog entries, console notifications) keeps full Markdown rendering.
+
 For complete method signatures, customization options, and advanced architecture, consult the [KDoc API Documentation](https://cupthread.github.io/CupThreadAndroidSDK/).

@@ -250,7 +250,7 @@ cupthread integrations status              # connection status of every integrat
 cupthread apps settings set my-app --anon-vote=false  # app settings (anonymous access, admin/owner)
 cupthread notifications list               # notifications: read / read-all / prefs show / prefs set (tokens OK)
 cupthread billing show
-cupthread search "dark mode"
+cupthread search "dark mode"               # also matches feedback submissions (--json passes type through)
 ```
 
 **Destructive commands ask before they destroy.** `features delete`,
