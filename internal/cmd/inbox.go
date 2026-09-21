@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -447,14 +448,22 @@ func newInboxDeliveriesCmd() *cobra.Command {
 	}
 }
 
+// truncate caps s at n bytes, appending "…" when content is dropped. The cut
+// always lands on a rune boundary so non-ASCII content (CJK titles, emoji)
+// never emits an invalid UTF-8 sequence into table output. Pure-ASCII
+// over-cap input keeps the historical exact result s[:n-1] + "…".
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	if n <= 1 {
-		return s[:n]
+	if n <= 0 {
+		return ""
 	}
-	return s[:n-1] + "…"
+	cut := n - 1
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 func cutDate(ts string) string {
