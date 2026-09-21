@@ -591,3 +591,74 @@ func TestAppsUpdateHappyPathBothSteps(t *testing.T) {
 		t.Errorf("JSON payload = %v, want the updated app record", rec)
 	}
 }
+
+// TestAppsUpdateOversizeIconFailsBeforeRequests covers the SEC-36
+// client-side guard: the console icon route reads the multipart body through
+// an 11 MB bounded reader and Cloudflare Images caps the image itself at
+// 10 MB, so apps update --icon rejects an over-limit file with zero HTTP
+// requests — before the metadata PUT could apply anything and report a
+// misleading "partially applied" state.
+func TestAppsUpdateOversizeIconFailsBeforeRequests(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, make([]byte, maxIconBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request reached the server: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name")
+	if err == nil {
+		t.Fatal("an icon over the 10 MB limit must fail the command")
+	}
+	if !strings.Contains(err.Error(), "10 MB") || !strings.Contains(err.Error(), "payload_too_large") {
+		t.Errorf("error = %v, want the size limit and the server's 413 code named", err)
+	}
+}
+
+// TestAppsUpdateIconAtLimitUploads pins the boundary: a file of exactly
+// maxIconBytes passes the pre-check and runs the normal lookup → PUT →
+// icon POST flow.
+func TestAppsUpdateIconAtLimitUploads(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, make([]byte, maxIconBytes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	server := newUpdateTwoStepServer(t, http.StatusOK, http.StatusOK, &order)
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1"); err != nil {
+		t.Fatalf("apps update with an exactly-10MB icon: %v", err)
+	}
+	if len(order) != 3 || order[1] != "PUT" || order[2] != "POST" {
+		t.Errorf("request order = %v, want lookup then PUT then icon POST", order)
+	}
+}
+
+// TestAppsUpdateMissingIconFileFailsBeforeRequests: a typo'd --icon path
+// must fail up front — previously the metadata PUT applied first and the
+// read error only surfaced at upload time, leaving a partial update.
+func TestAppsUpdateMissingIconFileFailsBeforeRequests(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request reached the server: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", filepath.Join(t.TempDir(), "missing.png"), "--name", "Valid Name")
+	if err == nil || !strings.Contains(err.Error(), "invalid --icon") {
+		t.Fatalf("error = %v, want invalid --icon naming the unreadable path", err)
+	}
+}

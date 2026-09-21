@@ -128,6 +128,21 @@ go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
 go build -o bin/cupthread ./cmd/cupthread
 ```
 
+### Releases and versioning
+
+Releases are tag-driven. Pushing an annotated `vX.Y.Z` tag triggers the
+release workflow, which runs the test suite, builds the CLI with the tag
+injected as the version, verifies the built binary reports exactly that
+version, publishes a GitHub release with source checksums, and regenerates
+the `CupThread/homebrew-tap` formula pinned to the tag's source tarball —
+so `brew upgrade cupthread` picks up every release and `cupthread --version`
+identifies the exact build. Source builds without an injected version
+report `dev`; to stamp one:
+
+```sh
+go build -ldflags "-X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=0.3.0" -o bin/cupthread ./cmd/cupthread
+```
+
 ### Log in
 
 The CLI supports two authentication methods.
@@ -184,9 +199,15 @@ How the environment variable behaves:
   static credential, so simply create one with a suitable expiry for the job.
 
 `cupthread auth logout` removes stored credentials from this machine (an env
-token simply stops being set) and forgets a remembered non-default base URL;
-it never revokes anything server-side — revoke
-tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
+token simply stops being set) and forgets a remembered non-default base URL.
+Pass `--revoke` to also invalidate the stored credential server-side before
+the local state is cleared: for an OAuth login the CLI posts the stored
+refresh token to the server's RFC 7009 revocation endpoint
+(`/api/v1/oauth/revoke`), which disables the whole token pair. Revocation is
+best-effort — a network failure prints a warning and logout still completes.
+Personal access tokens cannot be revoked from the CLI (the token-management
+API requires an interactive Console session), so `--revoke` prints the Console
+path (Settings → API Tokens) instead of sending a request that cannot succeed.
 Logout also clears the saved default workspace, per-workspace app defaults and
 base URL, so the next account on the machine starts from a clean slate. When a
 login inherits saved defaults the new account cannot see, they are cleared with
@@ -207,7 +228,9 @@ cupthread billing show -o yaml
 `--output` (short `-o`) accepts `table` (default), `json`, or `yaml`. In
 `json` mode commands print a faithful, indented copy of the API response; the
 `yaml` variant renders the same data as YAML. `cupthread api request` also
-honors both formats for raw endpoint calls.
+honors both formats for raw endpoint calls. A failed request (any 4xx/5xx)
+always exits 1: structured error payloads (`{error, code, status, hint}`)
+still reach stdout, while the `Error: …` line goes to stderr.
 
 ### Manage your projects
 
@@ -226,9 +249,15 @@ cupthread changelog create --title "v1.2" --body-file notes.md --publish-now
                                              # publish-now/schedule-at <datetime> need a workspace admin/owner
                                              # interactive session; clearing (--schedule-at "") and drafts need
                                              # plain content.manage; cpt_ tokens can create drafts only
+cupthread features update fr_123 --column-slug planned  # moderate requests (also approve/forward/delete)
+cupthread changelog unpublish <entry-id>   # revert a published entry to draft (tokens OK)
 cupthread imports create --source github_issues --mode preview
+cupthread imports get <job-id>             # poll the import job created above (also list/history/rerun/cancel)
+cupthread integrations status              # connection status of every integration (tokens OK)
+cupthread apps settings set my-app --anon-vote=false  # app settings (anonymous access, admin/owner)
+cupthread notifications list               # notifications: read / read-all / prefs show / prefs set (tokens OK)
 cupthread billing show
-cupthread search "dark mode"
+cupthread search "dark mode"               # also matches feedback submissions (--json passes type through)
 ```
 
 **Destructive commands ask before they destroy.** `features delete`,
@@ -259,6 +288,14 @@ cupthread api sign-user-attrs --app-key app_demo12345 --secret - \
 # or: CUPTHREAD_SDK_SIGNING_SECRET=cpt_sk_... cupthread api sign-user-attrs \
 #   --app-key app_demo12345 --input ./user-attrs.json
 # An inline --secret cpt_sk_... still works, but leaks via history and ps.
+
+# Connect an integration provider without exposing its token on the command
+# line (shell history / ps / CI logs): pipe it via stdin or set the
+# per-provider variable. Linear/Notion/Slack use CUPTHREAD_LINEAR_TOKEN,
+# CUPTHREAD_NOTION_TOKEN and CUPTHREAD_SLACK_TOKEN the same way.
+printf %s "$GITHUB_PAT" | cupthread integrations github connect --token -
+# or: CUPTHREAD_GITHUB_TOKEN=ghp_... cupthread integrations github connect
+# An inline --token ghp_... still works, but leaks via history and ps.
 ```
 
 ### Repo tooling
@@ -278,13 +315,14 @@ bin/cupthread skills link /path/to/project
 | Variable | Purpose |
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
-<<<<<<< HEAD
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
-=======
 | `CUPTHREAD_SDK_SIGNING_SECRET` | SDK signing secret fallback for `api sign-user-attrs`; an explicit `--secret` wins |
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`) |
->>>>>>> origin/main
+| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
+| `CUPTHREAD_NO_RETRY` | Set to `1` to disable automatic retry/backoff on transient failures (same as `--no-retry`) |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
+| `CUPTHREAD_GITHUB_TOKEN` | GitHub PAT fallback for `integrations github connect` (an explicit `--token` wins; `--token -`/`@` reads stdin) |
+| `CUPTHREAD_LINEAR_TOKEN` | Linear API token fallback for `integrations linear connect` (same rules) |
+| `CUPTHREAD_NOTION_TOKEN` | Notion API token fallback for `integrations notion connect` (same rules) |
+| `CUPTHREAD_SLACK_TOKEN` | Slack API token fallback for `integrations slack connect` (same rules) |
 
 ### Development
 

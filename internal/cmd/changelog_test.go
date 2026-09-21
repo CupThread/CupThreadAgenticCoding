@@ -257,7 +257,8 @@ func sec40ForbiddenServer(t *testing.T, respBody string) (*httptest.Server, *str
 
 // TestChangelogPublishInteractiveSessionRequired covers SEC-40 end to end: a
 // cpt_ API token calling POST .../publish surfaces the server's 403
-// interactive_session_required with the actionable sign-in hint.
+// interactive_session_required with the Console-web-UI hint and no re-login
+// advice (issue #58 — an OAuth login cannot help either).
 func TestChangelogPublishInteractiveSessionRequired(t *testing.T) {
 	server, gotMethod, gotPath := sec40ForbiddenServer(t,
 		`{"error":"This action requires an interactive session; API tokens are not permitted","code":"interactive_session_required"}`)
@@ -273,11 +274,14 @@ func TestChangelogPublishInteractiveSessionRequired(t *testing.T) {
 	for _, want := range []string{
 		"interactive_session_required",
 		"API tokens are not permitted",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 
@@ -333,11 +337,14 @@ func TestChangelogCreatePublishNowInteractiveSessionRequired(t *testing.T) {
 	}
 	for _, want := range []string{
 		"interactive_session_required",
-		"cupthread auth login",
+		"Console web UI",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "auth login") {
+		t.Errorf("error %q still recommends 'auth login' as a remedy", err)
 	}
 }
 

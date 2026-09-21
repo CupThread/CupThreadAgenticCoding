@@ -28,9 +28,10 @@ func newChangelogCmd() *cobra.Command {
 Creating, editing, listing, and deleting drafts works for every workspace
 role and with cpt_ API tokens. Publishing, --publish-now, and setting a
 schedule with --schedule-at <datetime> require the changelog.publish
-capability (workspace admin or owner, SEC-40): with a cpt_ API token they
-fail with 403 interactive_session_required (use 'cupthread auth login'),
-and for member-role callers they fail with 403 capability_required.
+capability (workspace admin or owner, SEC-40), and no CLI credential
+qualifies — personal access tokens and OAuth logins are both cpt_ tokens,
+so they fail with 403 interactive_session_required; publish in the Console
+web UI. For member-role callers they fail with 403 capability_required.
 Passing --schedule-at "" sends scheduledAt: null, which only clears an
 existing schedule and needs plain content.manage (no admin role required).`,
 	}
@@ -48,8 +49,8 @@ existing schedule and needs plain content.manage (no admin role required).`,
 func newChangelogListCmd() *cobra.Command {
 	var limit, offset int
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List changelog entries of the app",
+		Use:                   "list",
+		Short:                 "List changelog entries of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -107,8 +108,8 @@ func newChangelogCreateCmd() *cobra.Command {
 	var linkIDs []string
 	var publishNow bool
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a changelog entry (draft by default)",
+		Use:                   "create",
+		Short:                 "Create a changelog entry (draft by default)",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if title == "" {

@@ -1,7 +1,9 @@
 // Package auth implements the CLI login flows against the CupThread OAuth
 // server: Authorization Code + PKCE with a local loopback callback (primary)
 // and the Device Authorization Grant (fallback for headless environments).
-// The server-side contract is specified in SaaS/docs/CLI-OAuth.md.
+// The server-side contract is specified in SaaS/docs/CLI-OAuth.md and
+// mirrored in the OpenAPI 3.1 spec (GET /api/v1/openapi.json, RFC 8414
+// metadata at /.well-known/oauth-authorization-server).
 package auth
 
 import (
@@ -27,16 +29,27 @@ const FirstPartyClientID = "cupthread-cli"
 
 // Endpoint paths on the API server.
 const (
-	AuthorizePath    = "/api/v1/oauth/authorize"
-	TokenPath        = "/api/v1/oauth/token"
+	AuthorizePath       = "/api/v1/oauth/authorize"
+	TokenPath           = "/api/v1/oauth/token"
 	DeviceAuthorizePath = "/api/v1/oauth/device/authorize"
-	DeviceTokenPath  = "/api/v1/oauth/device/token"
+	DeviceTokenPath     = "/api/v1/oauth/device/token"
+	RevokePath          = "/api/v1/oauth/revoke"
 )
 
 // CallbackPath is the path registered for the CLI's loopback redirect URI.
 // The port is chosen at runtime (loopback port variation is allowed by the
 // OAuth spec for native apps, RFC 8252 §7.3).
 const CallbackPath = "/cupthread/callback"
+
+// loopbackRedirectURI builds the CLI's redirect_uri for a local callback
+// port. The authorization server (SEC-46) only accepts absolute https: URLs
+// or loopback http://127.0.0.1 / http://[::1] / http://localhost with any
+// port, so this loopback shape is the CLI's one supported redirect; pointing
+// it anywhere else makes every authorize request fail with 400
+// invalid_request.
+func loopbackRedirectURI(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", port, CallbackPath)
+}
 
 // TokenSet is a successful token endpoint response.
 type TokenSet struct {
@@ -51,6 +64,27 @@ type TokenSet struct {
 func Endpoints(baseURL string) (authorize, token, deviceAuthorize, deviceToken string) {
 	base := strings.TrimRight(baseURL, "/")
 	return base + AuthorizePath, base + TokenPath, base + DeviceAuthorizePath, base + DeviceTokenPath
+}
+
+// RevokeEndpoint derives the RFC 7009 revocation endpoint URL from the API
+// base URL. The server exposes it in its RFC 8414 metadata as
+// revocation_endpoint and requires no interactive session, unlike the
+// console token-management API.
+func RevokeEndpoint(baseURL string) string {
+	return strings.TrimRight(baseURL, "/") + RevokePath
+}
+
+// Revoke posts an RFC 7009 revocation request for token (the refresh token
+// when one is stored, so the server cascades to the paired access token).
+// The server intentionally answers 200 even for unknown or already-revoked
+// tokens so existence is not disclosed; a nil error therefore means "the
+// server accepted the request", not "a live token was destroyed".
+func Revoke(ctx context.Context, revokeURL, clientID, token string) error {
+	_, err := postForm(ctx, revokeURL, url.Values{
+		"token":     {token},
+		"client_id": {clientID},
+	})
+	return err
 }
 
 // OpenBrowser opens url in the default browser, returning an error when no
@@ -96,7 +130,7 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 		return nil, fmt.Errorf("start local callback server: %w", err)
 	}
 	defer listener.Close()
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", listener.Port, CallbackPath)
+	redirectURI := loopbackRedirectURI(listener.Port)
 
 	q := url.Values{
 		"response_type":         {"code"},
@@ -197,13 +231,13 @@ type deviceAuthorizeResponse struct {
 
 // DeviceStart is the pending device-flow session shown to the user.
 type DeviceStart struct {
-	deviceCode     string
-	tokenURL       string
-	clientID       string
-	UserCode       string
+	deviceCode      string
+	tokenURL        string
+	clientID        string
+	UserCode        string
 	VerificationURI string
-	Interval       time.Duration
-	ExpiresAt      time.Time
+	Interval        time.Duration
+	ExpiresAt       time.Time
 }
 
 // StartDevice begins a device-flow login.
@@ -217,7 +251,7 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 		return nil, fmt.Errorf("decode device authorization: %w", err)
 	}
 	if parsed.DeviceCode == "" || parsed.UserCode == "" {
-		return nil, errors.New("device authorization endpoint did not return device_code/user_code (not implemented server-side yet?)")
+		return nil, errors.New("device authorization endpoint did not return device_code/user_code")
 	}
 	interval := time.Duration(parsed.Interval) * time.Second
 	if interval <= 0 {
