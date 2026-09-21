@@ -186,6 +186,10 @@ How the environment variable behaves:
 `cupthread auth logout` removes stored credentials from this machine (an env
 token simply stops being set); it never revokes anything server-side — revoke
 tokens in the Console or via `cupthread api request DELETE /api/v1/console/tokens/<id>`.
+Logout also clears the saved default workspace, per-workspace app defaults and
+base URL, so the next account on the machine starts from a clean slate. When a
+login inherits saved defaults the new account cannot see, they are cleared with
+a warning instead of silently targeting the previous user's workspace.
 
 ### Output formats
 
