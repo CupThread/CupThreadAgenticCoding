@@ -1,6 +1,6 @@
 // Package api contains the CupThread API client and the response types it
-// consumes. Field names mirror the server's JSON (see
-// SaaS/packages/shared/src/schemas.ts, the single source of truth).
+// consumes. Field names mirror the server's JSON (see the SaaS monorepo's
+// packages/shared/src/schemas/ directory, the single source of truth).
 package api
 
 import "encoding/json"
