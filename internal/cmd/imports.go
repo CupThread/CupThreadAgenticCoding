@@ -128,7 +128,11 @@ per-source flags.`,
 				return err
 			}
 
-			options := map[string]any{}
+			// json.RawMessage values keep every number in the --options body
+			// byte-identical on the wire (issue #75); a map[string]any decode
+			// would round-trip them through float64 and silently rewrite
+			// integers a float64 cannot represent exactly.
+			var options map[string]json.RawMessage
 			if optionsFile != "" {
 				data, err := readInputFile(optionsFile)
 				if err != nil {
@@ -138,38 +142,50 @@ per-source flags.`,
 					return fmt.Errorf("parse options JSON: %w", err)
 				}
 			} else {
+				flagged := map[string]any{}
 				if owner != "" {
-					options["owner"] = owner
+					flagged["owner"] = owner
 				}
 				if repo != "" {
-					options["repo"] = repo
+					flagged["repo"] = repo
 				}
 				if len(labels) > 0 {
-					options["labels"] = labels
+					flagged["labels"] = labels
 				}
 				if state != "" {
-					options["state"] = state
+					flagged["state"] = state
 				}
 				if categorySlug != "" {
-					options["categorySlug"] = categorySlug
+					flagged["categorySlug"] = categorySlug
 				}
 				if teamID != "" {
-					options["teamId"] = teamID
+					flagged["teamId"] = teamID
 				}
 				if databaseID != "" {
-					options["databaseId"] = databaseID
+					flagged["databaseId"] = databaseID
 				}
 				if channelID != "" {
-					options["channelId"] = channelID
+					flagged["channelId"] = channelID
 				}
 				if cmd.Flags().Changed("limit") {
-					options["limit"] = limit
+					flagged["limit"] = limit
 				}
 				if columnSlug != "" {
-					options["columnSlug"] = columnSlug
+					flagged["columnSlug"] = columnSlug
 				}
 				if includeDuplicates {
-					options["includeDuplicates"] = true
+					flagged["includeDuplicates"] = true
+				}
+				// The flag values are plain strings/ints/bools, so marshaling
+				// each into a RawMessage is lossless and gives both sources
+				// one body type.
+				options = make(map[string]json.RawMessage, len(flagged))
+				for key, v := range flagged {
+					encoded, err := json.Marshal(v)
+					if err != nil {
+						return fmt.Errorf("encode option %q: %w", key, err)
+					}
+					options[key] = encoded
 				}
 			}
 
@@ -192,7 +208,7 @@ per-source flags.`,
 	}
 	create.Flags().StringVar(&source, "source", "", "Import source (required)")
 	create.Flags().StringVar(&mode, "mode", "preview", "preview shows the diff, commit creates requests")
-	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON file (\"-\" for stdin); overrides per-source flags")
+	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON file (\"-\" for stdin), sent verbatim (numbers keep full precision); overrides per-source flags")
 	create.Flags().StringVar(&owner, "owner", "", "GitHub owner")
 	create.Flags().StringVar(&repo, "repo", "", "GitHub repository")
 	create.Flags().StringSliceVar(&labels, "labels", nil, "GitHub labels filter (comma-separated)")
