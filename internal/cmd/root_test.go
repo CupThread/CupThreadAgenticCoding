@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
@@ -104,6 +107,64 @@ func TestCommentsModerationTreeComplete(t *testing.T) {
 
 // TestOutputFlagParsing exercises the global --output/--json resolution in
 // PersistentPreRunE, including the shorthand and invalid values.
+// TestCLISkillDocumentsCommandTree guards the agent-facing cupthread-cli
+// SKILL.md against drifting behind the shipped command tree (issue #78):
+// every top-level group must be named in the doc, and every leaf on the
+// maintained token-safe list must appear as a documented invocation. The
+// assertion is a plain substring check on whitespace-normalized text, so
+// deleting the documenting line fails the test.
+func TestCLISkillDocumentsCommandTree(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-cli", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skills/cupthread-cli/SKILL.md: %v", err)
+	}
+	doc := strings.Join(strings.Fields(string(raw)), " ")
+
+	root := newRootCmd()
+	for _, group := range root.Commands() {
+		// Skip cobra's auto-added helpers; they are not part of the
+		// documented CLI surface.
+		if group.Hidden || group.Name() == "help" || group.Name() == "completion" {
+			continue
+		}
+		if !strings.Contains(doc, group.Name()) {
+			t.Errorf("SKILL.md never mentions the %q command group", group.Name())
+		}
+	}
+
+	// Token-safe leaves an agent must find documented as invocations.
+	documented := []string{
+		"auth login", "auth logout", "auth status",
+		"workspaces list", "workspaces use", "workspaces members list", "workspaces invitations list",
+		"billing show",
+		"apps list", "apps use", "apps get", "apps create", "apps update",
+		"apps settings show", "apps settings set",
+		"apps public-config", "apps public-changelog", "apps public-feature-requests",
+		"inbox list", "inbox get", "inbox priority", "inbox triage", "inbox assign",
+		"inbox retry", "inbox deliveries",
+		"features list", "features get", "features create", "features update",
+		"features approve", "features delete", "features forward",
+		"comments list", "comments create",
+		"comments moderation list", "comments moderation hide",
+		"comments moderation unhide", "comments moderation delete",
+		"columns list", "versions list",
+		"changelog list", "changelog create", "changelog update",
+		"changelog delete", "changelog unpublish",
+		"imports list", "imports history", "imports create", "imports get",
+		"imports cancel", "imports rerun",
+		"integrations status",
+		"notifications list", "notifications read", "notifications read-all",
+		"notifications prefs show", "notifications prefs set",
+		"search", "api request", "users profile", "me", "status",
+		"skills list", "skills link",
+	}
+	for _, invocation := range documented {
+		if !strings.Contains(doc, invocation) {
+			t.Errorf("SKILL.md does not document the invocation %q", invocation)
+		}
+	}
+}
+
 func TestOutputFlagParsing(t *testing.T) {
 	cases := []struct {
 		args    []string
