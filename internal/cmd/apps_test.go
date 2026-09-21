@@ -362,3 +362,232 @@ func TestAppsUpdateIconClearStillUsesPUT(t *testing.T) {
 		t.Errorf("PUT body = %v, want iconUrl null", gotPUTBody)
 	}
 }
+
+// TestAppsUpdatePutFailsBeforeIconUpload pins the issue #91 reorder: the
+// metadata PUT runs before the icon upload, so a server-rejected field
+// update must abort with the icon never sent — no half-applied icon and no
+// "partially applied" claim, since nothing was committed.
+func TestAppsUpdatePutFailsBeforeIconUpload(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		order = append(order, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("failed metadata PUT should fail the command")
+	}
+	puts, posts := 0, 0
+	for _, req := range order {
+		switch {
+		case strings.HasPrefix(req, "PUT "):
+			puts++
+		case strings.HasPrefix(req, "POST "):
+			posts++
+		}
+	}
+	if puts != 1 || posts != 0 {
+		t.Errorf("requests = %v, want exactly 1 PUT and 0 icon POSTs (icon must not be sent after a failed PUT)", order)
+	}
+	if strings.Contains(err.Error(), "partially applied") {
+		t.Errorf("nothing was committed, error must not claim partial application: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Validation failed") {
+		t.Errorf("error = %v, want the server's Validation failed body", err)
+	}
+}
+
+// TestAppsUpdateLocalValidationBeforeUpload verifies the pre-flight checks
+// mirroring the server's zod rules reject bad flag values with zero HTTP
+// requests — not even the app lookup — so no mutation can ever start.
+func TestAppsUpdateLocalValidationBeforeUpload(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("request reached the server: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"name too short", []string{"--name", "A"}, "--name"},
+		{"name too long", []string{"--name", strings.Repeat("x", 121)}, "--name"},
+		{"slug uppercase", []string{"--slug", "Not-OK"}, "--slug"},
+		{"store url not absolute", []string{"--store-url", "example.com/app"}, "--store-url"},
+		{"play url garbage", []string{"--google-play-url", "not a url"}, "--google-play-url"},
+		{"empty platforms", []string{"--platforms", ""}, "--platforms"},
+		{"unknown platform", []string{"--platforms", "ios,windows"}, "--platforms"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runRoot(t, server.URL, append([]string{"apps", "update", "app_1"}, tc.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want local validation naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// newUpdateTwoStepServer mocks the app lookup, the metadata PUT and the icon
+// upload, recording the request order so tests can assert the sequence.
+func newUpdateTwoStepServer(t *testing.T, putStatus, iconStatus int, order *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*order = append(*order, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1":
+			if putStatus != http.StatusOK {
+				w.WriteHeader(putStatus)
+				_, _ = w.Write([]byte(`{"error":"Validation failed"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Valid Name","slug":"ios"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/icon":
+			if iconStatus != http.StatusOK {
+				w.WriteHeader(iconStatus)
+				_, _ = w.Write([]byte(`{"error":"SVG images are not supported. Upload a PNG, JPEG, WebP, or GIF image."}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Valid Name","iconUrl":"https://cdn.example.com/icon.png"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+}
+
+// TestAppsUpdateIconFailsAfterPutDisclosesPartial covers the one partial
+// state the issue #91 reorder leaves: the PUT applied, then the icon upload
+// failed. The error must name the applied metadata step and the failed icon
+// step instead of presenting as "nothing happened".
+func TestAppsUpdateIconFailsAfterPutDisclosesPartial(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	server := newUpdateTwoStepServer(t, http.StatusOK, http.StatusUnsupportedMediaType, &order)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("failed icon upload should fail the command")
+	}
+	for _, want := range []string{"partially applied", "metadata already applied", "icon failed", "unsupported image type", "415"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if len(order) != 3 || order[1] != "PUT" || order[2] != "POST" {
+		t.Errorf("request order = %v, want lookup then PUT then icon POST", order)
+	}
+}
+
+// TestAppsUpdatePartialDisclosureJSON verifies the --json error path of a
+// partial apps update carries the structured applied/failed payload while
+// the command still exits non-zero.
+func TestAppsUpdatePartialDisclosureJSON(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	server := newUpdateTwoStepServer(t, http.StatusOK, http.StatusUnsupportedMediaType, &order)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1", "--json")
+	if err == nil {
+		t.Fatal("partial update must still exit non-zero in --json mode")
+	}
+	var payload struct {
+		Error   string   `json:"error"`
+		Applied []string `json:"applied"`
+		Failed  string   `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("stdout is not a JSON error payload: %v\n%s", err, out)
+	}
+	if payload.Failed != "icon" || len(payload.Applied) != 1 || payload.Applied[0] != "metadata" {
+		t.Errorf("payload = applied:%v failed:%q, want applied:[metadata] failed:icon", payload.Applied, payload.Failed)
+	}
+	if !strings.Contains(payload.Error, "partially applied") {
+		t.Errorf("payload error = %q, want the partial-application wording", payload.Error)
+	}
+}
+
+// TestAppsUpdateHappyPathBothSteps guards the success path after the issue
+// #91 reorder: exactly one PUT then one icon POST, a single ✓ line, and the
+// icon URL taken from the upload response (the PUT record predates it). The
+// --json subtest pins the structured payload shape.
+func TestAppsUpdateHappyPathBothSteps(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var order []string
+	server := newUpdateTwoStepServer(t, http.StatusOK, http.StatusOK, &order)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("apps update with icon and name: %v", err)
+	}
+	if len(order) != 3 || order[1] != "PUT" || order[2] != "POST" {
+		t.Errorf("request order = %v, want lookup then PUT then icon POST", order)
+	}
+	if got := strings.Count(out, "✓ Updated app app_1"); got != 1 {
+		t.Errorf("✓ line count = %d, want 1:\n%s", got, out)
+	}
+	if !strings.Contains(out, "Icon: https://cdn.example.com/icon.png") {
+		t.Errorf("output missing the upload's icon URL:\n%s", out)
+	}
+
+	out, err = runRoot(t, server.URL, "apps", "update", "app_1",
+		"--icon", iconPath, "--name", "Valid Name", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("apps update --json: %v", err)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		t.Fatalf("stdout is not a JSON app record: %v\n%s", err, out)
+	}
+	if rec["name"] != "Valid Name" || rec["appId"] != "app_1" {
+		t.Errorf("JSON payload = %v, want the updated app record", rec)
+	}
+}

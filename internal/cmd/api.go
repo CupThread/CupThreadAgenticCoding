@@ -1,10 +1,11 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -54,9 +55,9 @@ include that value in bug reports and support requests.`,
 				if err != nil {
 					return err
 				}
-				dec := json.NewDecoder(bytes.NewReader(data))
-				if err := dec.Decode(&body); err != nil {
-					return fmt.Errorf("parse input JSON: %w", err)
+				body, err = decodeStrictJSON(data)
+				if err != nil {
+					return err
 				}
 			}
 
@@ -125,13 +126,47 @@ type signUserAttrsOutput struct {
 	Note      string `json:"note,omitempty" yaml:"note,omitempty"`
 }
 
+// signingEnvSecret names the environment fallback for the SDK signing secret,
+// so the value never has to appear on a command line.
+const signingEnvSecret = "CUPTHREAD_SDK_SIGNING_SECRET"
+
+// resolveSigningSecret applies the sign-user-attrs secret convention: a "-"
+// or "@" flag reads stdin (trimmed), an inline flag wins over the
+// $CUPTHREAD_SDK_SIGNING_SECRET environment fallback (trimmed), and an error
+// names every accepted source when none is set. inputPath is checked first so
+// --secret and --input cannot both consume stdin in one invocation.
+func resolveSigningSecret(secretFlag, inputPath string) (string, error) {
+	readsStdin := func(v string) bool { return v == "-" || v == "@" }
+	if readsStdin(secretFlag) {
+		if readsStdin(inputPath) {
+			return "", errors.New("--secret and --input cannot both read stdin; pass at least one as a file path")
+		}
+		data, err := readInputFile(secretFlag)
+		if err != nil {
+			return "", err
+		}
+		secret := strings.TrimSpace(string(data))
+		if secret == "" {
+			return "", errors.New("stdin carried no SDK signing secret")
+		}
+		return secret, nil
+	}
+	if secretFlag != "" {
+		return secretFlag, nil
+	}
+	if env := strings.TrimSpace(os.Getenv(signingEnvSecret)); env != "" {
+		return env, nil
+	}
+	return "", fmt.Errorf("SDK signing secret is required: pass --secret <value>, pipe it via --secret - (stdin), or set $%s (generate one in the console: App Access → App Credentials)", signingEnvSecret)
+}
+
 func newAPISignUserAttrsCmd() *cobra.Command {
 	var (
-		inputPath string
-		appKey    string
-		secret    string
-		userToken string
-		timestamp int64
+		inputPath  string
+		appKey     string
+		secretFlag string
+		userToken  string
+		timestamp  int64
 	)
 	sign := &cobra.Command{
 		Use:   "sign-user-attrs",
@@ -159,6 +194,13 @@ Pass the exact JSON body you plan to send via --input (a file path, or "-" or
 normalization). userToken comes from the body, falling back to --user-token
 (the X-User-Token header value).
 
+The signing secret is a credential: pass it as --secret - (or @) to read it
+from stdin, or export $CUPTHREAD_SDK_SIGNING_SECRET and omit --secret
+entirely. Trailing whitespace is trimmed from the stdin and env forms. An
+inline --secret value still works but lands in shell history and is visible
+via ps — prefer stdin or the env var. --secret and --input cannot both read
+stdin in the same invocation.
+
 The server rejects timestamps more than ±300 seconds from its clock, so send
 the signed body promptly: add the returned "signature" and "timestamp" fields
 to the body without changing the signed values.`,
@@ -169,6 +211,10 @@ to the body without changing the signed values.`,
 			}
 			if inputPath == "" {
 				return errors.New("--input is required (the exact JSON body you will send)")
+			}
+			secret, err := resolveSigningSecret(secretFlag, inputPath)
+			if err != nil {
+				return err
 			}
 			body, err := readInputFile(inputPath)
 			if err != nil {
@@ -227,7 +273,7 @@ to the body without changing the signed values.`,
 	}
 	sign.Flags().StringVar(&inputPath, "input", "", "exact JSON request body to sign (\"-\" or \"@\" for stdin)")
 	sign.Flags().StringVar(&appKey, "app-key", "", "appKey path segment of the target app")
-	sign.Flags().StringVar(&secret, "secret", "", "SDK signing secret (console: App Access → App Credentials)")
+	sign.Flags().StringVar(&secretFlag, "secret", "", "SDK signing secret: value, or \"-\"/\"@\" for stdin; falls back to $"+signingEnvSecret)
 	sign.Flags().StringVar(&userToken, "user-token", "", "X-User-Token header value when the body carries no userToken")
 	sign.Flags().Int64Var(&timestamp, "timestamp", 0, "signature timestamp, epoch seconds (default: now)")
 	return sign

@@ -4,7 +4,7 @@
 `CupThreadAgenticCoding` contains AI-friendly tools, agent skills, and the `cupthread` command-line utility (implemented in Go) for developing and integrating with [CupThread.com](https://cupthread.com) and the CupThread SDKs.
 
 ## Multi-Repo Ecosystem
-- **CupThread Platform**: [`CupThread.com`](https://cupthread.com) (Main SaaS website & backend API; source in the local `~/g/SaaS` monorepo)
+- **CupThread Platform**: [`CupThread.com`](https://cupthread.com) (Main SaaS website & backend API; source in the local SaaS monorepo checkout, a sibling of this repo: `~/g/CupThread/SaaS`)
 - **Apple SDK**: [`CupThread/CupThreadSwiftSDK`](https://github.com/CupThread/CupThreadSwiftSDK) (SwiftUI / SPM / XCFramework)
 - **Android SDK**: [`CupThread/CupThreadAndroidSDK`](https://github.com/CupThread/CupThreadAndroidSDK) (Kotlin + Jetpack Compose)
 - **React Native SDK**: [`CupThread/CupThreadReactNativeSDK`](https://github.com/CupThread/CupThreadReactNativeSDK) (TypeScript + React Native)
@@ -24,4 +24,4 @@ Install via `brew install CupThread/tap/cupthread` (or `go build -o bin/cupthrea
 
 Global overrides: `--base-url` / `$CUPTHREAD_BASE_URL` (default `https://api.cupthread.com`), `--workspace` / `--app` for context, `$CUPTHREAD_TOKEN` for credential injection, `--config` / `$CUPTHREAD_CONFIG` for the config path (default `~/.config/cupthread/config.json`).
 ## API Contracts
-The CLI mirrors the Console API in `~/g/SaaS/apps/api` (shared schemas: `SaaS/packages/shared/src/schemas.ts`). CLI authentication (access token + OAuth) is specified in `~/g/SaaS/docs/CLI-Access-Tokens.md` and `~/g/SaaS/docs/CLI-OAuth.md`.
+The CLI mirrors the Console API in the local SaaS monorepo checkout (`~/g/CupThread/SaaS`, a sibling of this repo; backend under `apps/api`, shared schemas under `packages/shared/src/schemas/`). CLI authentication (access token + OAuth) is specified in the monorepo's `docs/CLI-Access-Tokens.md` and `docs/CLI-OAuth.md`.

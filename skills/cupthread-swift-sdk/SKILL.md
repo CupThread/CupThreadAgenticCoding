@@ -100,6 +100,8 @@ struct MyFeedbackView: View {
 
 ## Payment-Attribute Signing (HMAC-SHA256, DATA-03)
 
+**SDK status — the Swift SDK signs automatically.** Configure `FeedbackClientConfiguration(signingSecret:)` (or pass `signingSecret` on an individual `updateUserAttributes` call) and the SDK attaches `signature` + `timestamp` itself whenever payment attributes are present and a secret resolves. Hand-rolling is only needed for custom transports; the public `UserAttributesSigner` API gives you the canonical string and HMAC if you must sign manually.
+
 `PUT /api/v1/public/apps/{appKey}/user` only persists paying status, plan, and MRR when the request is **signed with the app's SDK signing secret** (developer console: *App Access → App Credentials → SDK signing secret*). Whenever the body contains any of `isPaying`, `mrr`, or `plan` (an explicit JSON `null` counts), it must also carry `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch seconds) — both plain body fields. Identity-only and currency-only writes stay unsigned. Rejections happen before any profile row is created:
 
 - `422 payment_attributes_require_signature` — payment fields without `signature` + `timestamp`

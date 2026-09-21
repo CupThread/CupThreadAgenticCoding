@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -38,7 +39,15 @@ access, and the CLI stores a long-lived token pair (auto-refreshed).
 
 Use --token to log in with a personal access token created in the Console
 (Settings → API Tokens). Pass "-" to read the token from stdin, which avoids
-leaking it into your shell history.`,
+leaking it into your shell history.
+
+The token is trimmed of surrounding whitespace; a value that still contains
+embedded spaces, tabs, or control characters is rejected with a
+self-diagnosing error instead of a net/http transport failure.
+
+If a previous login on this machine saved a default workspace or app that the
+new account cannot see, those saved defaults are cleared with a warning
+instead of silently targeting the previous user's workspace.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token != "" {
@@ -62,9 +71,14 @@ func loginWithToken(ctx context.Context, token string) error {
 			return fmt.Errorf("read token from stdin: %w", err)
 		}
 		token = strings.TrimSpace(line)
+	} else {
+		token = strings.TrimSpace(token)
 	}
 	if token == "" {
 		return errors.New("empty token")
+	}
+	if err := config.ValidateToken(token); err != nil {
+		return fmt.Errorf("invalid --token: %w", err)
 	}
 
 	probe := api.New(A.baseURL())
@@ -83,6 +97,7 @@ func loginWithToken(ctx context.Context, token string) error {
 		AccessToken: token,
 		TokenPrefix: prefix,
 	}
+	reconcileWorkspaceContext(&me, A.out.Printf)
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
@@ -100,7 +115,7 @@ func loginWithPKCE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
 func loginWithDevice(ctx context.Context) error {
@@ -115,16 +130,17 @@ func loginWithDevice(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return finishOAuthLogin(set)
+	return finishOAuthLogin(ctx, set)
 }
 
-func finishOAuthLogin(set *auth.TokenSet) error {
+func finishOAuthLogin(ctx context.Context, set *auth.TokenSet) error {
 	A.applyTokenSet(set)
 
 	var me api.MeResponse
-	if err := A.client.Do(context.Background(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
+	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
 		return fmt.Errorf("login succeeded but session check failed: %w", err)
 	}
+	reconcileWorkspaceContext(&me, A.out.Printf)
 	if err := A.saveConfig(); err != nil {
 		return err
 	}
@@ -145,16 +161,71 @@ func newAuthLogoutCmd() *cobra.Command {
 This only clears local state. To revoke the token server-side, delete it in
 the Console (Settings → API Tokens / Authorized Apps) or use
 'cupthread api request DELETE /api/v1/console/tokens/<id>' once the token
-management API is available.`,
+management API is available.
+
+Logout also clears the saved default workspace, per-workspace app defaults
+and base URL, so the next login starts from a clean slate instead of
+inheriting the previous account's context.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var cleared []string
+			if A.cfg.DefaultWorkspace != "" {
+				cleared = append(cleared, "default workspace "+A.cfg.DefaultWorkspace)
+			}
+			if len(A.cfg.Workspaces) > 0 {
+				cleared = append(cleared, "per-workspace app defaults")
+			}
+			if A.cfg.BaseURL != "" {
+				cleared = append(cleared, "base URL")
+			}
 			A.cfg.Auth = nil
+			A.cfg.DefaultWorkspace = ""
+			A.cfg.Workspaces = nil
+			A.cfg.BaseURL = ""
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
 			A.out.Printf("✓ Credentials removed from %s", A.cfgPath)
+			if len(cleared) > 0 {
+				A.out.Printf("  Cleared saved context from the previous login: %s", strings.Join(cleared, ", "))
+			}
 			return nil
 		},
+	}
+}
+
+// reconcileWorkspaceContext drops workspace context inherited from a previous
+// login that the just-authenticated account cannot see. The config holds
+// exactly one credential, so its user-scoped defaults must never outlive that
+// credential: a saved default workspace invisible to the new account would
+// route every workspace-scoped command at the previous user's workspace (or
+// fail with an unrelated 403). Both login paths already fetch /console/me,
+// so the new account's workspace list is in hand at no extra cost.
+func reconcileWorkspaceContext(me *api.MeResponse, warnf func(string, ...any)) {
+	if A.cfg.DefaultWorkspace == "" && len(A.cfg.Workspaces) == 0 {
+		return
+	}
+	visible := make(map[string]bool, len(me.Workspaces))
+	for i := range me.Workspaces {
+		visible[me.Workspaces[i].Workspace.ID] = true
+	}
+	if A.cfg.DefaultWorkspace != "" && !visible[A.cfg.DefaultWorkspace] {
+		warnf("⚠ Cleared saved default workspace %s: it is not visible to the logged-in account (saved by a previous login)", A.cfg.DefaultWorkspace)
+		A.cfg.DefaultWorkspace = ""
+	}
+	dropped := []string{}
+	for id := range A.cfg.Workspaces {
+		if !visible[id] {
+			delete(A.cfg.Workspaces, id)
+			dropped = append(dropped, id)
+		}
+	}
+	if len(dropped) > 0 {
+		sort.Strings(dropped)
+		warnf("⚠ Dropped saved per-workspace app default(s) for %s: not visible to the logged-in account", strings.Join(dropped, ", "))
+	}
+	if len(A.cfg.Workspaces) == 0 {
+		A.cfg.Workspaces = nil
 	}
 }
 
