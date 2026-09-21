@@ -86,6 +86,13 @@ include that value in bug reports and support requests.`,
 					if apiErr.RequestID != "" {
 						payload["requestId"] = apiErr.RequestID
 					}
+					// Present only when the transient-failure retry loop ran
+					// and still failed, so agents can tell exhausted retries
+					// (429/502/503/504 on idempotent requests) from a plain
+					// single-shot failure.
+					if apiErr.Attempts > 1 {
+						payload["attempts"] = apiErr.Attempts
+					}
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
 					}
