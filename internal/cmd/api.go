@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -54,9 +52,9 @@ include that value in bug reports and support requests.`,
 				if err != nil {
 					return err
 				}
-				dec := json.NewDecoder(bytes.NewReader(data))
-				if err := dec.Decode(&body); err != nil {
-					return fmt.Errorf("parse input JSON: %w", err)
+				body, err = decodeStrictJSON(data)
+				if err != nil {
+					return err
 				}
 			}
 

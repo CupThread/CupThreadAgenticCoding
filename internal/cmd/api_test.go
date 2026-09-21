@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -105,5 +108,157 @@ func TestAPIRequestJSONErrorIncludesRequestID(t *testing.T) {
 	}
 	if payload.RequestID != got {
 		t.Errorf("requestId = %q, want the echoed %q", payload.RequestID, got)
+	}
+}
+
+// runRootWithStdin executes the CLI with stdin replaced by content, covering
+// the "-" / "@" readInputFile path.
+func runRootWithStdin(t *testing.T, serverURL, content string, args ...string) (string, error) {
+	t.Helper()
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "stdin"))
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write stdin file: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("rewind stdin file: %v", err)
+	}
+	old := os.Stdin
+	os.Stdin = f
+	defer func() {
+		os.Stdin = old
+		if err := f.Close(); err != nil {
+			t.Errorf("close stdin file: %v", err)
+		}
+	}()
+	return runRoot(t, serverURL, args...)
+}
+
+// writeInputFile writes content to a temp file and returns its path.
+func writeInputFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "body.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+	return path
+}
+
+// TestAPIRequestInputRejectsTrailingData covers issue #87: `api request
+// --input` previously decoded only the first JSON value and silently dropped
+// everything after it, sending a truncated body. Trailing values or prose must
+// now fail the command before any request is issued; a whitespace-only tail
+// stays accepted.
+func TestAPIRequestInputRejectsTrailingData(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	cases := []struct {
+		name    string
+		content string
+		stdin   bool
+		wantErr string
+		wantHit bool
+	}{
+		{name: "file two top-level values", content: `{"title":"A"}` + "\n" + `{"title":"B"}` + "\n", wantErr: "trailing data", wantHit: false},
+		{name: "file trailing prose", content: `{"title":"A"} oops`, wantErr: "trailing data", wantHit: false},
+		{name: "file whitespace tail ok", content: "{\"title\":\"A\"}\n\n", wantErr: "", wantHit: true},
+		{name: "stdin two top-level values", content: `{"title":"A"}` + "\n" + `{"title":"B"}` + "\n", stdin: true, wantErr: "trailing data", wantHit: false},
+		{name: "stdin trailing prose", content: `{"title":"A"} oops`, stdin: true, wantErr: "trailing data", wantHit: false},
+		{name: "stdin whitespace tail ok", content: "{\"title\":\"A\"}\n\n", stdin: true, wantErr: "", wantHit: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits := 0
+			var gotBody string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits++
+				body, _ := io.ReadAll(r.Body)
+				gotBody = string(body)
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer server.Close()
+
+			args := []string{"api", "request", "POST", "/api/v1/feature-requests"}
+			if tc.stdin {
+				args = append(args, "--input", "-")
+			}
+			var err error
+			if tc.stdin {
+				_, err = runRootWithStdin(t, server.URL, tc.content, append(args, "--json")...)
+			} else {
+				_, err = runRoot(t, server.URL, append(args, "--input", writeInputFile(t, tc.content), "--json")...)
+			}
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("api request: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("api request succeeded, want trailing-data error")
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %q, want it to mention %q", err.Error(), tc.wantErr)
+				}
+			}
+			if tc.wantHit {
+				if hits != 1 {
+					t.Fatalf("server hits = %d, want 1", hits)
+				}
+				if gotBody != `{"title":"A"}` {
+					t.Errorf("wire body = %q, want the single JSON value", gotBody)
+				}
+			} else if hits != 0 {
+				t.Errorf("server hits = %d, want 0: a malformed input file must fail before any request", hits)
+			}
+		})
+	}
+}
+
+// TestSettingsSetInputRejectsTrailingData pins the issue #87 parity guard:
+// `apps settings set --input` has always been strict (json.Unmarshal rejects
+// trailing data) — the strictness split must never silently flip.
+func TestSettingsSetInputRejectsTrailingData(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"apps":[{"appId":"app_1","appKey":"key_1","slug":"app-one","name":"App One"}]}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "apps", "settings", "set", "app_1",
+		"--workspace", "ws_1", "--input", writeInputFile(t, `{"allowAnonymousVote":false}{"allowAnonymousVote":true}`))
+	if err == nil {
+		t.Fatal("apps settings set succeeded with trailing data, want a parse error")
+	}
+	if !strings.Contains(err.Error(), "parse settings JSON") {
+		t.Errorf("error = %q, want it to mention the settings JSON parse failure", err.Error())
+	}
+}
+
+// TestImportsCreateOptionsRejectTrailingData pins the issue #87 parity guard
+// for `imports create --options`, the other strict json.Unmarshal consumer.
+func TestImportsCreateOptionsRejectTrailingData(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		_, _ = w.Write([]byte(`{"job":{"id":"job_1"}}`))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "imports", "create",
+		"--workspace", "ws_1", "--app", "app_1", "--source", "github_issues",
+		"--options", writeInputFile(t, `{"owner":"a"}{"owner":"b"}`))
+	if err == nil {
+		t.Fatal("imports create succeeded with trailing data, want a parse error")
+	}
+	if !strings.Contains(err.Error(), "parse options JSON") {
+		t.Errorf("error = %q, want it to mention the options JSON parse failure", err.Error())
 	}
 }
