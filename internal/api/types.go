@@ -293,6 +293,7 @@ type PublicFeatureRequest struct {
 	ColumnName   *string `json:"columnName"`
 	VersionLabel *string `json:"versionLabel"`
 	VoteCount    int     `json:"voteCount"`
+	ImportedVotes *int    `json:"importedVotes,omitempty"`
 	HasVoted     bool    `json:"hasVoted"`
 	CommentCount int     `json:"commentCount"`
 	CreatedAt    string  `json:"createdAt"`

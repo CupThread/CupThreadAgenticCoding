@@ -21,6 +21,7 @@ const publicRequestsFixture = `{
 		"columnSlug": "inbox",
 		"versionLabel": "1.2.0",
 		"voteCount": 12,
+		"importedVotes": 8,
 		"hasVoted": false,
 		"commentCount": 3,
 		"createdAt": "2026-09-01T12:00:00.000Z",
@@ -162,6 +163,7 @@ func TestAppsPublicFeatureRequestsJSONKeepsContract(t *testing.T) {
 		`"hasMore": true`,
 		`"nextCursor": "MjAyNi0wOS0wMXQxMjowMDowMC4wMDBafGZyX3B1Yl8x"`,
 		`"voteCount": 12`,
+		`"importedVotes": 8`,
 		`"commentCount": 3`,
 	} {
 		if !strings.Contains(out, want) {
