@@ -113,7 +113,7 @@ cupthread workspaces use <workspace-id>    # Set active workspace context
 cupthread me                               # Show current user, workspaces, and roles
 cupthread workspaces members list          # List workspace members & roles
 cupthread workspaces invitations list      # List pending invitations
-cupthread billing show                     # Show subscription tier, limits, and usage
+cupthread billing show                     # Show subscription tier (free | pro), limits, and usage
 ```
 All of the above are `[token-safe]`: any workspace role can run them and `cpt_`
 API tokens work.
@@ -149,12 +149,15 @@ cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPE
                                            # "partially applied" (JSON errors carry applied/failed lists).
 cupthread apps public-config <app-key>     # Show the public portal config (no login required);
                                            # also accepts --workspace-slug <slug> --app-slug <slug>;
-                                           # private apps fail with 404 like unknown keys (fail-closed)
+                                           # private apps fail with 404 like unknown keys (fail-closed);
+                                           # rate limited per client IP (60/min, 429) before lookup
 cupthread apps public-changelog <app-key>  # Fetch the public changelog feed (no login required);
                                            # cursor-paginated: follow --cursor <nextCursor> until hasMore=false
 cupthread apps public-feature-requests <app-key>  # Fetch the public feature-request feed (no login required);
                                            # keyset-cursor-paginated (DATA-01): follow --cursor <nextCursor> until
-                                           # hasMore=false; --offset is ignored when --cursor is set; --q filters
+                                           # hasMore=false; --offset is ignored when --cursor is set, and an offset
+                                           # above 10000 is clamped to 10000 (still 200, not an error); --q filters.
+                                           # Plain listings are rate limited per client IP (60/min, 429 JSON)
 ```
 The management commands above are `[token-safe]`; `apps create`/`update`
 need the workspace `app.configure` capability (admin/owner).
@@ -249,8 +252,9 @@ cupthread imports cancel <job-id> --yes    # Cancel a queued/running job (confir
 ```
 The whole `imports` group is `[token-safe]`. Preview jobs complete
 synchronously; commit jobs run on the queue — poll with `imports get` until
-the status leaves `queued`/`running`. Source availability is tier-gated
-(GitHub issues/discussions: Pro; Linear/Notion/Slack: Business).
+the status leaves `queued`/`running`. Every import source requires Pro
+(`402` `tier_limit_import_pro`). The subscription tier is only `free` or `pro`
+— there is no `business` tier.
 
 ### Integrations (GitHub / Linear / Notion / Slack)
 ```sh
@@ -379,7 +383,7 @@ printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12
 2. **Set context once**: Use `cupthread workspaces use <id>` and `cupthread apps use <id>` to avoid repeating `-w` and `-a` on every command.
 3. **Use `$CUPTHREAD_TOKEN` in CI**: Inject credentials via environment variable rather than storing them in config files.
 4. **Handle `402 Payment Required`**: Writes are rejected by two kinds of quotas. Submission endpoints (`features create`, `inbox`-fed feedback) reject when the workspace hits its plan limits (`tier_limit_submissions` → upgrade the plan in Console → Billing; `subscription_inactive` → renew the subscription). `cupthread workspaces create` rejects with `workspace_limit_reached` when the developer account already owns the maximum number of workspaces (see `maxWorkspaces` on `cupthread me`; only owner-role memberships count) — delete or transfer ownership of one you own, then retry. In `--json` mode, the `api request` escape hatch returns the same guidance as `{error, code, status, hint}`. Treat 402 as a deterministic business rule — do not retry automatically.
-5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/confirm and GETs: 10 req/min; token-bearing one-click unsubscribe POSTs: 300 req/min on a dedicated budget, PRIV-08; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
+5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/confirm and GETs: 10 req/min; token-bearing one-click unsubscribe POSTs: 300 req/min on a dedicated budget, PRIV-08; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Public showcase, board listing, and public config GETs use the same generic body at 60 requests/minute. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
 6. **Handle `403 Forbidden` (AUTH-01 workspace RBAC)**: Every console workspace route declares a capability checked against the caller's workspace role, and the high-impact ones (`members.manage`, `billing.manage`, `integration.manage`) additionally reject `cpt_` API tokens regardless of role. Two structured codes come back with HTTP 403: `capability_required` — the role lacks the capability; ask a workspace admin/owner to perform the action or have an owner upgrade the role (Console → Members) — and `interactive_session_required` — no CLI credential can do this: the OAuth login also issues a `cpt_` token, so perform the action in the Console web UI. Affected commands: `workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`, `billing checkout/portal/addons`, and integration auth-url/connect/disconnect/sync — reads like `workspaces members list`, `billing show`, and `integrations status` are unaffected. The checks are ordered role-first-then-token-type, so a member-role token on a members route reports `capability_required` while an admin/owner token reports `interactive_session_required`. The CLI renders the guidance as `forbidden: <error> (HTTP 403, code=…) — <hint>` and, in `--json` mode via `api request`, as `{error, code, status, hint}`.
 7. **Pass `--yes` to destructive commands after checking the target**: `features delete`, `columns delete`, `versions delete`, `changelog delete`, `workspaces members remove`, and `imports cancel` are hard, server-side, unrestorable deletes. On a non-interactive stdin they refuse with `… re-run with --yes to confirm` BEFORE resolving ids or sending any request (also in `--json` mode); on an interactive terminal they prompt `Continue? [yN]` on stderr. When automating, resolve the id first (`features get`, `changelog list`, …), verify it is the record you mean, and only then pass `--yes` — never loop these commands over an unverified generated id list.
 8. **Keep provider connection tokens off the command line**: `integrations github|linear|notion|slack connect --token <value>` puts a GitHub PAT / Linear / Notion / Slack API token into shell history, `ps` output, and CI logs. Pass `--token -` (or `@`) to read the token from stdin (`printf %s "$GITHUB_PAT" | cupthread integrations github connect --token -`, trailing whitespace trimmed) or export the per-provider variable `CUPTHREAD_GITHUB_TOKEN` / `CUPTHREAD_LINEAR_TOKEN` / `CUPTHREAD_NOTION_TOKEN` / `CUPTHREAD_SLACK_TOKEN` and omit the flag entirely. Precedence is flag > env, and the no-source error names all three forms. The inline value still works but leaks the secret.
