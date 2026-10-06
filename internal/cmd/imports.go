@@ -105,9 +105,9 @@ func newImportsCreateCmd() *cobra.Command {
 		Long: `Create an import job for the app.
 
 Preview jobs complete synchronously and show the candidate diff; commit jobs
-run on the queue and actually create feature requests. Source availability is
-tier-gated (GitHub issues/discussions need Pro; Linear/Notion/Slack need
-Business).
+run on the queue and actually create feature requests. Every import source
+requires Pro (402 tier_limit_import_pro). The subscription tier is only
+free or pro.
 
 Pass --options @file to send the raw ImportOptions JSON instead of the
 per-source flags.`,
