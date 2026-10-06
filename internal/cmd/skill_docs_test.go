@@ -342,6 +342,25 @@ func TestAPISkillIssue152(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue146 pins the public-config contract synced for issue
+// #146 (SEC-518): the optional allowedEmbedOrigins embed allowlist on both
+// public config routes, its presence semantics, and its origin rules.
+func TestAPISkillIssue146(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"allowedEmbedOrigins",
+		"SEC-518",
+		"an empty array is never returned",
+		"at most 10 exact `https://` origins",
+		"frame-ancestors",
+		"Same `PublicAppConfig` (including `allowedEmbedOrigins`)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#146 marker %q", marker)
+		}
+	}
+}
+
 // TestSDKSkillIssue152 pins the same SDK-facing facts in all four SDK skills:
 // image uploads are private, a concurrent finalize is 409 already_finalized,
 // votes may carry shipNotifyEmail, and board offset above 10000 clamps.
