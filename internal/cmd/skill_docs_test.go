@@ -208,6 +208,43 @@ func TestAPISkillAnonymousAccessEnforcement(t *testing.T) {
 	}
 }
 
+// TestAPISkillChangelogUnsubscribeDurability pins the #635 contract: a
+// changelog unsubscribe token whose signature matches the app succeeds when
+// public surfaces are disabled and after exp, while confirm routes stay
+// strict and the one-click budget is still chosen from the query string
+// before the body is read.
+func TestAPISkillChangelogUnsubscribeDurability(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	doc := string(data)
+	for _, marker := range []string{
+		"## Changelog Unsubscribe on Private Apps and After Expiry (#635)",
+		"even after `exp`",
+		"public surfaces are disabled",
+		`{ "unsubscribed": true }`,
+		"Missing unsubscribe token",
+		"An unsubscribe token is required",
+		"Invalid or expired unsubscribe token",
+		"Public surfaces are disabled for this app",
+		"token missing or not valid for this app",
+		"90-day `exp`",
+		"Invalid or expired confirmation token",
+		"ship-notifications/confirm",
+		"before the POST body is read",
+		"query string",
+		"Do not drop a signed link",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required #635 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "Missing/invalid tokens fail uniformly with `400`") {
+		t.Error("cupthread-api/SKILL.md still treats every changelog unsubscribe token failure as 400 (issue #154)")
+	}
+}
+
 // TestSkillDocsPublicBoardReadLimits pins the issue #143 contract: the four
 // public board reads share a 60/min per-IP bucket, answer the generic 429
 // body, and may serve anonymous 200s from a 30-second cache. The changelog
