@@ -479,3 +479,70 @@ func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	t.Fatalf("command %q not found under %s", name, parent.Name())
 	return nil
 }
+
+// TestBoundedInputDocs guards the issue #142 sync: the skills must document
+// the client-side bounded reads (route caps from SEC-36, the input_too_large
+// code, and the 64 KB piped-credential bound), and every file/stdin input
+// flag must name its cap so the limit is discoverable from --help alone.
+func TestBoundedInputDocs(t *testing.T) {
+	apiDoc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"read through a bounded reader against the route's cap first",
+		"fails locally with `input_too_large` and nothing is sent",
+	} {
+		if !strings.Contains(apiDoc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// Over-limit bodies no longer reach the server, so no 413 passthrough.
+		"get the `413` body passed through",
+	} {
+		if strings.Contains(apiDoc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cliDoc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"enforces those caps locally before sending",
+		`code: "input_too_large"`,
+		"64 KB",
+	} {
+		if !strings.Contains(cliDoc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+
+	usage := func(t *testing.T, cmd *cobra.Command, flag string) string {
+		t.Helper()
+		f := cmd.Flags().Lookup(flag)
+		if f == nil {
+			t.Fatalf("flag --%s not found on %s", flag, cmd.Name())
+		}
+		return f.Usage
+	}
+	request := findSub(t, newAPICmd(), "request")
+	if got := usage(t, request, "input"); !strings.Contains(got, "max 1 MB") || !strings.Contains(got, "256 KB") {
+		t.Errorf("api request --input usage = %q, want both route caps", got)
+	}
+	sign := findSub(t, newAPICmd(), "sign-user-attrs")
+	if got := usage(t, sign, "input"); !strings.Contains(got, "max 256 KB") {
+		t.Errorf("sign-user-attrs --input usage = %q, want the public cap", got)
+	}
+	settingsSet := findSub(t, findSub(t, newAppsCmd(), "settings"), "set")
+	if got := usage(t, settingsSet, "input"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("apps settings set --input usage = %q, want the console cap", got)
+	}
+	importsCreate := findSub(t, newImportsCmd(), "create")
+	if got := usage(t, importsCreate, "options"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("imports create --options usage = %q, want the console cap", got)
+	}
+	changelog := newChangelogCmd()
+	for _, name := range []string{"create", "update"} {
+		entry := findSub(t, changelog, name)
+		if got := usage(t, entry, "body-file"); !strings.Contains(got, "max 1 MB") {
+			t.Errorf("changelog %s --body-file usage = %q, want the console cap", name, got)
+		}
+	}
+}

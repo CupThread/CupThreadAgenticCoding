@@ -697,8 +697,35 @@ func newAppSettingsCmd() *cobra.Command {
 	set := &cobra.Command{
 		Use:   "set <app-id-or-slug>",
 		Short: "Update app settings (flags, or --input for the raw JSON body)",
+		Long: `Update app settings from flags or a raw JSON --input body.
+
+The --input body (file, or "-" / "@" for stdin) is capped locally at the
+console route's 1 MB request-body limit; larger input fails with
+input_too_large before any request is sent.`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Read and validate --input before anything else: an oversized or
+			// malformed body must fail locally, before any HTTP request
+			// (including the app lookup) goes out (issue #142).
+			//
+			// json.RawMessage values keep every number in the --input body
+			// byte-identical on the wire (issue #75); a map[string]any decode
+			// would round-trip them through float64 and silently rewrite
+			// integers a float64 cannot represent exactly.
+			body := map[string]json.RawMessage{}
+			if inputPath != "" {
+				data, err := readInputFile(inputPath, maxConsoleBodyBytes)
+				if err != nil {
+					if perr := A.reportInputTooLarge(err); perr != nil {
+						return perr
+					}
+					return err
+				}
+				if err := json.Unmarshal(data, &body); err != nil {
+					return fmt.Errorf("parse settings JSON: %w", err)
+				}
+			}
+
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -706,21 +733,6 @@ func newAppSettingsCmd() *cobra.Command {
 			appRec, err := A.lookupApp(cmd.Context(), args[0])
 			if err != nil {
 				return err
-			}
-
-			// json.RawMessage values keep every number in the --input body
-			// byte-identical on the wire (issue #75); a map[string]any decode
-			// would round-trip them through float64 and silently rewrite
-			// integers a float64 cannot represent exactly.
-			body := map[string]json.RawMessage{}
-			if inputPath != "" {
-				data, err := readInputFile(inputPath)
-				if err != nil {
-					return err
-				}
-				if err := json.Unmarshal(data, &body); err != nil {
-					return fmt.Errorf("parse settings JSON: %w", err)
-				}
 			}
 
 			for flag, key := range map[string]string{
@@ -758,7 +770,7 @@ func newAppSettingsCmd() *cobra.Command {
 	set.Flags().Bool("anon-vote", true, "Allow anonymous voting")
 	set.Flags().Bool("anon-feedback", true, "Allow anonymous feedback")
 	set.Flags().Bool("anon-changelog", true, "Allow anonymous changelog viewing")
-	set.Flags().StringVar(&inputPath, "input", "", "JSON file (or @- for stdin) with the raw update body, sent verbatim (numbers keep full precision), e.g. {\"sdk\":{\"theme\":\"dark\"}}")
+	set.Flags().StringVar(&inputPath, "input", "", "JSON file (or \"-\"/\"@\" for stdin; max 1 MB) with the raw update body, sent verbatim (numbers keep full precision), e.g. {\"sdk\":{\"theme\":\"dark\"}}")
 	cmd.AddCommand(set)
 	return cmd
 }
