@@ -317,7 +317,7 @@ workspace role whose capabilities include it.
 cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
 cupthread users profile u_9f2c… --app-key key_live_…  # App-scoped u_* ids from board/comment payloads need --app-key
 ```
-User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it.
+User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it. Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19) — the CLI prints `—` for `null`; when consuming the `--json` output, render a placeholder rather than assuming the value's host.
 
 ### Changelog & Releases
 ```sh

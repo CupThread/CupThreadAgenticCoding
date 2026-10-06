@@ -82,7 +82,7 @@ All three grants answer the same envelope: `{ access_token, refresh_token, token
 | `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. |
 | `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
 | `/api/v1/me/erase` | `POST` | Self-service data erasure (PRIV-01): erases the caller's own end-user profile for one app — rotates the anonymous token, clears stored PII, and anonymizes feature requests/votes/comments. Authenticates with the `X-User-Token` header or a Clerk session; see [Self-Service Data Erasure (PRIV-01)](#self-service-data-erasure-priv-01). |
-| `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. Unknown `u_*` ids return `404` without a reverse-lookup scan (SEC-34). Rate limited per client IP: 60 requests/minute in the same bucket as the `PUT .../user` upsert, `429` on bursts. |
+| `/api/v1/users/:userId/profile` | `GET` | Public user profile, apps, and recent comments. `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. Unknown `u_*` ids return `404` without a reverse-lookup scan (SEC-34). Avatar fields (`profile.avatarUrl`, `recentCommenters[].avatarUrl`) are `null` or a managed `https:` URL — see [Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19). Rate limited per client IP: 60 requests/minute in the same bucket as the `PUT .../user` upsert, `429` on bursts. |
 | `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Two concurrent submits of the same `uploadId` no longer race into a `500`: the loser gets `409` `already_finalized` and creates nothing (see [Attachment Content-Scan Rejections](#attachment-content-scan-rejections-422-unprocessable-entity)). Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). Free-form `metadata` is sanitized server-side before persistence — shrunk, never rejected (see [Feedback Metadata Redaction (PRIV-01)](#feedback-metadata-redaction-priv-01)). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
 | `/api/v1/uploads/:uploadId` | `PUT` | Upload one reserved session slot's bytes. `Authorization: Bearer <sessionToken>` (or `X-Upload-Session-Token`); raw binary body or `multipart/form-data` with a `file` field. `POST` is accepted as an alias. |
@@ -416,6 +416,21 @@ Client guidance:
 - Treat `401` + `code: "authentication_required"` on these previously-public reads as **"sign-in required"** and surface the host app's sign-in flow instead of a hard error — the same handling the feature-request list has always needed.
 - Treat `404` on a comments thread as **"not available"**: the request may be gone, private, or simply not approved yet. Never tell the user the request never existed.
 - On `403` + `code: "email_not_verified"` from changelog subscribe, prompt for the **signed-in account's own email** — third-party addresses are not accepted on sign-in-only changelogs.
+
+---
+
+## Profile Avatar URLs Are Managed-Host-Only (PRIV-19)
+
+A profile avatar renders as `<img src>` on public boards and in the developer console, so every visitor's browser fetches whatever URL the author saved — the same tracking-pixel channel PRIV-11 closed for feature-request descriptions. Avatars are therefore pinned to product-managed image URLs, on both the write and the read paths (source: SaaS PR #397, issue #387).
+
+**Writes are validated** — `PUT /api/v1/console/me/profile` accepts an `avatarUrl` only when it is one of:
+
+- the first-party re-hosting path on the API origin: `<PUBLIC_BASE_URL>/api/v1/files/images…`, including the `%2F`-encoded R2 fallback form; or
+- an absolute `https:` URL with **no userinfo** (`user:pass@`) whose hostname is exactly `imagedelivery.net`, or whose href is under the deployment's configured images delivery host (`IMAGES_DELIVERY_URL`).
+
+Everything else — `http:`, `javascript:`, `data:`, relative or protocol-relative URLs, any foreign host, unparseable values — is rejected with `400 {"error": "Validation failed", "code": "avatar_url_not_allowed", "details": …}` (the same validation shape answers `code: "website_url_not_allowed"` for the profile's `websiteUrl`). SEC-60: a profile write is a published-identity change, so it additionally requires an **interactive Clerk session** — a `cpt_` API token is rejected with `403` — while profile reads stay token-safe.
+
+**Reads fail closed.** On every public payload that carries an avatar — `requesterAvatarUrl` on `GET /api/v1/feature-requests`, `authorAvatarUrl`/`recentCommenters[].avatarUrl` on comment payloads, and `profile.avatarUrl` on `GET /api/v1/users/{userId}/profile` — the value is **either `null` or a managed `https:` URL**. Legacy stored values that no longer satisfy the policy are served as `null`, never passed through. Clients must render a placeholder on `null` and must not assume a value's host. Attribution is server-resolved: the `authorName` and `authorAvatarUrl` a client sends on `POST /api/v1/feature-requests/{id}/comments` are ignored — the signed-in user's stored profile display name and avatar (or `null`) are published instead.
 
 ---
 
