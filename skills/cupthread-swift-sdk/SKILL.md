@@ -210,6 +210,22 @@ The public vote endpoints — `POST` / `DELETE /api/v1/feature-requests/{id}/vot
 - **Never auto-retry `429` in a tight loop** — if you retry at all, back off for the remainder of the 60-second rate-limit window.
 - **The built-in roadmap/voting screens need no changes** — normal usage (voting on a handful of feature requests) stays well under the limit.
 
+## Public Board Read Limits and Shared Cache
+
+These four public GETs share one per-IP budget of **60 requests per minute** and answer `429 {"error": "Too many requests. Please try again shortly."}` when it is spent:
+
+- `GET /api/v1/feature-requests/{id}/comments`
+- `GET /api/v1/public/apps/{appKey}/changelog`
+- `GET /api/v1/public/columns/{appKey}`
+- `GET /api/v1/public/versions/{appKey}`
+
+A board or changelog screen that loads once stays under that budget. A poller, or a widget that refetches on a tight timer from one shared IP, will not.
+
+- **Retry `429` after a short backoff.** The window is one minute. Treat it as transient. An SDK that already surfaces non-2xx needs no new status mapping.
+- **Anonymous `200`s can be up to 30 seconds stale.** The server may serve them from a shared cache, and a cache hit carries `Cache-Control: public, max-age=30`. A comment just posted, a column just edited, a version just released, or a changelog just published can take that long to appear on an anonymous read. Polling faster spends the same 60/minute budget and does not expire the cache.
+- **The changelog feed splits by session.** Only anonymous responses are cached. A Clerk session gets a fresh body, and linked feature-request titles stay visible only to callers who can see the roadmap. Columns, versions, and comment threads are the same for every caller, so those `200`s are shared.
+- **A sign-in-required board still returns `401`** while an older `200` sits in the cache. The built-in roadmap and changelog screens need no code change for this.
+
 ## Public Profile Rate Limits & Unknown-User 404 (SEC-34)
 
 The public profile page / hovercard reads `GET /api/v1/users/{userId}/profile`, which is rate limited **per client IP** to **60 requests per minute** — one bucket shared with the `PUT /api/v1/public/apps/{appKey}/user` attribute sync. Throttled calls fail with the generic `429 {"error": "Too many requests. Please try again shortly."}`. An unknown app-scoped `u_*` id (or a `u_*` id sent without `appKey`) returns `404 {"error": "User profile not found"}` instead of a placeholder:

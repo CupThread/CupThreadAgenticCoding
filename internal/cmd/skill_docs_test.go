@@ -208,6 +208,69 @@ func TestAPISkillAnonymousAccessEnforcement(t *testing.T) {
 	}
 }
 
+// TestSkillDocsPublicBoardReadLimits pins the issue #143 contract: the four
+// public board reads share a 60/min per-IP bucket, answer the generic 429
+// body, and may serve anonymous 200s from a 30-second cache. The changelog
+// feed is the only one that splits by Clerk session. The CLI and SDK skills
+// have to carry the same retry and staleness guidance so a later edit cannot
+// drop it the way earlier API-sync issues dropped a status code.
+func TestSkillDocsPublicBoardReadLimits(t *testing.T) {
+	apiMarkers := []string{
+		"## Public Board Read Limits and Shared Cache",
+		"PUBLIC_READ_RATE_LIMITER",
+		"60 requests / 60 s",
+		"Cache-Control: public, max-age=30",
+		"Vary: Authorization",
+		"roadmapVisible",
+		"`GET /api/v1/feature-requests/{id}/comments`",
+		"`GET /api/v1/public/apps/{appKey}/changelog`",
+		"`GET /api/v1/public/columns/{appKey}`",
+		"`GET /api/v1/public/versions/{appKey}`",
+		`429 {"error": "Too many requests. Please try again shortly."}`,
+	}
+	cliMarkers := []string{
+		"60 requests/minute",
+		"30-second shared cache",
+		"comments moderation list` is the console route",
+		"apps public-changelog",
+	}
+	sdkMarkers := []string{
+		"## Public Board Read Limits and Shared Cache",
+		"60 requests per minute",
+		"Cache-Control: public, max-age=30",
+		"`GET /api/v1/feature-requests/{id}/comments`",
+		"`GET /api/v1/public/apps/{appKey}/changelog`",
+		"`GET /api/v1/public/columns/{appKey}`",
+		"`GET /api/v1/public/versions/{appKey}`",
+		"needs no new status mapping",
+	}
+
+	check := func(t *testing.T, skill string, markers []string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read skill doc: %v", err)
+		}
+		doc := string(data)
+		for _, marker := range markers {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("%s/SKILL.md is missing required public-read marker %q", skill, marker)
+			}
+		}
+	}
+
+	t.Run("cupthread-api", func(t *testing.T) { check(t, "cupthread-api", apiMarkers) })
+	t.Run("cupthread-cli", func(t *testing.T) { check(t, "cupthread-cli", cliMarkers) })
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) { check(t, skill, sdkMarkers) })
+	}
+}
+
 // TestAPISkillOAuthServerDocs pins the OAuth authorization-server and public
 // route facts the cupthread-api skill synced from the OpenAPI 3.1 spec
 // (QUAL-04): RFC 8414 discovery, the token envelope's fixed lifetimes and

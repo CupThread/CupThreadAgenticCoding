@@ -152,7 +152,9 @@ cupthread apps public-config <app-key>     # Show the public portal config (no l
                                            # private apps fail with 404 like unknown keys (fail-closed);
                                            # rate limited per client IP (60/min, 429) before lookup
 cupthread apps public-changelog <app-key>  # Fetch the public changelog feed (no login required);
-                                           # cursor-paginated: follow --cursor <nextCursor> until hasMore=false
+                                           # cursor-paginated: follow --cursor <nextCursor> until hasMore=false.
+                                           # Anonymous 200s may be up to 30s stale (shared cache); a 429
+                                           # is retried with the other body-less GETs.
 cupthread apps public-feature-requests <app-key>  # Fetch the public feature-request feed (no login required);
                                            # keyset-cursor-paginated (DATA-01): follow --cursor <nextCursor> until
                                            # hasMore=false; --offset is ignored when --cursor is set, and an offset
@@ -224,6 +226,12 @@ cupthread columns list                     # List public roadmap columns
 cupthread versions list                    # List release milestones / versions
 ```
 All of the above are `[token-safe]` (triage / content.manage capabilities).
+`columns list` and `versions list` are the authenticated console listings.
+The public portal reads (`GET /api/v1/public/columns/{appKey}` and
+`GET /api/v1/public/versions/{appKey}`, via `cupthread api request`) are
+separate: they share a 60 requests/minute per-IP budget with the public
+comment thread and changelog feed, and an anonymous `200` can be up to 30
+seconds stale.
 `features list` reads the console (workspace-scoped) listing. The ID-taking
 commands (`features get/update/approve/delete/forward`) resolve
 `<request-id>` within the **resolved app** — the `--app` flag, else the saved
@@ -284,6 +292,15 @@ Both list commands walk the thread's keyset pagination (PROD-31: 200
 comments per request, `limit`/`cursor`) to the end, so threads longer than
 one page still list completely, and the trailing count comes from the
 server's authoritative `total`.
+
+`comments list` calls the public thread GET. That route shares a 60
+requests/minute per-IP budget with the public changelog feed and the public
+columns and versions listings, and answers
+`429 {"error": "Too many requests. Please try again shortly."}`. The CLI
+retries that `429` on the body-less GET. The thread body is the same for
+every caller, so a `200` may come from the 30-second shared cache and a
+comment posted a moment ago can be missing.
+`comments moderation list` is the console route and is not this cache.
 
 ### Comment Moderation (workspace)
 ```sh
@@ -383,7 +400,7 @@ printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12
 2. **Set context once**: Use `cupthread workspaces use <id>` and `cupthread apps use <id>` to avoid repeating `-w` and `-a` on every command.
 3. **Use `$CUPTHREAD_TOKEN` in CI**: Inject credentials via environment variable rather than storing them in config files.
 4. **Handle `402 Payment Required`**: Writes are rejected by two kinds of quotas. Submission endpoints (`features create`, `inbox`-fed feedback) reject when the workspace hits its plan limits (`tier_limit_submissions` → upgrade the plan in Console → Billing; `subscription_inactive` → renew the subscription). `cupthread workspaces create` rejects with `workspace_limit_reached` when the developer account already owns the maximum number of workspaces (see `maxWorkspaces` on `cupthread me`; only owner-role memberships count) — delete or transfer ownership of one you own, then retry. In `--json` mode, the `api request` escape hatch returns the same guidance as `{error, code, status, hint}`. Treat 402 as a deterministic business rule — do not retry automatically.
-5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/confirm and GETs: 10 req/min; token-bearing one-click unsubscribe POSTs: 300 req/min on a dedicated budget, PRIV-08; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Public showcase, board listing, and public config GETs use the same generic body at 60 requests/minute. Unlike 402, a 429 is transient: wait and retry with exponential backoff. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
+5. **Handle `429 Too Many Requests`**: Public write endpoints are rate limited per client IP (changelog subscribe/confirm and GETs: 10 req/min; token-bearing one-click unsubscribe POSTs: 300 req/min on a dedicated budget, PRIV-08; `PUT /user` attribute upsert: 60 req/min) and respond with `{"error": "Too many requests. Please try again shortly."}`. Public showcase, board listing, and public config GETs use the same generic body at 60 requests/minute. The public comment-thread, changelog-feed, columns, and versions GETs share the showcase's per-IP bucket at 60 requests/minute, with the same generic body. Unlike 402, a 429 is transient: wait and retry with exponential backoff. Body-less GETs, including `comments list` and `apps public-changelog`, are retried automatically. An anonymous `200` from those four routes can lag a write by up to 30 seconds, so refetching immediately will not show a comment or changelog entry that was just saved. The CLI renders the guidance as `rate limited: Too many requests. Please try again shortly. (HTTP 429) — <hint>` and, in `--json` mode, as `{error, status, hint}`.
 6. **Handle `403 Forbidden` (AUTH-01 workspace RBAC)**: Every console workspace route declares a capability checked against the caller's workspace role, and the high-impact ones (`members.manage`, `billing.manage`, `integration.manage`) additionally reject `cpt_` API tokens regardless of role. Two structured codes come back with HTTP 403: `capability_required` — the role lacks the capability; ask a workspace admin/owner to perform the action or have an owner upgrade the role (Console → Members) — and `interactive_session_required` — no CLI credential can do this: the OAuth login also issues a `cpt_` token, so perform the action in the Console web UI. Affected commands: `workspaces members invite/add/set-role/remove`, `workspaces invitations revoke`, `billing checkout/portal/addons`, and integration auth-url/connect/disconnect/sync — reads like `workspaces members list`, `billing show`, and `integrations status` are unaffected. The checks are ordered role-first-then-token-type, so a member-role token on a members route reports `capability_required` while an admin/owner token reports `interactive_session_required`. The CLI renders the guidance as `forbidden: <error> (HTTP 403, code=…) — <hint>` and, in `--json` mode via `api request`, as `{error, code, status, hint}`.
 7. **Pass `--yes` to destructive commands after checking the target**: `features delete`, `columns delete`, `versions delete`, `changelog delete`, `workspaces members remove`, and `imports cancel` are hard, server-side, unrestorable deletes. On a non-interactive stdin they refuse with `… re-run with --yes to confirm` BEFORE resolving ids or sending any request (also in `--json` mode); on an interactive terminal they prompt `Continue? [yN]` on stderr. When automating, resolve the id first (`features get`, `changelog list`, …), verify it is the record you mean, and only then pass `--yes` — never loop these commands over an unverified generated id list.
 8. **Keep provider connection tokens off the command line**: `integrations github|linear|notion|slack connect --token <value>` puts a GitHub PAT / Linear / Notion / Slack API token into shell history, `ps` output, and CI logs. Pass `--token -` (or `@`) to read the token from stdin (`printf %s "$GITHUB_PAT" | cupthread integrations github connect --token -`, trailing whitespace trimmed) or export the per-provider variable `CUPTHREAD_GITHUB_TOKEN` / `CUPTHREAD_LINEAR_TOKEN` / `CUPTHREAD_NOTION_TOKEN` / `CUPTHREAD_SLACK_TOKEN` and omit the flag entirely. Precedence is flag > env, and the no-source error names all three forms. The inline value still works but leaks the secret.
