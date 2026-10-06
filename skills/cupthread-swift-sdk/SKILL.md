@@ -160,6 +160,7 @@ The feedback image upload endpoint accepts only **PNG, JPEG, WebP, and GIF**. Wh
 - **Drop SVG from image pickers / file-type allowlists.** `image/svg+xml` is rejected with `415` — declared via MIME type, or via a `.svg` filename when no content type is sent. SVG executes script in browsers and is never stored from end-user uploads.
 - **The declared MIME type must match the file content.** The server sniffs magic bytes; mismatched or unrecognized files (e.g. HTML bytes named `.png`) fail with `415 {"error": "File content does not match declared image type (...)"}`.
 - **Map HTTP `415` to a user-facing "unsupported image type" message** and let the user pick a different file. It is a deterministic client error — never retry automatically.
+- **Image uploads are private attachments (PRIV-02).** `POST /api/v1/uploads/images` answers `200` `{kind: "image", uploadId, status: "uploaded", stored, filename, mimeType, size, sha256}` — no `url`, `key`, or `variants`. Do not fetch the file from a public CDN URL or `GET /api/v1/files/:key` (`403 private_attachment_forbidden`). After `POST /api/v1/feedback` finalizes the upload, an authorized caller downloads it from `/api/v1/feedback/attachments/:id/download`.
 
 Console-configured app icons (developer-facing) are unaffected and may still use screened SVG.
 
@@ -186,7 +187,7 @@ Attachment uploads go through **pre-allocated upload sessions** — feedback sub
 
 1. **Create a session first**: `POST /api/v1/uploads/sessions` with `{ "appKey": "…", "files": [{ "clientFileId": "…", "filename": "…", "mimeType": "…", "size": 123 }] }` (1–8 files). Anonymous users must send the **same `X-User-Token`** they will use for feedback submit — the session is identity-bound (SEC-28). The `201` response provides `sessionToken` (`cpt_up_…`, ~1-hour TTL), `expiresAt`, and `uploads[]` slots with `uploadId` (`upl_…`), `uploadUrl`, and `maxBytes`.
 2. **Upload each reserved slot**: `PUT /api/v1/uploads/{uploadId}` with `Authorization: Bearer <sessionToken>` and the raw file bytes (`Content-Type` set to the file's real MIME type; `multipart/form-data` with a `file` field also works). Slots are single-shot (`409` `already_uploaded`), over-cap bodies fail with `413` `file_too_large`, and failed content inspection fails with `415` — deterministic, never retry.
-3. **Submit feedback with the ids**: pass the finalized `uploadId`s (max 8) in the `uploadIds` array of `POST /api/v1/feedback`. A scan-rejected attachment fails the whole submission with `422` `scan_rejected` — remove or replace that file and resubmit; the passing uploads stay reusable.
+3. **Submit feedback with the ids**: pass the finalized `uploadId`s (max 8) in the `uploadIds` array of `POST /api/v1/feedback`. A scan-rejected attachment fails the whole submission with `422` `scan_rejected` — remove or replace that file and resubmit; the passing uploads stay reusable. Two concurrent submits of the same `uploadId` no longer race into a `500`: the loser gets `409` `already_finalized` and creates nothing — do not resubmit that id.
 
 Use the per-file `maxBytes` from the session response to pre-validate file sizes client-side, and reuse one session for all files of a single composer submission.
 
@@ -195,6 +196,7 @@ Use the per-file `maxBytes` from the session response to pre-validate file sizes
 The public feature-request feed — `GET /api/v1/feature-requests` — is keyset-cursor-paginated (DATA-01). Every response carries `requests`, `total`, `hasMore`, and `nextCursor`; walk large boards by echoing `nextCursor` back as the `cursor` query parameter until it returns `null`:
 
 - **Prefer `cursor` over incrementing `offset`** — offset pages scan and discard rows server-side, while the cursor jumps straight to the next key. A request that sends `cursor` ignores `offset`.
+- **`offset` above 10000 is clamped to 10000** and still returns `200`. Deep pages belong on the cursor. Plain listings (no `q`) are rate limited per client IP at 60 requests/minute (generic `429` JSON).
 - **Treat the cursor as opaque** — never parse, construct, or persist one beyond forwarding it back; malformed cursors fail with `400 {"error": "Invalid cursor"}`.
 - **`hasMore` is exact** (the server fetches one extra row) and `total` stays constant across pages; `limit` is clamped to 1–200 (default 50), and `q`/`versionId` filters compose with the cursor.
 - **The built-in roadmap/feedback screens need no changes** — the fields are additive; clients that only read `requests` keep working.
@@ -203,9 +205,26 @@ The public feature-request feed — `GET /api/v1/feature-requests` — is keyset
 
 The public vote endpoints — `POST` / `DELETE /api/v1/feature-requests/{id}/vote` — are rate limited **per client IP** to **20 requests per minute**. Throttled calls fail with `429 {"error": "Too many votes. Please try again shortly."}` (a vote-specific body, distinct from the generic `Too many requests…` text). When building custom voting UI on top of the client:
 
+- **Optional `shipNotifyEmail`** (an email string, max 254) on `POST` enrolls that address in double-opt-in ship notifications ("email me when this ships"). Omitting it leaves the `{voted, voteCount}` response unchanged. On a sign-in-required board, an address that is not one of the session's verified emails still records the vote and adds `warning.code` `email_not_verified` with `Ship notifications on this board are bound to your signed-in email address`; no confirmation email is sent. Boards that allow anonymous voting accept any address.
 - **Treat `429` as a recoverable, user-facing condition** — surface a friendly "you're voting too fast, try again in a minute" message rather than a generic error.
 - **Never auto-retry `429` in a tight loop** — if you retry at all, back off for the remainder of the 60-second rate-limit window.
 - **The built-in roadmap/voting screens need no changes** — normal usage (voting on a handful of feature requests) stays well under the limit.
+
+## Public Board Read Limits and Shared Cache
+
+These four public GETs share one per-IP budget of **60 requests per minute** and answer `429 {"error": "Too many requests. Please try again shortly."}` when it is spent:
+
+- `GET /api/v1/feature-requests/{id}/comments`
+- `GET /api/v1/public/apps/{appKey}/changelog`
+- `GET /api/v1/public/columns/{appKey}`
+- `GET /api/v1/public/versions/{appKey}`
+
+A board or changelog screen that loads once stays under that budget. A poller, or a widget that refetches on a tight timer from one shared IP, will not.
+
+- **Retry `429` after a short backoff.** The window is one minute. Treat it as transient. An SDK that already surfaces non-2xx needs no new status mapping.
+- **Anonymous `200`s can be up to 30 seconds stale.** The server may serve them from a shared cache, and a cache hit carries `Cache-Control: public, max-age=30`. A comment just posted, a column just edited, a version just released, or a changelog just published can take that long to appear on an anonymous read. Polling faster spends the same 60/minute budget and does not expire the cache.
+- **The changelog feed splits by session.** Only anonymous responses are cached. A Clerk session gets a fresh body, and linked feature-request titles stay visible only to callers who can see the roadmap. Columns, versions, and comment threads are the same for every caller, so those `200`s are shared.
+- **A sign-in-required board still returns `401`** while an older `200` sits in the cache. The built-in roadmap and changelog screens need no code change for this.
 
 ## Public Profile Rate Limits & Unknown-User 404 (SEC-34)
 

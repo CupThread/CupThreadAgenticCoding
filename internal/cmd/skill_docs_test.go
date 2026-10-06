@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestSDKSkillSigningGuidance guards the per-platform payment-attribute
@@ -243,6 +245,69 @@ func TestAPISkillChangelogUnsubscribeDurability(t *testing.T) {
 	}
 }
 
+// TestSkillDocsPublicBoardReadLimits pins the issue #143 contract: the four
+// public board reads share a 60/min per-IP bucket, answer the generic 429
+// body, and may serve anonymous 200s from a 30-second cache. The changelog
+// feed is the only one that splits by Clerk session. The CLI and SDK skills
+// have to carry the same retry and staleness guidance so a later edit cannot
+// drop it the way earlier API-sync issues dropped a status code.
+func TestSkillDocsPublicBoardReadLimits(t *testing.T) {
+	apiMarkers := []string{
+		"## Public Board Read Limits and Shared Cache",
+		"PUBLIC_READ_RATE_LIMITER",
+		"60 requests / 60 s",
+		"Cache-Control: public, max-age=30",
+		"Vary: Authorization",
+		"roadmapVisible",
+		"`GET /api/v1/feature-requests/{id}/comments`",
+		"`GET /api/v1/public/apps/{appKey}/changelog`",
+		"`GET /api/v1/public/columns/{appKey}`",
+		"`GET /api/v1/public/versions/{appKey}`",
+		`429 {"error": "Too many requests. Please try again shortly."}`,
+	}
+	cliMarkers := []string{
+		"60 requests/minute",
+		"30-second shared cache",
+		"comments moderation list` is the console route",
+		"apps public-changelog",
+	}
+	sdkMarkers := []string{
+		"## Public Board Read Limits and Shared Cache",
+		"60 requests per minute",
+		"Cache-Control: public, max-age=30",
+		"`GET /api/v1/feature-requests/{id}/comments`",
+		"`GET /api/v1/public/apps/{appKey}/changelog`",
+		"`GET /api/v1/public/columns/{appKey}`",
+		"`GET /api/v1/public/versions/{appKey}`",
+		"needs no new status mapping",
+	}
+
+	check := func(t *testing.T, skill string, markers []string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
+		if err != nil {
+			t.Fatalf("read skill doc: %v", err)
+		}
+		doc := string(data)
+		for _, marker := range markers {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("%s/SKILL.md is missing required public-read marker %q", skill, marker)
+			}
+		}
+	}
+
+	t.Run("cupthread-api", func(t *testing.T) { check(t, "cupthread-api", apiMarkers) })
+	t.Run("cupthread-cli", func(t *testing.T) { check(t, "cupthread-cli", cliMarkers) })
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) { check(t, skill, sdkMarkers) })
+	}
+}
+
 // TestAPISkillOAuthServerDocs pins the OAuth authorization-server and public
 // route facts the cupthread-api skill synced from the OpenAPI 3.1 spec
 // (QUAL-04): RFC 8414 discovery, the token envelope's fixed lifetimes and
@@ -281,4 +346,136 @@ func TestAPISkillOAuthServerDocs(t *testing.T) {
 			t.Errorf("cupthread-api/SKILL.md is missing required OAuth-server/public-route marker %q", marker)
 		}
 	}
+}
+
+// TestAPISkillIssue152 pins the public-API contract synced for issue #152:
+// private image attachments, shipNotifyEmail, fail-closed OAuth consent,
+// 409 already_finalized, public-read 429s and offset clamps, and the
+// free|pro tier (business removed).
+func TestAPISkillIssue152(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"only the exact lowercase `allow` or `deny`",
+		"decision must be 'allow' or 'deny'",
+		"shipNotifyEmail",
+		"email_not_verified",
+		"Ship notifications on this board are bound to your signed-in email address",
+		"no `url`, `key`, or `variants`",
+		"already_finalized",
+		"clamped to 5000",
+		"clamped to 10000",
+		"BOARD_LIST_RATE_LIMITER",
+		"PUBLIC_CONFIG_RATE_LIMITER",
+		"## Subscription Tier (`free` | `pro`)",
+		"tier_limit_import_pro",
+		"`business` value was removed",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#152 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "upload_finalized_concurrently") {
+		t.Error("cupthread-api/SKILL.md uses the approximate code upload_finalized_concurrently; the wire code is already_finalized")
+	}
+}
+
+// TestSDKSkillIssue152 pins the same SDK-facing facts in all four SDK skills:
+// image uploads are private, a concurrent finalize is 409 already_finalized,
+// votes may carry shipNotifyEmail, and board offset above 10000 clamps.
+func TestSDKSkillIssue152(t *testing.T) {
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-flutter-sdk",
+		"cupthread-react-native-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range []string{
+				"no `url`, `key`, or `variants`",
+				"private_attachment_forbidden",
+				"already_finalized",
+				"shipNotifyEmail",
+				"email_not_verified",
+				"Ship notifications on this board are bound to your signed-in email address",
+				"`offset` above 10000 is clamped to 10000",
+			} {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#152 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}
+
+// TestCLISkillIssue152 pins the CLI skill's tier and public-read wording so
+// Linear/Notion/Slack cannot drift back to a Business plan requirement.
+func TestCLISkillIssue152(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"Every import source requires Pro",
+		"there is no `business` tier",
+		"above 10000 is clamped to 10000",
+		"rate limited per client IP (60/min, 429) before lookup",
+		"Show subscription tier (free | pro)",
+		"Public showcase, board listing, and public config GETs",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#152 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		"Linear/Notion/Slack: Business",
+		"need Business",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-cli/SKILL.md still says %q", stale)
+		}
+	}
+}
+
+// TestIssue152CommandHelp pins the cobra help that agents read for imports
+// and the public app reads. The subscription tier is free or pro, board
+// offset above 10000 clamps, and public config is rate limited before lookup.
+func TestIssue152CommandHelp(t *testing.T) {
+	create := newImportsCreateCmd()
+	if !strings.Contains(create.Long, "Every import source\nrequires Pro (402 tier_limit_import_pro)") {
+		t.Errorf("imports create Long drifted:\n%s", create.Long)
+	}
+	if strings.Contains(strings.ToLower(create.Long), "business") {
+		t.Errorf("imports create Long still names a business tier:\n%s", create.Long)
+	}
+	apps := newAppsCmd()
+	fr := findSub(t, apps, "public-feature-requests")
+	if !strings.Contains(fr.Long, "clamped to 10000") {
+		t.Errorf("public-feature-requests Long missing clamp:\n%s", fr.Long)
+	}
+	offset := fr.Flags().Lookup("offset")
+	if offset == nil || !strings.Contains(offset.Usage, "clamped to 10000") {
+		t.Errorf("offset flag usage = %#v", offset)
+	}
+	cfg := findSub(t, apps, "public-config")
+	if !strings.Contains(cfg.Long, "60/minute") || !strings.Contains(cfg.Long, "429") {
+		t.Errorf("public-config Long missing rate limit:\n%s", cfg.Long)
+	}
+}
+
+func readSkill(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	return string(data)
+}
+
+func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
+	t.Helper()
+	for _, c := range parent.Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	t.Fatalf("command %q not found under %s", name, parent.Name())
+	return nil
 }

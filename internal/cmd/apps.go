@@ -98,7 +98,9 @@ func newAppsPublicFeatureRequestsCmd() *cobra.Command {
 
 Keyset-cursor-paginated: pass --cursor with the nextCursor value from the
 previous page until the response reports hasMore=false. Requests are ordered
-newest-first and --offset is ignored whenever --cursor is set:
+newest-first and --offset is ignored whenever --cursor is set. An offset
+above 10000 is clamped to 10000 and still returns 200. Plain listings (no
+--q) are rate limited per client IP (60/minute, 429):
   cupthread apps public-feature-requests <app-key>
   cupthread apps public-feature-requests <app-key> --limit 100
   cupthread apps public-feature-requests <app-key> --cursor <nextCursor>
@@ -144,7 +146,7 @@ unauthenticated feed with 401.`,
 		},
 	}
 	publicRequests.Flags().IntVar(&limit, "limit", 50, "Requests per page (1-200, server default 50)")
-	publicRequests.Flags().IntVar(&offset, "offset", 0, "Legacy offset page start (ignored when --cursor is set)")
+	publicRequests.Flags().IntVar(&offset, "offset", 0, "Legacy offset page start (ignored when --cursor is set; values above 10000 are clamped to 10000)")
 	publicRequests.Flags().StringVar(&cursor, "cursor", "", "Opaque keyset cursor from the previous page's nextCursor")
 	publicRequests.Flags().StringVar(&query, "q", "", "Search titles, descriptions, columns, and versions")
 	return publicRequests
@@ -166,7 +168,9 @@ Resolve the app by its public app key, or by workspace and app slugs:
   cupthread apps public-config --workspace-slug <slug> --app-slug <slug>
 
 Private apps fail closed: both routes return 404 {"error": "App not found"},
-identical to an unknown app key. Only public apps return a 200 body.`,
+identical to an unknown app key. Only public apps return a 200 body.
+Both routes are rate limited per client IP (60/minute) before lookup; an
+over-budget caller gets 429.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var path string
