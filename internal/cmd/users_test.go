@@ -76,6 +76,24 @@ func TestUsersProfileResolvesScopedIDWithAppKey(t *testing.T) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	}
+	// PRIV-19: avatar fields arrive as null or a managed https URL; the table
+	// renders a null avatar as the em-dash placeholder, never a URL or empty.
+	var avatarRow string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "Avatar") {
+			avatarRow = line
+			break
+		}
+	}
+	if avatarRow == "" {
+		t.Fatalf("output has no Avatar row:\n%s", out)
+	}
+	if !strings.Contains(avatarRow, "—") {
+		t.Errorf("Avatar row %q does not render the em-dash placeholder for a null avatarUrl", avatarRow)
+	}
+	if strings.Contains(avatarRow, "http") {
+		t.Errorf("Avatar row %q unexpectedly carries a URL", avatarRow)
+	}
 }
 
 // TestUsersProfileScopedIDRequiresAppKey guards the local pre-validation:
