@@ -524,6 +524,86 @@ func TestIssue152CommandHelp(t *testing.T) {
 	}
 }
 
+// TestSkillDocsIssue134CurrencySignature pins the DATA-07 sync (issue #134):
+// `currency` on PUT /api/v1/public/apps/{appKey}/user is a signed payment
+// attribute (422 payment_attributes_require_signature without signature +
+// timestamp), a signed update that omits `currency` preserves the stored
+// value instead of coercing it to USD, and the canonical string is unchanged.
+// The stale "currency-only writes stay unsigned" guidance must not resurface.
+func TestSkillDocsIssue134CurrencySignature(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			"(`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts)",
+			"any of `isPaying`, `mrr`, `plan`, or `currency`",
+			"### Omitted `currency` keeps the stored value (DATA-07)",
+			"preserves the stored currency",
+			"`USD` is applied only when a profile is **created** with no stored currency",
+			"The signature canonical string is unchanged by DATA-07",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#134 marker %q", marker)
+			}
+		}
+		for _, stale := range []string{
+			"Identity-only and `currency`-only writes keep working unchanged",
+			"`currency`-only writes keep working unchanged",
+		} {
+			if strings.Contains(doc, stale) {
+				t.Errorf("cupthread-api/SKILL.md still says %q (currency is signed since DATA-07)", stale)
+			}
+		}
+	})
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"(`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts)",
+			"a signed update that omits `currency` preserves the stored value instead of defaulting to `USD`",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#134 marker %q", marker)
+			}
+		}
+	})
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range []string{
+				"any of `isPaying`, `mrr`, `plan`, or `currency`",
+				"identity-only writes are the only unsigned path left",
+				"preserves the stored currency instead of coercing it to `USD`",
+			} {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#134 marker %q", skill, marker)
+				}
+			}
+			for _, stale := range []string{
+				"currency-only writes stay unsigned",
+				"identity/currency-only updates",
+			} {
+				if strings.Contains(doc, stale) {
+					t.Errorf("%s/SKILL.md still says %q (currency is signed since DATA-07)", skill, stale)
+				}
+			}
+		})
+	}
+}
+
+// TestIssue134SignUserAttrsCommandHelp pins the sign-user-attrs help and the
+// unsigned-note gate on the currency attribute, so the CLI cannot drift back
+// to treating currency as an unsigned field (issue #134, DATA-07).
+func TestIssue134SignUserAttrsCommandHelp(t *testing.T) {
+	sign := newAPISignUserAttrsCmd()
+	if !strings.Contains(sign.Long, "payment attributes (isPaying, mrr, plan, or currency)") {
+		t.Errorf("sign-user-attrs Long missing currency in the payment-attribute list:\n%s", sign.Long)
+	}
+}
+
 // TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
 // only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
 // every public payload serves avatar fields as null or a managed https URL.

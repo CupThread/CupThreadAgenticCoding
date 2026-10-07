@@ -391,7 +391,7 @@ bin/cupthread skills link /path/to/target/project
 ```
 
 ### SDK Payment-Attribute Signing Helper
-Bodies sent to `PUT /api/v1/public/apps/{appKey}/user` that report payment attributes (`isPaying`, `mrr`, `plan` — an explicit `null` counts) must carry an HMAC-SHA256 `signature` + `timestamp` (contract: API skill, "SDK Payment-Attribute Signing (DATA-03)"). The CLI computes reference signatures so coding agents can cross-check platform implementations:
+Bodies sent to `PUT /api/v1/public/apps/{appKey}/user` that report payment attributes (`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts) must carry an HMAC-SHA256 `signature` + `timestamp` (contract: API skill, "SDK Payment-Attribute Signing (DATA-03)"; since DATA-07 `currency` is signed too, and a signed update that omits `currency` preserves the stored value instead of defaulting to `USD`). The CLI computes reference signatures so coding agents can cross-check platform implementations:
 
 ```sh
 # Recommended: keep the signing secret off the command line (shell history / ps)
