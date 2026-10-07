@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -145,26 +146,7 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc(CallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("error") != "" {
-			fmt.Fprintf(w, "Authorization was declined: %s. You can close this window.", r.URL.Query().Get("error"))
-			errCh <- fmt.Errorf("authorization declined: %s", r.URL.Query().Get("error_description"))
-			return
-		}
-		if got := r.URL.Query().Get("state"); got != state {
-			fmt.Fprintf(w, "State mismatch. Please restart 'cupthread auth login'.")
-			errCh <- errors.New("oauth state mismatch")
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			fmt.Fprintf(w, "Missing code parameter. Please restart 'cupthread auth login'.")
-			errCh <- errors.New("callback missing code")
-			return
-		}
-		fmt.Fprintf(w, "✓ Logged in. You can close this window and return to the terminal.")
-		codeCh <- code
-	})
+	mux.Handle(CallbackPath, newCallbackHandler(state, codeCh, errCh))
 	server := &http.Server{Handler: mux}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
@@ -195,6 +177,105 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 	}
 
 	return exchangeCode(ctx, tokenURL, clientID, code, redirectURI, verifier)
+}
+
+// newCallbackHandler builds the loopback callback handler for one login
+// transaction (SEC-1). The browser round-trip is bound to the login by the
+// secret state parameter, which is validated before any other query field is
+// read; callback pages are static plain text that never reflect a
+// request-derived value; and completion is single-shot, so a duplicate local
+// request can neither replace the first outcome nor block on the result
+// channels. The channels must each have capacity 1.
+func newCallbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
+	var once sync.Once
+	done := make(chan struct{})
+	complete := func(code string, err error) {
+		once.Do(func() {
+			close(done)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			codeCh <- code
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		// Late arrivals after the login already settled (a browser retry, a
+		// stray local probe) get a static answer and are otherwise ignored.
+		select {
+		case <-done:
+			writeCallbackText(w, http.StatusOK, "Login already completed. You can close this window.")
+			return
+		default:
+		}
+
+		// RFC 6749 §4.1.2 / RFC 8252 §4.4: state ties this browser round-trip
+		// to the pending login. It gates every other query field — including
+		// the authorization-decline branch below — so a request that does not
+		// know the secret state can never reach response-rendering code.
+		if got := q.Get("state"); got != state {
+			writeCallbackText(w, http.StatusBadRequest, "State mismatch. Please restart 'cupthread auth login'.")
+			complete("", errors.New("oauth state mismatch"))
+			return
+		}
+
+		// The authorization server redirected back with an error (RFC 6749
+		// §4.1.2.1, typically the user pressing "deny"). The page stays
+		// static: error and error_description are attacker-influenceable and
+		// are never echoed into it. Only the error code, reduced to the RFC
+		// 6749 code alphabet, reaches the terminal-side error.
+		if errParam := q.Get("error"); errParam != "" {
+			writeCallbackText(w, http.StatusOK, "Authorization was declined. You can close this window.")
+			if summary := sanitizeOAuthErrorCode(errParam); summary != "" {
+				complete("", fmt.Errorf("authorization declined: %s", summary))
+			} else {
+				complete("", errors.New("authorization declined"))
+			}
+			return
+		}
+
+		code := q.Get("code")
+		if code == "" {
+			writeCallbackText(w, http.StatusBadRequest, "Missing code parameter. Please restart 'cupthread auth login'.")
+			complete("", errors.New("callback missing code"))
+			return
+		}
+		writeCallbackText(w, http.StatusOK, "✓ Logged in. You can close this window and return to the terminal.")
+		complete(code, nil)
+	})
+}
+
+// writeCallbackText answers a callback request with a static plain-text body.
+// The content type is pinned (with nosniff) so Go's sniffing can never turn a
+// callback page into text/html, and caching is disabled per RFC 6749 §5.1.
+func writeCallbackText(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	fmt.Fprintln(w, body)
+}
+
+// sanitizeOAuthErrorCode reduces a server-supplied OAuth error identifier to
+// something safe to surface on the terminal: only characters that can occur
+// in an RFC 6749 error code survive and the result is capped, so terminal
+// escape sequences, markup, and control characters from a hostile redirect
+// are dropped rather than echoed. The free-form error_description is
+// deliberately never surfaced.
+func sanitizeOAuthErrorCode(value string) string {
+	const maxLen = 64
+	var b strings.Builder
+	for _, r := range value {
+		if b.Len() >= maxLen {
+			break
+		}
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func exchangeCode(ctx context.Context, tokenURL, clientID, code, redirectURI, verifier string) (*TokenSet, error) {
