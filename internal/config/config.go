@@ -78,9 +78,18 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config atomically with restrictive permissions.
+// Save writes the config atomically with restrictive permissions: the
+// document goes to a unique temporary file in the destination directory
+// (created 0600 — the file holds access tokens), is synced to disk, and is
+// renamed over the destination, so a reader always observes either the old
+// or the new complete document and concurrent saves neither interleave nor
+// fail on a shared temporary name (issue #139). Save is atomic but not
+// serialized across processes: callers that mutate shared config state must
+// go through Update (or hold LockConfig themselves) so independent changes
+// cannot be lost.
 func (c *Config) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
@@ -88,14 +97,137 @@ func (c *Config) Save(path string) error {
 		return fmt.Errorf("encode config: %w", err)
 	}
 	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp config: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename has moved the file away
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
 		return fmt.Errorf("write config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("replace config: %w", err)
 	}
 	return nil
+}
+
+// Snapshot returns a deep copy of c, for use as the baseline a later
+// ApplyChanges diffs against. The copy is required because config mutations
+// happen in place (map entries, the Auth pointer), which would otherwise
+// drag the baseline along with the change it is meant to remember.
+func (c *Config) Snapshot() *Config {
+	if c == nil {
+		return nil
+	}
+	snap := *c
+	if c.Auth != nil {
+		authCopy := *c.Auth
+		snap.Auth = &authCopy
+	}
+	if c.Workspaces != nil {
+		snap.Workspaces = make(map[string]*WorkspacePrefs, len(c.Workspaces))
+		for id, prefs := range c.Workspaces {
+			if prefs == nil {
+				snap.Workspaces[id] = nil
+				continue
+			}
+			prefsCopy := *prefs
+			snap.Workspaces[id] = &prefsCopy
+		}
+	}
+	return &snap
+}
+
+// ApplyChanges applies to c exactly the field-level changes that separate
+// baseline from updated: a field on which updated differs from baseline is
+// copied onto c, and fields they agree on keep whatever value c already
+// holds — so a change another process persisted after baseline was taken
+// survives instead of being clobbered by a stale whole-file snapshot.
+// Per-workspace prefs are merged per workspace id, and ids present in
+// baseline but dropped from updated are deleted from c. c, baseline and
+// updated must be distinct objects (Snapshot produces suitable copies).
+func (c *Config) ApplyChanges(baseline, updated *Config) {
+	if c == nil || baseline == nil || updated == nil {
+		return
+	}
+	if updated.DefaultWorkspace != baseline.DefaultWorkspace {
+		c.DefaultWorkspace = updated.DefaultWorkspace
+	}
+	if updated.BaseURL != baseline.BaseURL {
+		c.BaseURL = updated.BaseURL
+	}
+	if !authEqual(updated.Auth, baseline.Auth) {
+		c.Auth = updated.Auth
+	}
+	for id, prefs := range updated.Workspaces {
+		if prefsEqual(prefs, baseline.Workspaces[id]) {
+			continue
+		}
+		if prefs == nil {
+			delete(c.Workspaces, id)
+			continue
+		}
+		c.WorkspacePrefsFor(id).DefaultApp = prefs.DefaultApp
+	}
+	for id := range baseline.Workspaces {
+		if _, ok := updated.Workspaces[id]; !ok {
+			delete(c.Workspaces, id)
+		}
+	}
+	if len(c.Workspaces) == 0 {
+		c.Workspaces = nil
+	}
+}
+
+// Update is the serialized config-mutation path: it takes the advisory
+// cross-process lock on <path>.lock, re-reads the on-disk config, applies
+// to that fresh snapshot exactly the field-level changes between baseline
+// and updated, saves atomically, and returns the merged config. Deriving
+// the write from a baseline taken at load time — instead of persisting a
+// possibly stale in-memory copy wholesale — means a change another CLI
+// invocation commits while this one runs (a 'workspaces use' racing an
+// 'apps use', or either racing a credential write) survives the last rename
+// instead of being silently discarded (issue #139).
+func Update(path string, baseline, updated *Config) (*Config, error) {
+	lock, err := LockConfig(path)
+	if err != nil {
+		return nil, fmt.Errorf("lock config for update: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	disk, err := Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("re-read config under lock: %w", err)
+	}
+	disk.ApplyChanges(baseline, updated)
+	if err := disk.Save(path); err != nil {
+		return nil, err
+	}
+	return disk, nil
+}
+
+// authEqual compares two Auth values by content; nil means absent.
+func authEqual(a, b *Auth) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// prefsEqual compares two WorkspacePrefs values by content; nil means absent.
+func prefsEqual(a, b *WorkspacePrefs) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // WorkspacePrefsFor returns (creating if needed) the prefs for a workspace.

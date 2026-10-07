@@ -61,6 +61,7 @@ func raceTestApp(t *testing.T, cfgPath, serverURL string) *app {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
+	a.cfgBaseline = a.cfg.Snapshot()
 	a.client = a.buildClient()
 	return a
 }
