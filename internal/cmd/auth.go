@@ -283,7 +283,8 @@ them (Settings → API Tokens) instead of sending a request that cannot
 succeed.
 
 With --json/--output yaml, stdout carries a single
-{"loggedOut":true,"configPath":…,"cleared":[…]} document.`,
+{"loggedOut":true,"configPath":…,"cleared":[…]} document; revocation
+notices and warnings go to stderr so scripts can parse stdout directly.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if revoke {
@@ -334,10 +335,12 @@ With --json/--output yaml, stdout carries a single
 // the stored prefix so the user can find the right row. Best-effort by
 // design: every outcome lets logout proceed with clearing local state,
 // because a failed revocation must never trap credentials on the machine.
+// Every notice goes through warnf, so in --json/--output yaml mode it lands
+// on stderr and stdout keeps carrying exactly one logoutResult document.
 func revokeStoredCredential(ctx context.Context, a *app) {
 	authState := a.cfg.Auth
 	if authState == nil {
-		a.out.Printf("No stored credential to revoke; clearing local state only.")
+		a.warnf("No stored credential to revoke; clearing local state only.")
 		return
 	}
 	if authState.Method != "oauth" {
@@ -345,7 +348,7 @@ func revokeStoredCredential(ctx context.Context, a *app) {
 		if prefix == "" {
 			prefix = mask(authState.AccessToken)
 		}
-		a.out.Printf("⚠ Personal access tokens cannot be revoked from the CLI — revoke it in the Console (Settings → API Tokens, prefix %s…) if it should die now. Local credentials are removed anyway.", orDash(prefix))
+		a.warnf("⚠ Personal access tokens cannot be revoked from the CLI — revoke it in the Console (Settings → API Tokens, prefix %s…) if it should die now. Local credentials are removed anyway.", orDash(prefix))
 		return
 	}
 	token, kind := authState.RefreshToken, "token pair"
@@ -353,7 +356,7 @@ func revokeStoredCredential(ctx context.Context, a *app) {
 		token, kind = authState.AccessToken, "access token"
 	}
 	if token == "" {
-		a.out.Printf("⚠ Stored OAuth credential holds no tokens to revoke; clearing local state only.")
+		a.warnf("⚠ Stored OAuth credential holds no tokens to revoke; clearing local state only.")
 		return
 	}
 	clientID := authState.ClientID
@@ -361,10 +364,10 @@ func revokeStoredCredential(ctx context.Context, a *app) {
 		clientID = auth.FirstPartyClientID
 	}
 	if err := auth.Revoke(ctx, auth.RevokeEndpoint(a.baseURL()), clientID, token); err != nil {
-		a.out.Printf("⚠ Server-side revocation failed (%v): the credential may still be live — revoke it in the Console (Settings → Authorized Apps). Local credentials are removed anyway.", err)
+		a.warnf("⚠ Server-side revocation failed (%v): the credential may still be live — revoke it in the Console (Settings → Authorized Apps). Local credentials are removed anyway.", err)
 		return
 	}
-	a.out.Printf("✓ Revoked the server-side %s at %s", kind, a.baseURL())
+	a.warnf("✓ Revoked the server-side %s at %s", kind, a.baseURL())
 }
 
 // logoutResult is the machine-readable payload of 'auth logout'. Cleared
