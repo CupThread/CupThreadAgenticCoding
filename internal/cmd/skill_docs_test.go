@@ -469,6 +469,32 @@ func readSkill(t *testing.T, name string) string {
 	return string(data)
 }
 
+// TestAPISkillVoteInsertOnlySemantics pins the PROD-36 insert-only vote
+// contract in the API skill (issue #133): POST .../vote casts a vote and is
+// idempotent — a repeat (or a retry after a network error) can no longer
+// cancel it — and DELETE is the only way to un-vote, itself idempotent, with
+// removing an absent vote still answering 200 and the same body rather than
+// an error. It also rejects the stale toggle wording the row carried before
+// the sync, so the toggle description cannot silently return.
+func TestAPISkillVoteInsertOnlySemantics(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"Cast the caller's vote — insert-only (PROD-36), no longer a toggle",
+		"Repeating the request is idempotent: it leaves an existing vote in place and re-serves the same `{voted: true, voteCount}` body",
+		"a retry after a network error can no longer cancel the vote",
+		"`DELETE` is the only way to remove it",
+		"the only way to un-vote now that POST no longer toggles",
+		"removing a vote that is not present still answers `200` with the same `{voted: false, voteCount}` body, not an error",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required insert-only vote marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "Toggle (upvote / un-upvote)") {
+		t.Error("cupthread-api/SKILL.md still describes POST vote as a toggle (issue #133)")
+	}
+}
+
 func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	t.Helper()
 	for _, c := range parent.Commands() {
