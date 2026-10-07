@@ -367,9 +367,9 @@ func TestAPISkillDeviceFlowSlowDownEnforcement(t *testing.T) {
 }
 
 // TestAPISkillIssue152 pins the public-API contract synced for issue #152:
-// private image attachments, shipNotifyEmail, fail-closed OAuth consent,
-// 409 already_finalized, public-read 429s and offset clamps, and the
-// free|pro tier (business removed).
+// private image attachments, shipNotifyEmail (including the SaaS #613
+// sign-in-required binding), fail-closed OAuth consent, 409 already_finalized,
+// public-read 429s and offset clamps, and the free|pro tier (business removed).
 func TestAPISkillIssue152(t *testing.T) {
 	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
@@ -378,6 +378,10 @@ func TestAPISkillIssue152(t *testing.T) {
 		"shipNotifyEmail",
 		"email_not_verified",
 		"Ship notifications on this board are bound to your signed-in email address",
+		"the address must be one of the session's verified emails (compared case-insensitively)",
+		"No consent row is written and no confirmation email is sent",
+		"The warning body is the same whether or not that address already has a consent row",
+		"Boards that allow anonymous voting accept any address and do not return this warning",
 		"no `url`, `key`, or `variants`",
 		"already_finalized",
 		"clamped to 5000",
@@ -445,7 +449,8 @@ func TestAPISkillIssue146(t *testing.T) {
 
 // TestSDKSkillIssue152 pins the same SDK-facing facts in all four SDK skills:
 // image uploads are private, a concurrent finalize is 409 already_finalized,
-// votes may carry shipNotifyEmail, and board offset above 10000 clamps.
+// votes may carry shipNotifyEmail (including the SaaS #613 sign-in-required
+// binding), and board offset above 10000 clamps.
 func TestSDKSkillIssue152(t *testing.T) {
 	for _, skill := range []string{
 		"cupthread-swift-sdk",
@@ -462,6 +467,9 @@ func TestSDKSkillIssue152(t *testing.T) {
 				"shipNotifyEmail",
 				"email_not_verified",
 				"Ship notifications on this board are bound to your signed-in email address",
+				"an address that is not one of the session's verified emails",
+				"no confirmation email is sent",
+				"Boards that allow anonymous voting accept any address",
 				"`offset` above 10000 is clamped to 10000",
 			} {
 				if !strings.Contains(doc, marker) {
