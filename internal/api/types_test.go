@@ -25,7 +25,8 @@ const publicAppConfigFixture = `{
 	"allowAnonymousRoadmap": true,
 	"allowAnonymousVote": true,
 	"allowAnonymousFeedback": true,
-	"allowAnonymousChangelog": false
+	"allowAnonymousChangelog": false,
+	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"]
 }`
 
 // TestPublicAppConfigDecodesFullSchema mirrors the OpenAPI PublicAppConfig
@@ -57,6 +58,11 @@ func TestPublicAppConfigDecodesFullSchema(t *testing.T) {
 	if !cfg.AllowAnonymousVote || cfg.AllowAnonymousChangelog {
 		t.Errorf("anonymous flags = %+v", cfg)
 	}
+	if len(cfg.AllowedEmbedOrigins) != 2 ||
+		cfg.AllowedEmbedOrigins[0] != "https://docs.example.com" ||
+		cfg.AllowedEmbedOrigins[1] != "https://app.partner.com:8443" {
+		t.Errorf("AllowedEmbedOrigins = %v, want the two configured origins", cfg.AllowedEmbedOrigins)
+	}
 }
 
 // TestPublicAppConfigMinimalPayload verifies the nullable and default
@@ -87,6 +93,42 @@ func TestPublicAppConfigWebsiteURLEncodesNull(t *testing.T) {
 	}
 	if cfg.WebsiteURL != nil {
 		t.Errorf("WebsiteURL = %v, want nil for explicit null", cfg.WebsiteURL)
+	}
+}
+
+// TestPublicAppConfigEmbedOriginsPresence pins the allowedEmbedOrigins
+// presence semantics (issue #146, SEC-518): the field is present only when
+// the tenant configured at least one embed origin — never an empty array —
+// and omitempty keeps a decoded config re-marshaling without the key when it
+// was absent, so --json/-o yaml output stays byte-faithful to the server.
+func TestPublicAppConfigEmbedOriginsPresence(t *testing.T) {
+	var withOrigins PublicAppConfig
+	const withBody = `{"appId":"app_1","appKey":"key_live_1","allowedEmbedOrigins":["https://docs.example.com"]}`
+	if err := json.Unmarshal([]byte(withBody), &withOrigins); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	out, err := json.Marshal(&withOrigins)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"allowedEmbedOrigins":["https://docs.example.com"]`) {
+		t.Errorf("re-marshaled config %s drops allowedEmbedOrigins", out)
+	}
+
+	var withoutOrigins PublicAppConfig
+	const withoutBody = `{"appId":"app_2","appKey":"key_live_2"}`
+	if err := json.Unmarshal([]byte(withoutBody), &withoutOrigins); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if withoutOrigins.AllowedEmbedOrigins != nil {
+		t.Errorf("AllowedEmbedOrigins = %v, want nil when the server omits the field", withoutOrigins.AllowedEmbedOrigins)
+	}
+	out, err = json.Marshal(&withoutOrigins)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "allowedEmbedOrigins") {
+		t.Errorf("re-marshaled config %s invents allowedEmbedOrigins for an app without embed origins", out)
 	}
 }
 

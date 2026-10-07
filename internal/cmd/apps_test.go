@@ -12,8 +12,31 @@ import (
 )
 
 // publicConfigFixture is a PublicAppConfig payload exercising the fields from
-// issue #2 (websiteUrl, hideSiteBranding).
+// issue #2 (websiteUrl, hideSiteBranding) and issue #146 (allowedEmbedOrigins).
 const publicConfigFixture = `{
+	"appId": "app_1",
+	"appKey": "key_live_1",
+	"workspaceSlug": "acme",
+	"slug": "ios",
+	"name": "Acme iOS",
+	"storeUrl": null,
+	"storeKind": null,
+	"appStoreUrl": null,
+	"googlePlayUrl": null,
+	"websiteUrl": "https://acme.example.com",
+	"iconUrl": null,
+	"allowPublic": true,
+	"hideSiteBranding": true,
+	"allowedPlatforms": ["ios", "universal"],
+	"maxAttachmentBytes": 10485760,
+	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"]
+}`
+
+// publicConfigNoEmbedFixture is the same payload without allowedEmbedOrigins:
+// the server sends the field only when portal embedding is configured, and
+// the CLI must render a dash instead of an empty value and keep the key out
+// of --json output (issue #146).
+const publicConfigNoEmbedFixture = `{
 	"appId": "app_1",
 	"appKey": "key_live_1",
 	"workspaceSlug": "acme",
@@ -78,10 +101,45 @@ func TestAppsPublicConfigByAppKey(t *testing.T) {
 	if gotPath != "/api/v1/public/config/key_live_1" {
 		t.Errorf("request path = %s", gotPath)
 	}
-	for _, want := range []string{"Website URL", "https://acme.example.com", "Hide site branding", "yes"} {
+	for _, want := range []string{
+		"Website URL", "https://acme.example.com", "Hide site branding", "yes",
+		"Embed origins", "https://docs.example.com", "https://app.partner.com:8443",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestAppsPublicConfigWithoutEmbedOrigins covers the issue #146 absence
+// semantics: when the server omits allowedEmbedOrigins (embedding disabled),
+// the table shows a dash and --json output does not invent the key.
+func TestAppsPublicConfigWithoutEmbedOrigins(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(publicConfigNoEmbedFixture))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "public-config", "key_live_1")
+	if err != nil {
+		t.Fatalf("public-config: %v", err)
+	}
+	if !strings.Contains(out, "Embed origins") {
+		t.Errorf("output missing the Embed origins row:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Embed origins") && !strings.Contains(line, "—") {
+			t.Errorf("Embed origins row should render a dash when the field is absent: %q", line)
+		}
+	}
+
+	out, err = runRoot(t, server.URL, "apps", "public-config", "key_live_1", "--json")
+	if err != nil {
+		t.Fatalf("public-config --json: %v", err)
+	}
+	if strings.Contains(out, "allowedEmbedOrigins") {
+		t.Errorf("JSON output should omit allowedEmbedOrigins when absent:\n%s", out)
 	}
 }
 
@@ -115,7 +173,13 @@ func TestAppsPublicConfigJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("public-config: %v", err)
 	}
-	for _, want := range []string{`"websiteUrl": "https://acme.example.com"`, `"hideSiteBranding": true`} {
+	for _, want := range []string{
+		`"websiteUrl": "https://acme.example.com"`,
+		`"hideSiteBranding": true`,
+		`"allowedEmbedOrigins": [`,
+		`"https://docs.example.com"`,
+		`"https://app.partner.com:8443"`,
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %q:\n%s", want, out)
 		}
