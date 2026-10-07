@@ -348,6 +348,24 @@ func TestAPISkillOAuthServerDocs(t *testing.T) {
 	}
 }
 
+// TestAPISkillDeviceFlowSlowDownEnforcement pins the issue #145 sync: the
+// device-token row must state that the server enforces RFC 8628 §3.5 —
+// polls inside the advertised interval get slow_down, every slow_down grows
+// the required spacing by 5 seconds, capped at interval + 60 seconds — so
+// clients cannot keep polling at a fixed interval.
+func TestAPISkillDeviceFlowSlowDownEnforcement(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"the server enforces §3.5",
+		"every `slow_down` grows the required spacing by 5 seconds, capped at `interval` + 60 seconds",
+		"honor it by growing their polling interval",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required device-flow slow_down marker %q", marker)
+		}
+	}
+}
+
 // TestAPISkillIssue152 pins the public-API contract synced for issue #152:
 // private image attachments, shipNotifyEmail, fail-closed OAuth consent,
 // 409 already_finalized, public-read 429s and offset clamps, and the
@@ -376,6 +394,52 @@ func TestAPISkillIssue152(t *testing.T) {
 	}
 	if strings.Contains(doc, "upload_finalized_concurrently") {
 		t.Error("cupthread-api/SKILL.md uses the approximate code upload_finalized_concurrently; the wire code is already_finalized")
+	}
+}
+
+// TestAPISkillIssue144 pins the authenticated-revocation contract synced for
+// issue #144: the RFC 7009 revoke endpoint requires client identity — a
+// required client_id (400 invalid_request when missing, 400 invalid_client
+// for unknown clients, 401 invalid_client for confidential-client secret
+// failures), revokes only tokens issued to the authenticated client, and
+// answers 400 unsupported_token_type for values that are neither cpt_ nor
+// cpr_ tokens.
+func TestAPISkillIssue144(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"required `client_id`",
+		"`client_id is required`",
+		"`Unknown client`",
+		"invalid_client",
+		"`client_secret`",
+		"unsupported_token_type",
+		"revokes nothing",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#144 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "optional `client_id`") {
+		t.Error("cupthread-api/SKILL.md still describes the revoke client_id as optional; issue #144 makes it required")
+	}
+}
+
+// TestAPISkillIssue146 pins the public-config contract synced for issue
+// #146 (SEC-518): the optional allowedEmbedOrigins embed allowlist on both
+// public config routes, its presence semantics, and its origin rules.
+func TestAPISkillIssue146(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"allowedEmbedOrigins",
+		"SEC-518",
+		"an empty array is never returned",
+		"at most 10 exact `https://` origins",
+		"frame-ancestors",
+		"Same `PublicAppConfig` (including `allowedEmbedOrigins`)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#146 marker %q", marker)
+		}
 	}
 }
 
@@ -460,6 +524,44 @@ func TestIssue152CommandHelp(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
+// only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
+// every public payload serves avatar fields as null or a managed https URL.
+func TestAPISkillIssue132(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"## Profile Avatar URLs Are Managed-Host-Only (PRIV-19)",
+		`<PUBLIC_BASE_URL>/api/v1/files/images`,
+		"hostname is exactly `imagedelivery.net`",
+		`{"error": "Validation failed", "code": "avatar_url_not_allowed"`,
+		"`code: \"website_url_not_allowed\"`",
+		"either `null` or a managed `https:` URL",
+		"served as `null`",
+		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		`"code": "avatar_url_invalid"`,
+		"any `https:` URL is accepted",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cli := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19)",
+	} {
+		if !strings.Contains(cli, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
@@ -478,4 +580,71 @@ func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	}
 	t.Fatalf("command %q not found under %s", name, parent.Name())
 	return nil
+}
+
+// TestBoundedInputDocs guards the issue #142 sync: the skills must document
+// the client-side bounded reads (route caps from SEC-36, the input_too_large
+// code, and the 64 KB piped-credential bound), and every file/stdin input
+// flag must name its cap so the limit is discoverable from --help alone.
+func TestBoundedInputDocs(t *testing.T) {
+	apiDoc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"read through a bounded reader against the route's cap first",
+		"fails locally with `input_too_large` and nothing is sent",
+	} {
+		if !strings.Contains(apiDoc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// Over-limit bodies no longer reach the server, so no 413 passthrough.
+		"get the `413` body passed through",
+	} {
+		if strings.Contains(apiDoc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cliDoc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"enforces those caps locally before sending",
+		`code: "input_too_large"`,
+		"64 KB",
+	} {
+		if !strings.Contains(cliDoc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+
+	usage := func(t *testing.T, cmd *cobra.Command, flag string) string {
+		t.Helper()
+		f := cmd.Flags().Lookup(flag)
+		if f == nil {
+			t.Fatalf("flag --%s not found on %s", flag, cmd.Name())
+		}
+		return f.Usage
+	}
+	request := findSub(t, newAPICmd(), "request")
+	if got := usage(t, request, "input"); !strings.Contains(got, "max 1 MB") || !strings.Contains(got, "256 KB") {
+		t.Errorf("api request --input usage = %q, want both route caps", got)
+	}
+	sign := findSub(t, newAPICmd(), "sign-user-attrs")
+	if got := usage(t, sign, "input"); !strings.Contains(got, "max 256 KB") {
+		t.Errorf("sign-user-attrs --input usage = %q, want the public cap", got)
+	}
+	settingsSet := findSub(t, findSub(t, newAppsCmd(), "settings"), "set")
+	if got := usage(t, settingsSet, "input"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("apps settings set --input usage = %q, want the console cap", got)
+	}
+	importsCreate := findSub(t, newImportsCmd(), "create")
+	if got := usage(t, importsCreate, "options"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("imports create --options usage = %q, want the console cap", got)
+	}
+	changelog := newChangelogCmd()
+	for _, name := range []string{"create", "update"} {
+		entry := findSub(t, changelog, name)
+		if got := usage(t, entry, "body-file"); !strings.Contains(got, "max 1 MB") {
+			t.Errorf("changelog %s --body-file usage = %q, want the console cap", name, got)
+		}
+	}
 }
