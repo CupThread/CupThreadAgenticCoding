@@ -288,6 +288,14 @@ cupthread comments list <featureRequestId> # List comments on a feature request
 cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
 ```
 
+`comments create --parent-id` must reference a visible comment on the same
+feature request (not hidden or deleted). The API rejects anything else with
+`400 invalid_parent` — "The comment you are replying to was not found on this
+feature request" — and stores nothing; the CLI surfaces that as an explicit
+error. Take `--parent-id` from `comments list` on the same request, and don't
+bother crafting `--reply-to-author-name`: the server always resolves the
+replied-to author from the parent comment itself.
+
 Both list commands walk the thread's keyset pagination (PROD-31: 200
 comments per request, `limit`/`cursor`) to the end, so threads longer than
 one page still list completely, and the trailing count comes from the

@@ -469,6 +469,57 @@ func readSkill(t *testing.T, name string) string {
 	return string(data)
 }
 
+// TestAPISkillIssue135 pins the SEC-50 reply contract on the public comment
+// create endpoint: parentId must reference a visible comment on the request
+// in the URL, anything else is 400 invalid_parent with nothing stored, and
+// replyToAuthorName stays ignored (the author is resolved server-side).
+func TestAPISkillIssue135(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"`parentId` must reference a **visible** comment on the feature request in the URL",
+		`"code": "invalid_parent"`,
+		"The comment you are replying to was not found on this feature request",
+		"nothing is stored (SEC-50)",
+		"`replyToAuthorName` in the request body is ignored",
+		"resolved server-side from the parent comment",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#135 marker %q", marker)
+		}
+	}
+}
+
+// TestCLISkillIssue135 pins the CLI skill's comments-create guidance: the
+// --parent-id rule, the wire code, and the ignored reply-to-author-name flag.
+func TestCLISkillIssue135(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"must reference a visible comment on the same",
+		"`400 invalid_parent`",
+		"The comment you are replying to was not found on this",
+		"crafting `--reply-to-author-name`",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#135 marker %q", marker)
+		}
+	}
+}
+
+// TestIssue135CommandHelp pins the cobra flag help agents read for comment
+// replies: --parent-id states the same-request visible-parent rule and
+// --reply-to-author-name admits the server ignores it.
+func TestIssue135CommandHelp(t *testing.T) {
+	create := newCommentsCreateCmd()
+	parentID := create.Flags().Lookup("parent-id")
+	if parentID == nil || !strings.Contains(parentID.Usage, "visible comment on the same feature request") || !strings.Contains(parentID.Usage, "400 invalid_parent") {
+		t.Errorf("parent-id flag usage = %#v, want the SEC-50 rule and the wire code", parentID)
+	}
+	replyName := create.Flags().Lookup("reply-to-author-name")
+	if replyName == nil || !strings.Contains(replyName.Usage, "ignored by the API") {
+		t.Errorf("reply-to-author-name flag usage = %#v, want the ignored-by-the-API note", replyName)
+	}
+}
+
 func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	t.Helper()
 	for _, c := range parent.Commands() {
