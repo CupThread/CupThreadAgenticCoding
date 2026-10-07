@@ -5,23 +5,54 @@ name: Release
 # release unless the built binary reports it, publishes a GitHub release with
 # source checksums, and updates the first-party Homebrew tap so
 # `brew upgrade cupthread` actually fires.
+#
+# Security model (issue #140): the triggering tag is untrusted input. Every
+# step that compiles or executes Go code from the tag lives in the
+# credential-free `build` job (contents:read, no secrets.*). The `publish`
+# job owns the release credentials but only drives trusted tools (git, curl,
+# sha256sum, diff, gh): it re-verifies the tag against origin/main and every
+# artifact digest, re-renders the tap formula from the template embedded
+# below, and byte-compares it against the tag's own genformula output before
+# pushing anything. Both gates must pass before any secret-bearing step can
+# start; internal/release/workflow_test.go fails CI if a refactor breaks
+# these invariants.
 
 on:
   push:
     tags: ["v*"]
 
+# Least privilege by default; only the publish job grants contents:write.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  test:
+  # Untrusted: checks out the triggering tag and runs its Go code. It must
+  # never gain a secret or a write permission.
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the tag, origin/main and `git archive` resolve.
+          fetch-depth: 0
+
+      # Gate 1 (issue #140): only commits reachable from the approved release
+      # branch may continue; runs before any tag-controlled code is executed.
+      - name: Verify the tag points at a commit on origin/main
+        run: |
+          if ! git merge-base --is-ancestor "refs/tags/${TAG}" origin/main; then
+            echo "::error::tag ${TAG} does not point at a commit reachable from origin/main — refusing to build an unapproved release"
+            exit 1
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
@@ -30,31 +61,17 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
-  release:
-    needs: test
-    runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Full history so the tag and `git archive` are available.
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: true
-
       - name: Derive the version from the tag
         run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
 
       - name: Build with the tag injected as the CLI version
         run: |
+          mkdir -p dist
           go build -trimpath \
             -ldflags "-s -w -X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=${VERSION}" \
             -o dist/cupthread ./cmd/cupthread
 
-      # Guard from the issue's acceptance criteria: a tag can never ship a
+      # Guard from issue #60's acceptance criteria: a tag can never ship a
       # mismatched version string.
       - name: Verify the binary reports the tagged version
         run: |
@@ -80,6 +97,108 @@ jobs:
           echo "FORMULA_SHA256=$(awk -v n="github-source-${TAG}.tar.gz" '$2==n {print $1}' checksums.txt)" >> "$GITHUB_ENV"
           cat checksums.txt
 
+      # Tag-controlled code, but credential-free: the publish job only uses
+      # this output after it byte-matches its own trusted template.
+      - name: Generate the formula from the tag
+        run: go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}" > dist/formula.rb
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+
+  # Trusted: owns the release credentials but never compiles or executes
+  # repository-controlled Go code — git, curl, sha256sum, diff and gh only.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This checkout is data only: no step below builds or runs anything
+          # from it.
+          fetch-depth: 0
+
+      # Gate 2 (issue #140): re-checked here ahead of every secret-bearing
+      # step, so a tag moved after the build job still cannot publish.
+      - name: Verify the tag points at a commit on origin/main
+        run: |
+          if ! git merge-base --is-ancestor "refs/tags/${TAG}" origin/main; then
+            echo "::error::tag ${TAG} does not point at a commit reachable from origin/main — refusing to publish an unapproved release"
+            exit 1
+          fi
+
+      - name: Derive the version from the tag
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download the built release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Re-verify the artifact digests
+        run: |
+          cd dist
+          want_git="$(awk -v n="cupthread-${TAG}.tar.gz" '$2==n {print $1}' checksums.txt)"
+          got_git="$(sha256sum "cupthread-${TAG}.tar.gz" | awk '{print $1}')"
+          if [ -z "${want_git}" ] || [ "${want_git}" != "${got_git}" ]; then
+            echo "::error::dist/cupthread-${TAG}.tar.gz digest ${got_git:-<none>} does not match checksums.txt (${want_git:-<absent>}) — refusing to publish"
+            exit 1
+          fi
+          # Re-fetch the exact GitHub archive URL the formula pins so the
+          # digest comes from the bytes brew users get, not from the build job.
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz" -o refetched-source.tar.gz
+          source_sha="$(sha256sum refetched-source.tar.gz | awk '{print $1}')"
+          want_gh="$(awk -v n="github-source-${TAG}.tar.gz" '$2==n {print $1}' checksums.txt)"
+          if [ "${source_sha}" != "${want_gh}" ]; then
+            echo "::error::GitHub source archive digest ${source_sha} does not match checksums.txt (${want_gh}) — refusing to publish"
+            exit 1
+          fi
+          echo "FORMULA_SHA256=${source_sha}" >> "$GITHUB_ENV"
+
+      # The formula pushed to the tap and the in-repo mirror is rendered from
+      # this workflow-controlled template (its bytes are pinned by
+      # internal/release/workflow_test.go against release.Formula.Render) and
+      # must byte-match what the tag's own genformula produced — a mismatch
+      # means tampered generator code (or a renamed repo) and fails the run.
+      - name: Render the trusted formula and compare it with the tag's output
+        run: |
+          echo "${FORMULA_SHA256}" | grep -Eq '^[0-9a-f]{64}$' || {
+            echo "::error::FORMULA_SHA256 '${FORMULA_SHA256:-<empty>}' is not a 64-hex digest — refusing to render the formula"
+            exit 1
+          }
+          cat > formula-trusted.rb <<RUBY
+          class Cupthread < Formula
+            desc "CupThread CLI — manage your CupThread projects from the command line"
+            homepage "https://cupthread.com"
+            url "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz"
+            sha256 "${FORMULA_SHA256}"
+            license "MIT"
+            head "https://github.com/${GITHUB_REPOSITORY}.git", branch: "main"
+
+            depends_on "go" => :build
+
+            def install
+              system "go", "build", *std_go_args(output: bin/"cupthread", ldflags: "-s -w -X github.com/CupThread/CupThreadAgenticCoding/internal/cmd.Version=#{version}"), "./cmd/cupthread"
+            end
+
+            test do
+              assert_match "cupthread version #{version}", shell_output("#{bin}/cupthread --version")
+            end
+          end
+          RUBY
+          if ! diff -u dist/formula.rb formula-trusted.rb; then
+            echo "::error::the tag's genformula output does not match the workflow's trusted formula template — refusing to publish"
+            exit 1
+          fi
+
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,15 +215,16 @@ jobs:
         env:
           # A fine-grained PAT with Contents: read/write on
           # CupThread/homebrew-tap; GITHUB_TOKEN cannot push cross-repo.
+          # This step only runs plain git over the trusted formula bytes.
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
           if [ -z "${TAP_TOKEN}" ]; then
-            echo "::warning::TAP_TOKEN secret is not set — the tap formula was NOT updated; brew users will not see this release. Add the secret and re-run this workflow, or push the formula below manually:"
-            go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}"
+            echo "::warning::TAP_TOKEN secret is not set — the tap formula was NOT updated; brew users will not see this release. Add the secret and re-run this workflow, or push this formula manually:"
+            cat formula-trusted.rb
             exit 0
           fi
           git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/CupThread/homebrew-tap.git" tap
-          go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}" > tap/Formula/cupthread.rb
+          cp formula-trusted.rb tap/Formula/cupthread.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -123,7 +243,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
           git checkout -B formula-mirror origin/main
-          go run ./cmd/genformula -version "${VERSION}" -sha256 "${FORMULA_SHA256}" > Formula/cupthread.rb
+          cp formula-trusted.rb Formula/cupthread.rb
           git add Formula/cupthread.rb
           if git diff --cached --quiet; then
             echo "formula unchanged"
