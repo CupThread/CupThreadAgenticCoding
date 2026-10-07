@@ -746,6 +746,12 @@ type PublicAppConfig struct {
 	AllowAnonymousVote      bool     `json:"allowAnonymousVote"`
 	AllowAnonymousFeedback  bool     `json:"allowAnonymousFeedback"`
 	AllowAnonymousChangelog bool     `json:"allowAnonymousChangelog"`
+	// AllowedEmbedOrigins lists the external https origins permitted to
+	// embed the app's public portal in an iframe (frame-ancestors). The
+	// server sends the field only when at least one origin is configured —
+	// never an empty array — so omitempty keeps --json/-o yaml round-trips
+	// lossless (SEC-518).
+	AllowedEmbedOrigins []string `json:"allowedEmbedOrigins,omitempty"`
 }
 
 // ─── Generic envelopes ───────────────────────────────────────────────────────

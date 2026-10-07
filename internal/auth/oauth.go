@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -76,9 +77,13 @@ func RevokeEndpoint(baseURL string) string {
 
 // Revoke posts an RFC 7009 revocation request for token (the refresh token
 // when one is stored, so the server cascades to the paired access token).
-// The server intentionally answers 200 even for unknown or already-revoked
-// tokens so existence is not disclosed; a nil error therefore means "the
-// server accepted the request", not "a live token was destroyed".
+// The endpoint authenticates the caller (RFC 7009 §2.1): client_id is
+// required and confidential clients must also present client_secret; the CLI
+// is a public client, so client_id alone identifies it, and identity failures
+// surface as *APIError (400 invalid_request / invalid_client, 401
+// invalid_client). The server intentionally answers 200 even for unknown or
+// already-revoked tokens so existence is not disclosed; a nil error therefore
+// means "the server accepted the request", not "a live token was destroyed".
 func Revoke(ctx context.Context, revokeURL, clientID, token string) error {
 	_, err := postForm(ctx, revokeURL, url.Values{
 		"token":     {token},
@@ -145,26 +150,7 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc(CallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("error") != "" {
-			fmt.Fprintf(w, "Authorization was declined: %s. You can close this window.", r.URL.Query().Get("error"))
-			errCh <- fmt.Errorf("authorization declined: %s", r.URL.Query().Get("error_description"))
-			return
-		}
-		if got := r.URL.Query().Get("state"); got != state {
-			fmt.Fprintf(w, "State mismatch. Please restart 'cupthread auth login'.")
-			errCh <- errors.New("oauth state mismatch")
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			fmt.Fprintf(w, "Missing code parameter. Please restart 'cupthread auth login'.")
-			errCh <- errors.New("callback missing code")
-			return
-		}
-		fmt.Fprintf(w, "✓ Logged in. You can close this window and return to the terminal.")
-		codeCh <- code
-	})
+	mux.Handle(CallbackPath, newCallbackHandler(state, codeCh, errCh))
 	server := &http.Server{Handler: mux}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
@@ -195,6 +181,105 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 	}
 
 	return exchangeCode(ctx, tokenURL, clientID, code, redirectURI, verifier)
+}
+
+// newCallbackHandler builds the loopback callback handler for one login
+// transaction (SEC-1). The browser round-trip is bound to the login by the
+// secret state parameter, which is validated before any other query field is
+// read; callback pages are static plain text that never reflect a
+// request-derived value; and completion is single-shot, so a duplicate local
+// request can neither replace the first outcome nor block on the result
+// channels. The channels must each have capacity 1.
+func newCallbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
+	var once sync.Once
+	done := make(chan struct{})
+	complete := func(code string, err error) {
+		once.Do(func() {
+			close(done)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			codeCh <- code
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+
+		// Late arrivals after the login already settled (a browser retry, a
+		// stray local probe) get a static answer and are otherwise ignored.
+		select {
+		case <-done:
+			writeCallbackText(w, http.StatusOK, "Login already completed. You can close this window.")
+			return
+		default:
+		}
+
+		// RFC 6749 §4.1.2 / RFC 8252 §4.4: state ties this browser round-trip
+		// to the pending login. It gates every other query field — including
+		// the authorization-decline branch below — so a request that does not
+		// know the secret state can never reach response-rendering code.
+		if got := q.Get("state"); got != state {
+			writeCallbackText(w, http.StatusBadRequest, "State mismatch. Please restart 'cupthread auth login'.")
+			complete("", errors.New("oauth state mismatch"))
+			return
+		}
+
+		// The authorization server redirected back with an error (RFC 6749
+		// §4.1.2.1, typically the user pressing "deny"). The page stays
+		// static: error and error_description are attacker-influenceable and
+		// are never echoed into it. Only the error code, reduced to the RFC
+		// 6749 code alphabet, reaches the terminal-side error.
+		if errParam := q.Get("error"); errParam != "" {
+			writeCallbackText(w, http.StatusOK, "Authorization was declined. You can close this window.")
+			if summary := sanitizeOAuthErrorCode(errParam); summary != "" {
+				complete("", fmt.Errorf("authorization declined: %s", summary))
+			} else {
+				complete("", errors.New("authorization declined"))
+			}
+			return
+		}
+
+		code := q.Get("code")
+		if code == "" {
+			writeCallbackText(w, http.StatusBadRequest, "Missing code parameter. Please restart 'cupthread auth login'.")
+			complete("", errors.New("callback missing code"))
+			return
+		}
+		writeCallbackText(w, http.StatusOK, "✓ Logged in. You can close this window and return to the terminal.")
+		complete(code, nil)
+	})
+}
+
+// writeCallbackText answers a callback request with a static plain-text body.
+// The content type is pinned (with nosniff) so Go's sniffing can never turn a
+// callback page into text/html, and caching is disabled per RFC 6749 §5.1.
+func writeCallbackText(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	fmt.Fprintln(w, body)
+}
+
+// sanitizeOAuthErrorCode reduces a server-supplied OAuth error identifier to
+// something safe to surface on the terminal: only characters that can occur
+// in an RFC 6749 error code survive and the result is capped, so terminal
+// escape sequences, markup, and control characters from a hostile redirect
+// are dropped rather than echoed. The free-form error_description is
+// deliberately never surfaced.
+func sanitizeOAuthErrorCode(value string) string {
+	const maxLen = 64
+	var b strings.Builder
+	for _, r := range value {
+		if b.Len() >= maxLen {
+			break
+		}
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func exchangeCode(ctx context.Context, tokenURL, clientID, code, redirectURI, verifier string) (*TokenSet, error) {
@@ -268,6 +353,12 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	}, nil
 }
 
+// slowDownPenalty is added to the polling interval every time the token
+// endpoint answers slow_down (RFC 8628 §3.5 — the server enforces the
+// escalation, capped at interval + 60 seconds). It is a variable only so
+// tests can shrink it; production always uses the RFC's 5 seconds.
+var slowDownPenalty = 5 * time.Second
+
 // Wait polls until the user confirms, denies, or the code expires. Progress
 // is written to stderr.
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
@@ -294,7 +385,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 				case "authorization_pending":
 					continue
 				case "slow_down":
-					d.Interval += 5 * time.Second
+					d.Interval += slowDownPenalty
 					continue
 				case "access_denied":
 					return nil, errors.New("authorization denied")
@@ -366,6 +457,54 @@ func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet
 // the way the timeout-less http.DefaultClient would.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// maxOAuthResponseBytes caps how much of any token/device/revocation
+// response the CLI buffers (REL-1): OAuth bodies are form-encoded JSON a
+// few hundred bytes long, so 1 MiB leaves wide headroom while a hostile or
+// runaway endpoint cannot balloon memory.
+const maxOAuthResponseBytes int64 = 1 << 20 // 1 MiB
+
+// responseTooLargeError reports an OAuth endpoint response that ran over
+// the bounded-read cap (REL-1): nothing beyond the cap was buffered.
+type responseTooLargeError struct {
+	endpoint string
+	limit    int64
+}
+
+func (e *responseTooLargeError) Error() string {
+	return fmt.Sprintf("POST %s: response body exceeds the %s response-size limit",
+		e.endpoint, formatByteLimit(e.limit))
+}
+
+// formatByteLimit renders a byte count for an error message: whole-MiB
+// values as "N MiB", anything else in bytes.
+func formatByteLimit(n int64) string {
+	const mib = 1 << 20
+	if n >= mib && n%mib == 0 {
+		return fmt.Sprintf("%d MiB", n/mib)
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// readBoundedResponse buffers at most limit bytes of an OAuth response body
+// (REL-1): a Content-Length already over the limit is rejected without
+// reading, and any other body is read through a one-byte-over-limit window
+// so chunked responses are bounded too. The error is a
+// *responseTooLargeError when the limit is hit; the payload beyond the
+// limit is never buffered.
+func readBoundedResponse(r io.Reader, contentLength, limit int64, endpoint string) ([]byte, error) {
+	if contentLength > limit {
+		return nil, &responseTooLargeError{endpoint: endpoint, limit: limit}
+	}
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, &responseTooLargeError{endpoint: endpoint, limit: limit}
+	}
+	return body, nil
+}
+
 func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -379,7 +518,7 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 		return nil, fmt.Errorf("POST %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := readBoundedResponse(resp.Body, resp.ContentLength, maxOAuthResponseBytes, rawURL)
 	if err != nil {
 		return nil, err
 	}
