@@ -5,6 +5,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -32,6 +33,15 @@ const (
 	// DefaultRetryMaxDelay caps both computed backoff and a server-supplied
 	// Retry-After, so a hostile or clumsy hint cannot stall the CLI.
 	DefaultRetryMaxDelay = 30 * time.Second
+
+	// DefaultMaxResponseBytes caps how many bytes of any single response
+	// body the client buffers before decoding (REL-1): a response that runs
+	// over the cap fails with a *ResponseTooLargeError instead of ballooning
+	// memory, and a size-rejected attempt is final — it is never retried,
+	// even on a retryable status. The largest legitimate payloads are
+	// paginated list and `api request` passthrough JSON, orders of magnitude
+	// below the cap.
+	DefaultMaxResponseBytes int64 = 10 << 20 // 10 MiB
 )
 
 // Client talks to the CupThread API. It is safe for concurrent use.
@@ -54,6 +64,9 @@ type Client struct {
 	// $CUPTHREAD_NO_RETRY for scripted pipelines that need one request to
 	// mean one request.
 	NoRetry bool
+	// MaxResponseBytes overrides DefaultMaxResponseBytes when positive: the
+	// per-response buffering cap owned by the HTTP client (REL-1).
+	MaxResponseBytes int64
 	// MaxRetries overrides DefaultMaxRetries when positive.
 	MaxRetries int
 	// RetryBaseDelay overrides DefaultRetryBaseDelay when positive.
@@ -355,6 +368,11 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 // server Retry-After when present; Client.NoRetry restores single-shot
 // semantics. Mutations (POST/PUT/PATCH/DELETE) — including the OAuth
 // token/refresh POSTs — are always a single attempt.
+//
+// Response bodies are buffered under the client's response-size cap
+// (Client.MaxResponseBytes, default DefaultMaxResponseBytes, REL-1): a body
+// that runs over fails with a *ResponseTooLargeError stating the endpoint
+// and limit, and a size-rejected response is never retried.
 func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
 	data, err := encodeRequestBody(body)
 	if err != nil {
@@ -433,9 +451,16 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", method, path, err)
 		}
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := c.readResponseBody(method, path, resp)
 		resp.Body.Close()
 		if err != nil {
+			// A size-rejected response is final (REL-1): the error already
+			// names the endpoint and limit, and the attempt must not be
+			// replayed even when the status was retryable.
+			var tooLarge *ResponseTooLargeError
+			if errors.As(err, &tooLarge) {
+				return tooLarge
+			}
 			return fmt.Errorf("%s %s: read response: %w", method, path, err)
 		}
 
@@ -575,6 +600,62 @@ func (c *Client) notifyRetry(method, path string, status, attempt, total int, wa
 	}
 	fmt.Fprintf(c.Stderr, "cupthread: %s %s got HTTP %d — retrying (attempt %d/%d, waiting %s)\n",
 		method, path, status, attempt, total, wait.Round(time.Millisecond))
+}
+
+// ResponseTooLargeError reports a response body that ran over the client's
+// response-size cap (REL-1): nothing beyond the cap was buffered, and the
+// failed attempt is final — a size-rejected response is never retried, even
+// on a retryable status.
+type ResponseTooLargeError struct {
+	Method string
+	Path   string
+	// Limit is the configured buffering cap the response ran over, in bytes.
+	Limit int64
+}
+
+func (e *ResponseTooLargeError) Error() string {
+	return fmt.Sprintf("%s %s: response body exceeds the %s response-size limit",
+		e.Method, e.Path, formatByteLimit(e.Limit))
+}
+
+// formatByteLimit renders a byte count for an error message: whole-MiB
+// values as "N MiB", anything else in bytes.
+func formatByteLimit(n int64) string {
+	const mib = 1 << 20
+	if n >= mib && n%mib == 0 {
+		return fmt.Sprintf("%d MiB", n/mib)
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// maxResponseBytes resolves the per-response buffering cap.
+func (c *Client) maxResponseBytes() int64 {
+	if c.MaxResponseBytes > 0 {
+		return c.MaxResponseBytes
+	}
+	return DefaultMaxResponseBytes
+}
+
+// readResponseBody buffers the response body under the client's size cap
+// (REL-1): a Content-Length already over the limit is rejected without
+// reading (a HEAD response advertises a length but carries no body, so the
+// precheck skips it), and any other body is read through a one-byte-over-
+// limit window so chunked responses are bounded too. The error is a
+// *ResponseTooLargeError when the cap is hit; the payload beyond the cap is
+// never buffered.
+func (c *Client) readResponseBody(method, path string, resp *http.Response) ([]byte, error) {
+	limit := c.maxResponseBytes()
+	if method != http.MethodHead && resp.ContentLength > limit {
+		return nil, &ResponseTooLargeError{Method: method, Path: path, Limit: limit}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, &ResponseTooLargeError{Method: method, Path: path, Limit: limit}
+	}
+	return body, nil
 }
 
 // decodeResponse maps a finished attempt onto the caller's contract: 2xx
@@ -729,8 +810,14 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 		return fmt.Errorf("upload %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.readResponseBody(http.MethodPost, endpoint, resp)
 	if err != nil {
+		// A size-rejected response is final (REL-1): the error already names
+		// the endpoint and limit.
+		var tooLarge *ResponseTooLargeError
+		if errors.As(err, &tooLarge) {
+			return tooLarge
+		}
 		return fmt.Errorf("upload %s: read response: %w", endpoint, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/auth"
 	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // oauthLogoutFixture mirrors a real post-login config: an OAuth token pair
@@ -241,4 +244,163 @@ func TestLogoutHelpDropsStaleRevocationGuidance(t *testing.T) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
 	}
+}
+
+// unmarshalOneYAMLDocument asserts out holds exactly one YAML document and
+// returns it, mirroring unmarshalOneJSON for the yaml output mode: a second
+// Decode must hit EOF, so a stray human-readable line before or after the
+// document fails the test instead of silently riding along.
+func unmarshalOneYAMLDocument(t *testing.T, out string) map[string]any {
+	t.Helper()
+
+	dec := yaml.NewDecoder(strings.NewReader(out))
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("stdout is not a single YAML document: %v\nstdout:\n%s", err, out)
+	}
+	var extra map[string]any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		t.Fatalf("stdout carries data after the YAML document: %v\nstdout:\n%s", err, out)
+	}
+	return doc
+}
+
+// TestLogoutRevokeStructuredStdoutSingleDocument pins the QUAL-1 contract
+// (issue #141): with --json or --output yaml, stdout carries exactly one
+// machine-parseable logoutResult document, and every --revoke notice —
+// success confirmation, failure warning, PAT console-path warning, or the
+// no-credential note — goes to stderr instead of contaminating stdout.
+// Best-effort semantics are unchanged: local credentials are cleared in
+// every outcome, and table mode keeps printing the notices to stdout (pinned
+// by TestLogoutRevokeOAuthPostsRefreshToken and friends above).
+func TestLogoutRevokeStructuredStdoutSingleDocument(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "") // keep the test hermetic
+
+	t.Run("oauth revoke success json", func(t *testing.T) {
+		var requests int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
+		if err != nil {
+			t.Fatalf("logout --revoke --json: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		if requests != 1 {
+			t.Errorf("server saw %d revoke requests, want 1", requests)
+		}
+		doc := unmarshalOneJSON(t, stdout)
+		assertNoTableOutput(t, stdout)
+		if stdout != "" && !strings.HasSuffix(stdout, "}\n") {
+			t.Errorf("stdout does not end with the JSON document:\n%s", stdout)
+		}
+		if doc["loggedOut"] != true {
+			t.Errorf("loggedOut = %v, want true", doc["loggedOut"])
+		}
+		if doc["configPath"] != cfgPath {
+			t.Errorf("configPath = %v, want %s", doc["configPath"], cfgPath)
+		}
+		if !strings.Contains(stderr, "Revoked the server-side token pair") {
+			t.Errorf("stderr missing revocation confirmation:\n%s", stderr)
+		}
+		assertLoggedOut(t, cfgPath)
+	})
+
+	t.Run("oauth revoke failure json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
+		if err != nil {
+			t.Fatalf("logout --revoke --json must succeed even when revocation fails: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		doc := unmarshalOneJSON(t, stdout)
+		assertNoTableOutput(t, stdout)
+		if doc["loggedOut"] != true {
+			t.Errorf("loggedOut = %v, want true", doc["loggedOut"])
+		}
+		if !strings.Contains(stderr, "Server-side revocation failed") {
+			t.Errorf("stderr missing revocation warning:\n%s", stderr)
+		}
+		assertLoggedOut(t, cfgPath)
+	})
+
+	t.Run("pat credential json", func(t *testing.T) {
+		var requests int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+		}))
+		defer server.Close()
+
+		cfgPath := writeLogoutConfig(t, `{"auth":{"method":"token","accessToken":"cpt_pat1234567890","tokenPrefix":"cpt_pat123"}}`)
+		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
+		if err != nil {
+			t.Fatalf("logout --revoke --json with PAT: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		if requests != 0 {
+			t.Errorf("server saw %d requests, want 0 (PATs have no CLI-reachable revocation)", requests)
+		}
+		unmarshalOneJSON(t, stdout)
+		assertNoTableOutput(t, stdout)
+		for _, want := range []string{"Personal access tokens cannot be revoked", "Settings → API Tokens", "cpt_pat123"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("stderr missing %q:\n%s", want, stderr)
+			}
+		}
+		assertLoggedOut(t, cfgPath)
+	})
+
+	t.Run("no stored credential json", func(t *testing.T) {
+		var requests int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+		}))
+		defer server.Close()
+
+		cfgPath := writeLogoutConfig(t, `{"defaultWorkspace":"ws_123"}`)
+		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
+		if err != nil {
+			t.Fatalf("logout --revoke --json without credential: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		if requests != 0 {
+			t.Errorf("server saw %d requests, want 0", requests)
+		}
+		unmarshalOneJSON(t, stdout)
+		assertNoTableOutput(t, stdout)
+		if !strings.Contains(stderr, "No stored credential to revoke") {
+			t.Errorf("stderr missing no-credential note:\n%s", stderr)
+		}
+		assertLoggedOut(t, cfgPath)
+	})
+
+	t.Run("oauth revoke success yaml", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--output", "yaml")
+		if err != nil {
+			t.Fatalf("logout --revoke --output yaml: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		doc := unmarshalOneYAMLDocument(t, stdout)
+		assertNoTableOutput(t, stdout)
+		if doc["loggedOut"] != true {
+			t.Errorf("loggedOut = %v, want true", doc["loggedOut"])
+		}
+		if doc["configPath"] != cfgPath {
+			t.Errorf("configPath = %v, want %s", doc["configPath"], cfgPath)
+		}
+		if !strings.Contains(stderr, "Revoked the server-side token pair") {
+			t.Errorf("stderr missing revocation confirmation:\n%s", stderr)
+		}
+		assertLoggedOut(t, cfgPath)
+	})
 }
