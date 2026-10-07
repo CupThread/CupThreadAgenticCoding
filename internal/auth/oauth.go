@@ -272,6 +272,12 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	}, nil
 }
 
+// slowDownPenalty is added to the polling interval every time the token
+// endpoint answers slow_down (RFC 8628 §3.5 — the server enforces the
+// escalation, capped at interval + 60 seconds). It is a variable only so
+// tests can shrink it; production always uses the RFC's 5 seconds.
+var slowDownPenalty = 5 * time.Second
+
 // Wait polls until the user confirms, denies, or the code expires. Progress
 // is written to stderr.
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
@@ -298,7 +304,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 				case "authorization_pending":
 					continue
 				case "slow_down":
-					d.Interval += 5 * time.Second
+					d.Interval += slowDownPenalty
 					continue
 				case "access_denied":
 					return nil, errors.New("authorization denied")

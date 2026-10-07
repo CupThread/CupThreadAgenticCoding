@@ -348,6 +348,24 @@ func TestAPISkillOAuthServerDocs(t *testing.T) {
 	}
 }
 
+// TestAPISkillDeviceFlowSlowDownEnforcement pins the issue #145 sync: the
+// device-token row must state that the server enforces RFC 8628 §3.5 —
+// polls inside the advertised interval get slow_down, every slow_down grows
+// the required spacing by 5 seconds, capped at interval + 60 seconds — so
+// clients cannot keep polling at a fixed interval.
+func TestAPISkillDeviceFlowSlowDownEnforcement(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"the server enforces §3.5",
+		"every `slow_down` grows the required spacing by 5 seconds, capped at `interval` + 60 seconds",
+		"honor it by growing their polling interval",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required device-flow slow_down marker %q", marker)
+		}
+	}
+}
+
 // TestAPISkillIssue152 pins the public-API contract synced for issue #152:
 // private image attachments, shipNotifyEmail, fail-closed OAuth consent,
 // 409 already_finalized, public-read 429s and offset clamps, and the
