@@ -524,6 +524,44 @@ func TestIssue152CommandHelp(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
+// only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
+// every public payload serves avatar fields as null or a managed https URL.
+func TestAPISkillIssue132(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"## Profile Avatar URLs Are Managed-Host-Only (PRIV-19)",
+		`<PUBLIC_BASE_URL>/api/v1/files/images`,
+		"hostname is exactly `imagedelivery.net`",
+		`{"error": "Validation failed", "code": "avatar_url_not_allowed"`,
+		"`code: \"website_url_not_allowed\"`",
+		"either `null` or a managed `https:` URL",
+		"served as `null`",
+		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		`"code": "avatar_url_invalid"`,
+		"any `https:` URL is accepted",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cli := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19)",
+	} {
+		if !strings.Contains(cli, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
