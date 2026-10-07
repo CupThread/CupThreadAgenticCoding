@@ -76,9 +76,13 @@ func RevokeEndpoint(baseURL string) string {
 
 // Revoke posts an RFC 7009 revocation request for token (the refresh token
 // when one is stored, so the server cascades to the paired access token).
-// The server intentionally answers 200 even for unknown or already-revoked
-// tokens so existence is not disclosed; a nil error therefore means "the
-// server accepted the request", not "a live token was destroyed".
+// The endpoint authenticates the caller (RFC 7009 §2.1): client_id is
+// required and confidential clients must also present client_secret; the CLI
+// is a public client, so client_id alone identifies it, and identity failures
+// surface as *APIError (400 invalid_request / invalid_client, 401
+// invalid_client). The server intentionally answers 200 even for unknown or
+// already-revoked tokens so existence is not disclosed; a nil error therefore
+// means "the server accepted the request", not "a live token was destroyed".
 func Revoke(ctx context.Context, revokeURL, clientID, token string) error {
 	_, err := postForm(ctx, revokeURL, url.Values{
 		"token":     {token},
