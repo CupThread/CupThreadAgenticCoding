@@ -27,7 +27,7 @@ func integrationEnvToken(provider string) string {
 func resolveIntegrationToken(provider, tokenFlag string) (string, error) {
 	readsStdin := func(v string) bool { return v == "-" || v == "@" }
 	if readsStdin(tokenFlag) {
-		data, err := readInputFile(tokenFlag)
+		data, err := readInputFile(tokenFlag, maxSecretBytes)
 		if err != nil {
 			return "", err
 		}
@@ -219,6 +219,9 @@ URL in a browser and finish the OAuth flow in the Console.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			token, err := resolveIntegrationToken("github", token)
 			if err != nil {
+				if perr := A.reportInputTooLarge(err); perr != nil {
+					return perr
+				}
 				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
@@ -471,6 +474,9 @@ the secret.`, prov, strings.ToUpper(prov), prov, integrationEnvToken(prov)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			token, err := resolveIntegrationToken(prov, token)
 			if err != nil {
+				if perr := A.reportInputTooLarge(err); perr != nil {
+					return perr
+				}
 				return err
 			}
 			ws, err := workspaceClient(cmd.Context())

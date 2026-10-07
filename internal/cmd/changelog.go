@@ -117,6 +117,9 @@ func newChangelogCreateCmd() *cobra.Command {
 			}
 			text, err := resolveBody(bodyText, bodyFile)
 			if err != nil {
+				if perr := A.reportInputTooLarge(err); perr != nil {
+					return perr
+				}
 				return err
 			}
 			appID, err := A.requireAppID()
@@ -153,7 +156,7 @@ func newChangelogCreateCmd() *cobra.Command {
 	}
 	create.Flags().StringVar(&title, "title", "", "Entry title (required)")
 	create.Flags().StringVar(&bodyText, "body", "", "Markdown body")
-	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file (\"-\" for stdin)")
+	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file (\"-\" for stdin; max 1 MB)")
 	create.Flags().StringVar(&versionLabel, "version-label", "", "Version label to show, e.g. 1.2.0")
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
 	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop")
@@ -162,10 +165,11 @@ func newChangelogCreateCmd() *cobra.Command {
 	return create
 }
 
-// resolveBody returns the markdown body from --body or --body-file.
+// resolveBody returns the markdown body from --body or --body-file. The file
+// form is capped at the console route's 1 MB request-body limit.
 func resolveBody(bodyText, bodyFile string) (string, error) {
 	if bodyFile != "" {
-		data, err := readInputFile(bodyFile)
+		data, err := readInputFile(bodyFile, maxConsoleBodyBytes)
 		if err != nil {
 			return "", err
 		}
@@ -193,6 +197,9 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if cmd.Flags().Changed("body") || cmd.Flags().Changed("body-file") {
 				text, err := resolveBody(bodyText, bodyFile)
 				if err != nil {
+					if perr := A.reportInputTooLarge(err); perr != nil {
+						return perr
+					}
 					return err
 				}
 				body["body"] = text
@@ -225,7 +232,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 	}
 	update.Flags().StringVar(&title, "title", "", "New title")
 	update.Flags().StringVar(&bodyText, "body", "", "New markdown body")
-	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file (\"-\" for stdin)")
+	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file (\"-\" for stdin; max 1 MB)")
 	update.Flags().StringVar(&versionLabel, "version-label", "", "Version label (\"\" clears it)")
 	update.Flags().StringVar(&versionID, "version-id", "", "Linked version ID (\"\" clears it)")
 	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link")

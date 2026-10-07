@@ -119,23 +119,22 @@ per-source flags.`,
 			if mode != "preview" && mode != "commit" {
 				return fmt.Errorf("invalid --mode %q: use preview or commit", mode)
 			}
-			appID, err := A.requireAppID()
-			if err != nil {
-				return err
-			}
-			ws, err := workspaceClient(cmd.Context())
-			if err != nil {
-				return err
-			}
 
+			// Read and validate --options before anything else: an oversized
+			// or malformed body must fail locally, before any HTTP request
+			// goes out (issue #142).
+			//
 			// json.RawMessage values keep every number in the --options body
 			// byte-identical on the wire (issue #75); a map[string]any decode
 			// would round-trip them through float64 and silently rewrite
 			// integers a float64 cannot represent exactly.
 			var options map[string]json.RawMessage
 			if optionsFile != "" {
-				data, err := readInputFile(optionsFile)
+				data, err := readInputFile(optionsFile, maxConsoleBodyBytes)
 				if err != nil {
+					if perr := A.reportInputTooLarge(err); perr != nil {
+						return perr
+					}
 					return err
 				}
 				if err := json.Unmarshal(data, &options); err != nil {
@@ -189,6 +188,15 @@ per-source flags.`,
 				}
 			}
 
+			appID, err := A.requireAppID()
+			if err != nil {
+				return err
+			}
+			ws, err := workspaceClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+
 			body := map[string]any{"appId": appID, "source": source, "mode": mode, "options": options}
 			path := fmt.Sprintf("%s/apps/%s/imports", wsPath(ws, ""), appID)
 			var resp api.CreateImportJobResponse
@@ -208,7 +216,7 @@ per-source flags.`,
 	}
 	create.Flags().StringVar(&source, "source", "", "Import source (required)")
 	create.Flags().StringVar(&mode, "mode", "preview", "preview shows the diff, commit creates requests")
-	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON file (\"-\" for stdin), sent verbatim (numbers keep full precision); overrides per-source flags")
+	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON file (\"-\" for stdin; max 1 MB), sent verbatim (numbers keep full precision); overrides per-source flags")
 	create.Flags().StringVar(&owner, "owner", "", "GitHub owner")
 	create.Flags().StringVar(&repo, "repo", "", "GitHub repository")
 	create.Flags().StringSliceVar(&labels, "labels", nil, "GitHub labels filter (comma-separated)")
