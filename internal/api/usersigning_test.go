@@ -94,6 +94,13 @@ func goldenSigningCases(t *testing.T) []goldenCase {
 			canonical:   "cpt-user-attrs-v1\n" + testAppKey + "\n" + testToken + "\nunset\nPro – Ånnual ✓\nunset\nSEK\n1758000000",
 			signature:   "7a88dc701f317f903385cb5be3756e1683a950017f9aaaefcc24cecbdb75e1c7",
 		},
+		{
+			name:        "currency alone is a signed payment attribute (DATA-07)",
+			body:        `{"currency":"jpy"}`,
+			headerToken: testToken,
+			canonical:   "cpt-user-attrs-v1\n" + testAppKey + "\n" + testToken + "\nunset\nunset\nunset\njpy\n1758000000",
+			signature:   "b227f3014d7e00747cb2054a9d53fe60b5a015f36999d7ca2ad02d817effba0e",
+		},
 	}
 }
 

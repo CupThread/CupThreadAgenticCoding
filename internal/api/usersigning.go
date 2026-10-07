@@ -21,10 +21,10 @@ const SDKAttributeSignatureVersion = "cpt-user-attrs-v1"
 // signature timestamp (epoch seconds).
 const SDKAttributeSignatureFreshnessSeconds = 300
 
-// Payment attributes (isPaying/mrr/plan) on PUT /api/v1/public/apps/{appKey}/user
-// are only accepted when the request carries signature + timestamp computed
-// with the app's SDK signing secret. The canonical string is newline-joined
-// with no trailing newline:
+// Payment attributes (isPaying/mrr/plan/currency) on
+// PUT /api/v1/public/apps/{appKey}/user are only accepted when the request
+// carries signature + timestamp computed with the app's SDK signing secret.
+// The canonical string is newline-joined with no trailing newline:
 //
 //	cpt-user-attrs-v1
 //	<appKey>
