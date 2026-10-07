@@ -44,6 +44,11 @@ type app struct {
 	cfgPath string
 	out     *output.Writer
 
+	// cfgBaseline snapshots cfg as of the config load (see Snapshot), so
+	// saveConfig can persist only the fields this invocation actually
+	// changed instead of a stale whole-file copy (issue #139).
+	cfgBaseline *config.Config
+
 	client     *api.Client
 	clientOnce sync.Once
 	refreshMu  sync.Mutex
@@ -111,6 +116,7 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 				return err
 			}
 			A.cfg = cfg
+			A.cfgBaseline = cfg.Snapshot()
 			A.client = A.buildClient()
 			return nil
 		},
@@ -299,9 +305,12 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 // saveAuthUnderLock persists the in-memory auth pair onto a fresh read of
 // the on-disk config, leaving every other field exactly as the disk has it.
 // Callers must hold the config lock; the merge means a concurrent
-// `workspaces use` or `apps use` (which does not take the lock) survives the
-// refresh. A PAT stored by a concurrent `auth login --token` wins and the
-// save is skipped — the newer credential must not be clobbered.
+// `workspaces use` or `apps use` survives the refresh. A PAT stored by a
+// concurrent `auth login --token` wins and the save is skipped — the newer
+// credential must not be clobbered. Either outcome acknowledges the
+// in-memory auth section in the baseline, so a later saveConfig in this
+// process never re-applies the skipped or already-persisted pair over newer
+// disk state.
 func (a *app) saveAuthUnderLock() error {
 	if a.cfg.Auth == nil {
 		return nil
@@ -311,10 +320,33 @@ func (a *app) saveAuthUnderLock() error {
 		return err
 	}
 	if disk.Auth != nil && disk.Auth.Method == "token" {
+		a.acknowledgeAuth()
 		return nil
 	}
 	disk.Auth = a.cfg.Auth
-	return disk.Save(a.cfgPath)
+	if err := disk.Save(a.cfgPath); err != nil {
+		return err
+	}
+	a.cfg = disk
+	a.acknowledgeAuth()
+	return nil
+}
+
+// acknowledgeAuth marks the in-memory auth section as the state a future
+// saveConfig should diff against, so an auth section this process already
+// persisted (or deliberately declined to persist) is not treated as a
+// pending change and re-applied over a concurrently stored credential.
+func (a *app) acknowledgeAuth() {
+	if a.cfgBaseline == nil {
+		a.cfgBaseline = a.cfg.Snapshot()
+		return
+	}
+	if a.cfg.Auth == nil {
+		a.cfgBaseline.Auth = nil
+		return
+	}
+	authCopy := *a.cfg.Auth
+	a.cfgBaseline.Auth = &authCopy
 }
 
 // applyTokenSet stores a fresh OAuth token pair on the config.
@@ -341,9 +373,32 @@ func (a *app) applyTokenSet(set *auth.TokenSet) {
 	}
 }
 
-// saveConfig persists the config to disk.
+// saveConfig persists this invocation's config changes under the
+// cross-process config lock, merged onto a fresh read of the on-disk file:
+// only the fields this invocation changed since it loaded the config (the
+// cfgBaseline snapshot) are applied to the latest disk snapshot, so
+// concurrent CLI invocations — a 'workspaces use' racing an 'apps use', or
+// either racing a credential write — never lose each other's updates
+// (issue #139). The in-memory config and baseline are adopted from the
+// merged result so a follow-up save in the same process carries only newer
+// changes.
 func (a *app) saveConfig() error {
-	return a.cfg.Save(a.cfgPath)
+	baseline := a.cfgBaseline
+	if baseline == nil {
+		// Hand-assembled app without a load-time snapshot: diff against an
+		// empty config, so every in-memory field counts as this
+		// invocation's change — the whole-file-save behavior such callers
+		// always had. (Snapping a.cfg here instead would bless its pending
+		// changes as already-persisted and drop them from the merge.)
+		baseline = &config.Config{}
+	}
+	merged, err := config.Update(a.cfgPath, baseline, a.cfg)
+	if err != nil {
+		return err
+	}
+	a.cfg = merged
+	a.cfgBaseline = merged.Snapshot()
+	return nil
 }
 
 // workspaceID resolves the workspace for workspace-scoped commands.
