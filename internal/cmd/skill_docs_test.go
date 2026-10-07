@@ -479,3 +479,42 @@ func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	t.Fatalf("command %q not found under %s", name, parent.Name())
 	return nil
 }
+
+// TestAPISkillIssue136 pins the OAuth consent-journey 429 contract (issue
+// #136, SaaS SEC-61/SEC-27/SEC-65): GET/POST authorize and consent-info
+// share one per-IP budget, the authorize 429 is the RFC 6749 §5.2 shape, the
+// helper 429 is a plain {error} body, and the guidance marks the 429 as a
+// transient per-minute condition rather than a protocol failure.
+func TestAPISkillIssue136(t *testing.T) {
+	api := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// GET authorize row: the 429 replaces the consent redirect.
+		"Rate-limited on the shared per-IP authorize budget (SEC-61, 60 requests/60 s",
+		"`invalid_request` \"Too many requests\" body **instead of a redirect**",
+		// POST authorize row: per-IP key, no client_id in it, shared journey.
+		"SEC-61: keyed on the client IP alone",
+		"a legitimate interactive consent journey spends ~3 requests",
+		// Console helpers row: consent-info 429 body shape.
+		"same shared per-IP authorize bucket",
+		"an over-budget `consent-info` call answers `429` with a plain `{\"error\": …}` body",
+		// Rate-limiting table row: budget, limiter, two-layer token/revoke spend.
+		"`OAUTH_TOKEN_RATE_LIMITER`, SEC-61",
+		"`429 {\"error\": \"invalid_request\", \"error_description\": \"Too many requests\"}`",
+		// Retry guidance: consent-journey 429 is transient.
+		"a `429` is transient within the per-minute window",
+		"The CLI itself never calls consent-info or POST authorize",
+	} {
+		if !strings.Contains(api, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#136 marker %q", marker)
+		}
+	}
+	cli := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"The OAuth consent family (`GET`/`POST /oauth/authorize`, `GET /oauth/consent-info`, device lookup/decide) shares a separate 60 req/min per-IP budget",
+		"transient within the per-minute window",
+	} {
+		if !strings.Contains(cli, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#136 marker %q", marker)
+		}
+	}
+}
