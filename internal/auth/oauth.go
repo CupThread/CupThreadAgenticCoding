@@ -76,9 +76,13 @@ func RevokeEndpoint(baseURL string) string {
 
 // Revoke posts an RFC 7009 revocation request for token (the refresh token
 // when one is stored, so the server cascades to the paired access token).
-// The server intentionally answers 200 even for unknown or already-revoked
-// tokens so existence is not disclosed; a nil error therefore means "the
-// server accepted the request", not "a live token was destroyed".
+// The endpoint authenticates the caller (RFC 7009 §2.1): client_id is
+// required and confidential clients must also present client_secret; the CLI
+// is a public client, so client_id alone identifies it, and identity failures
+// surface as *APIError (400 invalid_request / invalid_client, 401
+// invalid_client). The server intentionally answers 200 even for unknown or
+// already-revoked tokens so existence is not disclosed; a nil error therefore
+// means "the server accepted the request", not "a live token was destroyed".
 func Revoke(ctx context.Context, revokeURL, clientID, token string) error {
 	_, err := postForm(ctx, revokeURL, url.Values{
 		"token":     {token},
@@ -268,6 +272,12 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	}, nil
 }
 
+// slowDownPenalty is added to the polling interval every time the token
+// endpoint answers slow_down (RFC 8628 §3.5 — the server enforces the
+// escalation, capped at interval + 60 seconds). It is a variable only so
+// tests can shrink it; production always uses the RFC's 5 seconds.
+var slowDownPenalty = 5 * time.Second
+
 // Wait polls until the user confirms, denies, or the code expires. Progress
 // is written to stderr.
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
@@ -294,7 +304,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 				case "authorization_pending":
 					continue
 				case "slow_down":
-					d.Interval += 5 * time.Second
+					d.Interval += slowDownPenalty
 					continue
 				case "access_denied":
 					return nil, errors.New("authorization denied")
