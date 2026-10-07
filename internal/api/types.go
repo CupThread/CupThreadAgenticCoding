@@ -237,34 +237,35 @@ type ListDeliveryJobsResponse struct {
 // ─── Feature requests ────────────────────────────────────────────────────────
 
 type AdminFeatureRequest struct {
-	ID               string  `json:"id"`
-	AppID            string  `json:"appId"`
-	Title            string  `json:"title"`
-	Description      string  `json:"description"`
-	Status           string  `json:"status"`
-	ColumnID         *string `json:"columnId"`
-	ColumnSlug       *string `json:"columnSlug"`
-	ColumnName       *string `json:"columnName"`
-	ColumnColor      *string `json:"columnColor"`
-	VersionID        *string `json:"versionId"`
-	VersionLabel     *string `json:"versionLabel"`
-	ReleasedVersion    *string           `json:"releasedVersion"`
-	RequesterName      *string           `json:"requesterName"`
-	RequesterEmail     *string           `json:"requesterEmail"`
-	RequesterAvatarUrl *string           `json:"requesterAvatarUrl"`
-	RequesterClerkId   *string           `json:"requesterClerkId"`
-	RecentCommenters   []RecentCommenter `json:"recentCommenters"`
-	Approved           bool              `json:"approved"`
-	ApprovedAt         *string           `json:"approvedAt"`
-	CreatedByAdmin   bool    `json:"createdByAdmin"`
-	VoteCount        int     `json:"voteCount"`
-	RevenueTotal     float64 `json:"revenueTotal"`
-	PayingVoters     int     `json:"payingVoters"`
-	SubmitterIsPaying bool   `json:"submitterIsPaying"`
-	GithubIssueURL   *string `json:"githubIssueUrl"`
-	GithubDiscussionURL *string `json:"githubDiscussionUrl"`
-	CreatedAt        string  `json:"createdAt"`
-	UpdatedAt        string  `json:"updatedAt"`
+	ID                  string            `json:"id"`
+	AppID               string            `json:"appId"`
+	Title               string            `json:"title"`
+	Description         string            `json:"description"`
+	Status              string            `json:"status"`
+	ColumnID            *string           `json:"columnId"`
+	ColumnSlug          *string           `json:"columnSlug"`
+	ColumnName          *string           `json:"columnName"`
+	ColumnColor         *string           `json:"columnColor"`
+	VersionID           *string           `json:"versionId"`
+	VersionLabel        *string           `json:"versionLabel"`
+	ReleasedVersion     *string           `json:"releasedVersion"`
+	RequesterName       *string           `json:"requesterName"`
+	RequesterEmail      *string           `json:"requesterEmail"`
+	RequesterAvatarUrl  *string           `json:"requesterAvatarUrl"`
+	RequesterClerkId    *string           `json:"requesterClerkId"`
+	RecentCommenters    []RecentCommenter `json:"recentCommenters"`
+	Approved            bool              `json:"approved"`
+	ApprovedAt          *string           `json:"approvedAt"`
+	CreatedByAdmin      bool              `json:"createdByAdmin"`
+	VoteCount           int               `json:"voteCount"`
+	ImportedVotes       *int              `json:"importedVotes,omitempty"`
+	RevenueTotal        float64           `json:"revenueTotal"`
+	PayingVoters        int               `json:"payingVoters"`
+	SubmitterIsPaying   bool              `json:"submitterIsPaying"`
+	GithubIssueURL      *string           `json:"githubIssueUrl"`
+	GithubDiscussionURL *string           `json:"githubDiscussionUrl"`
+	CreatedAt           string            `json:"createdAt"`
+	UpdatedAt           string            `json:"updatedAt"`
 }
 
 type AdminListFeatureRequestsResponse struct {
@@ -286,18 +287,18 @@ type RecentCommenter struct {
 // feature-request feed served by GET /api/v1/feature-requests (a subset of
 // the wire record; the decoder ignores the remaining fields).
 type PublicFeatureRequest struct {
-	ID           string  `json:"id"`
-	Title        string  `json:"title"`
-	Description  string  `json:"description"`
-	Status       string  `json:"status"`
-	ColumnName   *string `json:"columnName"`
-	VersionLabel *string `json:"versionLabel"`
-	VoteCount    int     `json:"voteCount"`
+	ID            string  `json:"id"`
+	Title         string  `json:"title"`
+	Description   string  `json:"description"`
+	Status        string  `json:"status"`
+	ColumnName    *string `json:"columnName"`
+	VersionLabel  *string `json:"versionLabel"`
+	VoteCount     int     `json:"voteCount"`
 	ImportedVotes *int    `json:"importedVotes,omitempty"`
-	HasVoted     bool    `json:"hasVoted"`
-	CommentCount int     `json:"commentCount"`
-	CreatedAt    string  `json:"createdAt"`
-	UpdatedAt    string  `json:"updatedAt"`
+	HasVoted      bool    `json:"hasVoted"`
+	CommentCount  int     `json:"commentCount"`
+	CreatedAt     string  `json:"createdAt"`
+	UpdatedAt     string  `json:"updatedAt"`
 }
 
 // ListPublicFeatureRequestsResponse is the public feature-request feed
