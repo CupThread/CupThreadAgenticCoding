@@ -122,12 +122,14 @@ func TestAPISignUserAttrsTokenResolution(t *testing.T) {
 }
 
 // TestAPISignUserAttrsUnsignedNote verifies the helper tells agents when the
-// body does not need a signature at all (identity/currency-only writes stay
-// unsigned per the DATA-03 contract).
+// body does not need a signature at all (identity-only writes stay unsigned
+// per the DATA-03 contract) and that currency counts as a payment attribute
+// since DATA-07: a currency-only body no longer gets the unsigned hint.
 func TestAPISignUserAttrsUnsignedNote(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
-	payload, _, err := runSign(t, `{"currency":"USD"}`, "--user-token", signTestToken, "--json")
+	// Identity-only is the only unsigned path left.
+	payload, _, err := runSign(t, `{}`, "--user-token", signTestToken, "--json")
 	if err != nil {
 		t.Fatalf("sign-user-attrs: %v", err)
 	}
@@ -143,6 +145,16 @@ func TestAPISignUserAttrsUnsignedNote(t *testing.T) {
 	}
 	if payload.Note != "" {
 		t.Errorf("note = %q, want empty when plan is explicitly null", payload.Note)
+	}
+
+	// DATA-07: currency is a signed payment attribute, so a currency-only
+	// body must not be hinted as acceptable without a signature.
+	payload, _, err = runSign(t, `{"currency":"USD"}`, "--user-token", signTestToken, "--json")
+	if err != nil {
+		t.Fatalf("sign-user-attrs: %v", err)
+	}
+	if payload.Note != "" {
+		t.Errorf("note = %q, want empty for a currency-only body (DATA-07)", payload.Note)
 	}
 }
 

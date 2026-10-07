@@ -348,6 +348,24 @@ func TestAPISkillOAuthServerDocs(t *testing.T) {
 	}
 }
 
+// TestAPISkillDeviceFlowSlowDownEnforcement pins the issue #145 sync: the
+// device-token row must state that the server enforces RFC 8628 §3.5 —
+// polls inside the advertised interval get slow_down, every slow_down grows
+// the required spacing by 5 seconds, capped at interval + 60 seconds — so
+// clients cannot keep polling at a fixed interval.
+func TestAPISkillDeviceFlowSlowDownEnforcement(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"the server enforces §3.5",
+		"every `slow_down` grows the required spacing by 5 seconds, capped at `interval` + 60 seconds",
+		"honor it by growing their polling interval",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required device-flow slow_down marker %q", marker)
+		}
+	}
+}
+
 // TestAPISkillIssue152 pins the public-API contract synced for issue #152:
 // private image attachments, shipNotifyEmail, fail-closed OAuth consent,
 // 409 already_finalized, public-read 429s and offset clamps, and the
@@ -376,6 +394,52 @@ func TestAPISkillIssue152(t *testing.T) {
 	}
 	if strings.Contains(doc, "upload_finalized_concurrently") {
 		t.Error("cupthread-api/SKILL.md uses the approximate code upload_finalized_concurrently; the wire code is already_finalized")
+	}
+}
+
+// TestAPISkillIssue144 pins the authenticated-revocation contract synced for
+// issue #144: the RFC 7009 revoke endpoint requires client identity — a
+// required client_id (400 invalid_request when missing, 400 invalid_client
+// for unknown clients, 401 invalid_client for confidential-client secret
+// failures), revokes only tokens issued to the authenticated client, and
+// answers 400 unsupported_token_type for values that are neither cpt_ nor
+// cpr_ tokens.
+func TestAPISkillIssue144(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"required `client_id`",
+		"`client_id is required`",
+		"`Unknown client`",
+		"invalid_client",
+		"`client_secret`",
+		"unsupported_token_type",
+		"revokes nothing",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#144 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "optional `client_id`") {
+		t.Error("cupthread-api/SKILL.md still describes the revoke client_id as optional; issue #144 makes it required")
+	}
+}
+
+// TestAPISkillIssue146 pins the public-config contract synced for issue
+// #146 (SEC-518): the optional allowedEmbedOrigins embed allowlist on both
+// public config routes, its presence semantics, and its origin rules.
+func TestAPISkillIssue146(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"allowedEmbedOrigins",
+		"SEC-518",
+		"an empty array is never returned",
+		"at most 10 exact `https://` origins",
+		"frame-ancestors",
+		"Same `PublicAppConfig` (including `allowedEmbedOrigins`)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#146 marker %q", marker)
+		}
 	}
 }
 
@@ -460,6 +524,124 @@ func TestIssue152CommandHelp(t *testing.T) {
 	}
 }
 
+// TestSkillDocsIssue134CurrencySignature pins the DATA-07 sync (issue #134):
+// `currency` on PUT /api/v1/public/apps/{appKey}/user is a signed payment
+// attribute (422 payment_attributes_require_signature without signature +
+// timestamp), a signed update that omits `currency` preserves the stored
+// value instead of coercing it to USD, and the canonical string is unchanged.
+// The stale "currency-only writes stay unsigned" guidance must not resurface.
+func TestSkillDocsIssue134CurrencySignature(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			"(`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts)",
+			"any of `isPaying`, `mrr`, `plan`, or `currency`",
+			"### Omitted `currency` keeps the stored value (DATA-07)",
+			"preserves the stored currency",
+			"`USD` is applied only when a profile is **created** with no stored currency",
+			"The signature canonical string is unchanged by DATA-07",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#134 marker %q", marker)
+			}
+		}
+		for _, stale := range []string{
+			"Identity-only and `currency`-only writes keep working unchanged",
+			"`currency`-only writes keep working unchanged",
+		} {
+			if strings.Contains(doc, stale) {
+				t.Errorf("cupthread-api/SKILL.md still says %q (currency is signed since DATA-07)", stale)
+			}
+		}
+	})
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"(`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts)",
+			"a signed update that omits `currency` preserves the stored value instead of defaulting to `USD`",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#134 marker %q", marker)
+			}
+		}
+	})
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range []string{
+				"any of `isPaying`, `mrr`, `plan`, or `currency`",
+				"identity-only writes are the only unsigned path left",
+				"preserves the stored currency instead of coercing it to `USD`",
+			} {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#134 marker %q", skill, marker)
+				}
+			}
+			for _, stale := range []string{
+				"currency-only writes stay unsigned",
+				"identity/currency-only updates",
+			} {
+				if strings.Contains(doc, stale) {
+					t.Errorf("%s/SKILL.md still says %q (currency is signed since DATA-07)", skill, stale)
+				}
+			}
+		})
+	}
+}
+
+// TestIssue134SignUserAttrsCommandHelp pins the sign-user-attrs help and the
+// unsigned-note gate on the currency attribute, so the CLI cannot drift back
+// to treating currency as an unsigned field (issue #134, DATA-07).
+func TestIssue134SignUserAttrsCommandHelp(t *testing.T) {
+	sign := newAPISignUserAttrsCmd()
+	if !strings.Contains(sign.Long, "payment attributes (isPaying, mrr, plan, or currency)") {
+		t.Errorf("sign-user-attrs Long missing currency in the payment-attribute list:\n%s", sign.Long)
+	}
+}
+
+// TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
+// only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
+// every public payload serves avatar fields as null or a managed https URL.
+func TestAPISkillIssue132(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"## Profile Avatar URLs Are Managed-Host-Only (PRIV-19)",
+		`<PUBLIC_BASE_URL>/api/v1/files/images`,
+		"hostname is exactly `imagedelivery.net`",
+		`{"error": "Validation failed", "code": "avatar_url_not_allowed"`,
+		"`code: \"website_url_not_allowed\"`",
+		"either `null` or a managed `https:` URL",
+		"served as `null`",
+		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		`"code": "avatar_url_invalid"`,
+		"any `https:` URL is accepted",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cli := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19)",
+	} {
+		if !strings.Contains(cli, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#132 marker %q", marker)
+		}
+	}
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
@@ -495,6 +677,57 @@ func TestAPISkillVoteInsertOnlySemantics(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue135 pins the SEC-50 reply contract on the public comment
+// create endpoint: parentId must reference a visible comment on the request
+// in the URL, anything else is 400 invalid_parent with nothing stored, and
+// replyToAuthorName stays ignored (the author is resolved server-side).
+func TestAPISkillIssue135(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"`parentId` must reference a **visible** comment on the feature request in the URL",
+		`"code": "invalid_parent"`,
+		"The comment you are replying to was not found on this feature request",
+		"nothing is stored (SEC-50)",
+		"`replyToAuthorName` in the request body is ignored",
+		"resolved server-side from the parent comment",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#135 marker %q", marker)
+		}
+	}
+}
+
+// TestCLISkillIssue135 pins the CLI skill's comments-create guidance: the
+// --parent-id rule, the wire code, and the ignored reply-to-author-name flag.
+func TestCLISkillIssue135(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"must reference a visible comment on the same",
+		"`400 invalid_parent`",
+		"The comment you are replying to was not found on this",
+		"crafting `--reply-to-author-name`",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#135 marker %q", marker)
+		}
+	}
+}
+
+// TestIssue135CommandHelp pins the cobra flag help agents read for comment
+// replies: --parent-id states the same-request visible-parent rule and
+// --reply-to-author-name admits the server ignores it.
+func TestIssue135CommandHelp(t *testing.T) {
+	create := newCommentsCreateCmd()
+	parentID := create.Flags().Lookup("parent-id")
+	if parentID == nil || !strings.Contains(parentID.Usage, "visible comment on the same feature request") || !strings.Contains(parentID.Usage, "400 invalid_parent") {
+		t.Errorf("parent-id flag usage = %#v, want the SEC-50 rule and the wire code", parentID)
+	}
+	replyName := create.Flags().Lookup("reply-to-author-name")
+	if replyName == nil || !strings.Contains(replyName.Usage, "ignored by the API") {
+		t.Errorf("reply-to-author-name flag usage = %#v, want the ignored-by-the-API note", replyName)
+	}
+}
+
 func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	t.Helper()
 	for _, c := range parent.Commands() {
@@ -504,4 +737,110 @@ func findSub(t *testing.T, parent *cobra.Command, name string) *cobra.Command {
 	}
 	t.Fatalf("command %q not found under %s", name, parent.Name())
 	return nil
+}
+
+// TestAPISkillIssue136 pins the OAuth consent-journey 429 contract (issue
+// #136, SaaS SEC-61/SEC-27/SEC-65): GET/POST authorize and consent-info
+// share one per-IP budget, the authorize 429 is the RFC 6749 §5.2 shape, the
+// helper 429 is a plain {error} body, and the guidance marks the 429 as a
+// transient per-minute condition rather than a protocol failure.
+func TestAPISkillIssue136(t *testing.T) {
+	api := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// GET authorize row: the 429 replaces the consent redirect.
+		"Rate-limited on the shared per-IP authorize budget (SEC-61, 60 requests/60 s",
+		"`invalid_request` \"Too many requests\" body **instead of a redirect**",
+		// POST authorize row: per-IP key, no client_id in it, shared journey.
+		"SEC-61: keyed on the client IP alone",
+		"a legitimate interactive consent journey spends ~3 requests",
+		// Console helpers row: consent-info 429 body shape.
+		"same shared per-IP authorize bucket",
+		"an over-budget `consent-info` call answers `429` with a plain `{\"error\": …}` body",
+		// Rate-limiting table row: budget, limiter, two-layer token/revoke spend.
+		"`OAUTH_TOKEN_RATE_LIMITER`, SEC-61",
+		"`429 {\"error\": \"invalid_request\", \"error_description\": \"Too many requests\"}`",
+		// Retry guidance: consent-journey 429 is transient.
+		"a `429` is transient within the per-minute window",
+		"The CLI itself never calls consent-info or POST authorize",
+	} {
+		if !strings.Contains(api, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#136 marker %q", marker)
+		}
+	}
+	cli := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"The OAuth consent family (`GET`/`POST /oauth/authorize`, `GET /oauth/consent-info`, device lookup/decide) shares a separate 60 req/min per-IP budget",
+		"transient within the per-minute window",
+	} {
+		if !strings.Contains(cli, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#136 marker %q", marker)
+		}
+	}
+}
+
+// TestBoundedInputDocs guards the issue #142 sync: the skills must document
+// the client-side bounded reads (route caps from SEC-36, the input_too_large
+// code, and the 64 KB piped-credential bound), and every file/stdin input
+// flag must name its cap so the limit is discoverable from --help alone.
+func TestBoundedInputDocs(t *testing.T) {
+	apiDoc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"read through a bounded reader against the route's cap first",
+		"fails locally with `input_too_large` and nothing is sent",
+	} {
+		if !strings.Contains(apiDoc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// Over-limit bodies no longer reach the server, so no 413 passthrough.
+		"get the `413` body passed through",
+	} {
+		if strings.Contains(apiDoc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+
+	cliDoc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"enforces those caps locally before sending",
+		`code: "input_too_large"`,
+		"64 KB",
+	} {
+		if !strings.Contains(cliDoc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required bounded-input marker %q", marker)
+		}
+	}
+
+	usage := func(t *testing.T, cmd *cobra.Command, flag string) string {
+		t.Helper()
+		f := cmd.Flags().Lookup(flag)
+		if f == nil {
+			t.Fatalf("flag --%s not found on %s", flag, cmd.Name())
+		}
+		return f.Usage
+	}
+	request := findSub(t, newAPICmd(), "request")
+	if got := usage(t, request, "input"); !strings.Contains(got, "max 1 MB") || !strings.Contains(got, "256 KB") {
+		t.Errorf("api request --input usage = %q, want both route caps", got)
+	}
+	sign := findSub(t, newAPICmd(), "sign-user-attrs")
+	if got := usage(t, sign, "input"); !strings.Contains(got, "max 256 KB") {
+		t.Errorf("sign-user-attrs --input usage = %q, want the public cap", got)
+	}
+	settingsSet := findSub(t, findSub(t, newAppsCmd(), "settings"), "set")
+	if got := usage(t, settingsSet, "input"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("apps settings set --input usage = %q, want the console cap", got)
+	}
+	importsCreate := findSub(t, newImportsCmd(), "create")
+	if got := usage(t, importsCreate, "options"); !strings.Contains(got, "max 1 MB") {
+		t.Errorf("imports create --options usage = %q, want the console cap", got)
+	}
+	changelog := newChangelogCmd()
+	for _, name := range []string{"create", "update"} {
+		entry := findSub(t, changelog, name)
+		if got := usage(t, entry, "body-file"); !strings.Contains(got, "max 1 MB") {
+			t.Errorf("changelog %s --body-file usage = %q, want the console cap", name, got)
+		}
+	}
 }
