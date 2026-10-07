@@ -192,7 +192,7 @@ func newAPISignUserAttrsCmd() *cobra.Command {
 		Short: "Compute the HMAC signature for a payment-attribute user update",
 		Long: `Compute the signature + timestamp that
 PUT /api/v1/public/apps/{appKey}/user requires whenever the body reports
-payment attributes (isPaying, mrr, or plan).
+payment attributes (isPaying, mrr, plan, or currency).
 
 The signature is lowercase-hex HMAC-SHA256 over a newline-joined canonical
 string (no trailing newline), keyed with the app's SDK signing secret
@@ -268,11 +268,14 @@ to the body without changing the signed values.`,
 				Signature: signature,
 			}
 			// The server only demands a signature when one of the payment
-			// attributes is present (even explicit null counts).
+			// attributes is present (even explicit null counts). Since
+			// DATA-07 currency is a payment attribute too.
 			if _, ok := raw["isPaying"]; !ok {
 				if _, ok := raw["mrr"]; !ok {
 					if _, ok := raw["plan"]; !ok {
-						out.Note = "body reports no payment attributes; the API accepts this request without a signature"
+						if _, ok := raw["currency"]; !ok {
+							out.Note = "body reports no payment attributes; the API accepts this request without a signature"
+						}
 					}
 				}
 			}
