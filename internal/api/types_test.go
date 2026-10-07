@@ -110,11 +110,16 @@ const meEnvelopeFixture = `{
 
 // frListEnvelopeFixture mirrors GET /api/v1/console/workspaces/{id}/feature-requests:
 // the handler returns the repository result verbatim, so unassignedTotal is
-// always on the wire (QUAL-03).
+// always on the wire (QUAL-03) and importedVotes rides along on the record
+// (issue #131; verified against SaaS origin/main de89c95, where the console
+// mapper sends `importedVotes: row.imported_votes ?? 0`). The record's
+// voteCount already includes the imported portion — 3 total with 2 imported
+// — so decoding must never treat the two as additive.
 const frListEnvelopeFixture = `{
 	"requests": [{
 		"id": "fr_1", "appId": "app_1", "title": "Dark mode",
 		"description": "Please", "status": "open", "voteCount": 3,
+		"importedVotes": 2,
 		"createdAt": "2026-09-01T12:00:00.000Z", "updatedAt": "2026-09-01T12:00:00.000Z"
 	}],
 	"total": 3,
@@ -171,6 +176,10 @@ func TestAdditiveEnvelopesRoundTripWithoutKeyLoss(t *testing.T) {
 				r := v.(*AdminListFeatureRequestsResponse)
 				if r.Total != 3 || r.UnassignedTotal != 2 {
 					t.Errorf("totals = (%d, %d), want (3, 2)", r.Total, r.UnassignedTotal)
+				}
+				req := r.Requests[0]
+				if req.VoteCount != 3 || req.ImportedVotes == nil || *req.ImportedVotes != 2 {
+					t.Errorf("votes = (%d, %v), want (3, 2) with importedVotes decoded", req.VoteCount, req.ImportedVotes)
 				}
 			},
 		},
@@ -234,4 +243,114 @@ func TestListCommentsResponseNullCursor(t *testing.T) {
 	if !strings.Contains(string(out), `"nextCursor":null`) {
 		t.Errorf("re-marshaled output %s drops nextCursor null", out)
 	}
+}
+
+// TestFeatureRequestImportedVotes pins the summed voteCount contract from
+// issue #131 (SaaS PR #395): voteCount on feature-request records is the
+// displayed total — in-app votes plus the historical votes imported from the
+// source provider — and importedVotes carries only that historical portion,
+// already included in voteCount (never additive; 124 total with 120 imported
+// means 4 votes were cast in CupThread). The field is optional: requests
+// created in CupThread omit it on the wire, and both records must survive
+// that omission with a nil pointer while re-emitting the field verbatim when
+// present, so typed --json output keeps the server envelope.
+func TestFeatureRequestImportedVotes(t *testing.T) {
+	const publicImported = `{
+		"id": "fr_pub_1", "title": "Dark mode", "description": "Please",
+		"status": "open", "voteCount": 124, "importedVotes": 120,
+		"hasVoted": false, "commentCount": 0,
+		"createdAt": "2026-09-01T12:00:00.000Z", "updatedAt": "2026-09-01T12:00:00.000Z"
+	}`
+	const publicNative = `{
+		"id": "fr_pub_2", "title": "Linux build", "description": "Ship it",
+		"status": "open", "voteCount": 4,
+		"hasVoted": false, "commentCount": 1,
+		"createdAt": "2026-09-02T12:00:00.000Z", "updatedAt": "2026-09-02T12:00:00.000Z"
+	}`
+	const adminImported = `{
+		"id": "fr_adm_1", "appId": "app_1", "title": "Dark mode",
+		"description": "Please", "status": "open", "voteCount": 124,
+		"importedVotes": 120, "createdByAdmin": false,
+		"createdAt": "2026-09-01T12:00:00.000Z", "updatedAt": "2026-09-01T12:00:00.000Z"
+	}`
+	const adminNative = `{
+		"id": "fr_adm_2", "appId": "app_1", "title": "Linux build",
+		"description": "Ship it", "status": "open", "voteCount": 4,
+		"createdByAdmin": true,
+		"createdAt": "2026-09-02T12:00:00.000Z", "updatedAt": "2026-09-02T12:00:00.000Z"
+	}`
+
+	t.Run("public record with imported votes", func(t *testing.T) {
+		var r PublicFeatureRequest
+		if err := json.Unmarshal([]byte(publicImported), &r); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if r.VoteCount != 124 {
+			t.Errorf("VoteCount = %d, want the displayed total 124", r.VoteCount)
+		}
+		if r.ImportedVotes == nil || *r.ImportedVotes != 120 {
+			t.Fatalf("ImportedVotes = %v, want 120", r.ImportedVotes)
+		}
+		out, err := json.Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if !strings.Contains(string(out), `"importedVotes":120`) {
+			t.Errorf("re-marshaled output %s drops importedVotes", out)
+		}
+	})
+
+	t.Run("public record created in CupThread", func(t *testing.T) {
+		var r PublicFeatureRequest
+		if err := json.Unmarshal([]byte(publicNative), &r); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if r.ImportedVotes != nil {
+			t.Errorf("ImportedVotes = %v, want nil when the server omits it", r.ImportedVotes)
+		}
+		out, err := json.Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if strings.Contains(string(out), "importedVotes") {
+			t.Errorf("re-marshaled output %s invents importedVotes for a record without one", out)
+		}
+	})
+
+	t.Run("console record with imported votes", func(t *testing.T) {
+		var r AdminFeatureRequest
+		if err := json.Unmarshal([]byte(adminImported), &r); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if r.VoteCount != 124 {
+			t.Errorf("VoteCount = %d, want the displayed total 124", r.VoteCount)
+		}
+		if r.ImportedVotes == nil || *r.ImportedVotes != 120 {
+			t.Fatalf("ImportedVotes = %v, want 120", r.ImportedVotes)
+		}
+		out, err := json.Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if !strings.Contains(string(out), `"importedVotes":120`) {
+			t.Errorf("re-marshaled output %s drops importedVotes", out)
+		}
+	})
+
+	t.Run("console record created in CupThread", func(t *testing.T) {
+		var r AdminFeatureRequest
+		if err := json.Unmarshal([]byte(adminNative), &r); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if r.ImportedVotes != nil {
+			t.Errorf("ImportedVotes = %v, want nil when the server omits it", r.ImportedVotes)
+		}
+		out, err := json.Marshal(r)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if strings.Contains(string(out), "importedVotes") {
+			t.Errorf("re-marshaled output %s invents importedVotes for a record without one", out)
+		}
+	})
 }
