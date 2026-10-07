@@ -379,6 +379,33 @@ func TestAPISkillIssue152(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue144 pins the authenticated-revocation contract synced for
+// issue #144: the RFC 7009 revoke endpoint requires client identity — a
+// required client_id (400 invalid_request when missing, 400 invalid_client
+// for unknown clients, 401 invalid_client for confidential-client secret
+// failures), revokes only tokens issued to the authenticated client, and
+// answers 400 unsupported_token_type for values that are neither cpt_ nor
+// cpr_ tokens.
+func TestAPISkillIssue144(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"required `client_id`",
+		"`client_id is required`",
+		"`Unknown client`",
+		"invalid_client",
+		"`client_secret`",
+		"unsupported_token_type",
+		"revokes nothing",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#144 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "optional `client_id`") {
+		t.Error("cupthread-api/SKILL.md still describes the revoke client_id as optional; issue #144 makes it required")
+	}
+}
+
 // TestAPISkillIssue146 pins the public-config contract synced for issue
 // #146 (SEC-518): the optional allowedEmbedOrigins embed allowlist on both
 // public config routes, its presence semantics, and its origin rules.
