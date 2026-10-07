@@ -100,7 +100,9 @@ not be verified (`cupthread auth status` confirms the session once the API is re
   `Retry-After` when present), so a mid-batch blip no longer aborts a command; mutations (POST/PUT/
   PATCH/DELETE) are always single-shot. Each retry logs one line to stderr (never stdout); `api request
   --json` error payloads add `"attempts"` when retries were exhausted. `$CUPTHREAD_NO_RETRY=1` is the
-  env equivalent.
+  env equivalent. Response bodies are buffered under a cap (10 MiB for API responses, 1 MiB for
+  OAuth/token responses): a larger response fails immediately with a
+  `response body exceeds the … response-size limit` error naming the endpoint, and is never retried.
 
 ---
 

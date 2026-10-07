@@ -457,6 +457,54 @@ func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet
 // the way the timeout-less http.DefaultClient would.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// maxOAuthResponseBytes caps how much of any token/device/revocation
+// response the CLI buffers (REL-1): OAuth bodies are form-encoded JSON a
+// few hundred bytes long, so 1 MiB leaves wide headroom while a hostile or
+// runaway endpoint cannot balloon memory.
+const maxOAuthResponseBytes int64 = 1 << 20 // 1 MiB
+
+// responseTooLargeError reports an OAuth endpoint response that ran over
+// the bounded-read cap (REL-1): nothing beyond the cap was buffered.
+type responseTooLargeError struct {
+	endpoint string
+	limit    int64
+}
+
+func (e *responseTooLargeError) Error() string {
+	return fmt.Sprintf("POST %s: response body exceeds the %s response-size limit",
+		e.endpoint, formatByteLimit(e.limit))
+}
+
+// formatByteLimit renders a byte count for an error message: whole-MiB
+// values as "N MiB", anything else in bytes.
+func formatByteLimit(n int64) string {
+	const mib = 1 << 20
+	if n >= mib && n%mib == 0 {
+		return fmt.Sprintf("%d MiB", n/mib)
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
+// readBoundedResponse buffers at most limit bytes of an OAuth response body
+// (REL-1): a Content-Length already over the limit is rejected without
+// reading, and any other body is read through a one-byte-over-limit window
+// so chunked responses are bounded too. The error is a
+// *responseTooLargeError when the limit is hit; the payload beyond the
+// limit is never buffered.
+func readBoundedResponse(r io.Reader, contentLength, limit int64, endpoint string) ([]byte, error) {
+	if contentLength > limit {
+		return nil, &responseTooLargeError{endpoint: endpoint, limit: limit}
+	}
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, &responseTooLargeError{endpoint: endpoint, limit: limit}
+	}
+	return body, nil
+}
+
 func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -470,7 +518,7 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 		return nil, fmt.Errorf("POST %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := readBoundedResponse(resp.Body, resp.ContentLength, maxOAuthResponseBytes, rawURL)
 	if err != nil {
 		return nil, err
 	}
