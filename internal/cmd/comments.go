@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -297,6 +298,14 @@ func newCommentsCreateCmd() *cobra.Command {
 
 			var resp api.FeatureRequestComment
 			if err := A.client.DoWithHeaders(cmd.Context(), "POST", path, nil, headers, reqBody, &resp); err != nil {
+				// SEC-50: the API rejects a parentId that is not a visible
+				// comment on the request in the URL (cross-request, missing,
+				// hidden, or deleted) with 400 invalid_parent and stores
+				// nothing. State the rule instead of surfacing a bare 400.
+				var apiErr *api.APIError
+				if errors.As(err, &apiErr) && apiErr.Code == "invalid_parent" {
+					return fmt.Errorf("cannot reply: the comment you are replying to is no longer available — --parent-id must reference a visible comment on feature request %q (it may have been hidden or deleted, or belong to a different request): %w", args[0], err)
+				}
 				return err
 			}
 			if A.structured() {
@@ -308,11 +317,11 @@ func newCommentsCreateCmd() *cobra.Command {
 	}
 	create.Flags().StringVar(&body, "body", "", "Comment text (required)")
 	create.Flags().StringVar(&replyTo, "reply-to", "", "Clerk user ID to @reply")
-	create.Flags().StringVar(&parentID, "parent-id", "", "Parent comment ID for threading")
+	create.Flags().StringVar(&parentID, "parent-id", "", "Parent comment ID for threading (must be a visible comment on the same feature request; anything else is rejected with 400 invalid_parent)")
 	create.Flags().StringVar(&authorName, "author-name", "", "Display name for the comment author")
 	create.Flags().StringVar(&authorEmail, "author-email", "", "Email for the comment author")
 	create.Flags().StringVar(&authorAvatarURL, "author-avatar-url", "", "Avatar image URL for the comment author")
-	create.Flags().StringVar(&replyToAuthorName, "reply-to-author-name", "", "Display name of the author being replied to")
+	create.Flags().StringVar(&replyToAuthorName, "reply-to-author-name", "", "Display name of the author being replied to (ignored by the API; it is resolved from the parent comment)")
 	create.Flags().StringVar(&appKey, "app-key", "", "Client App Key header (X-App-Key)")
 	create.Flags().StringVar(&userToken, "user-token", "", "User device token header (X-User-Token)")
 	return create

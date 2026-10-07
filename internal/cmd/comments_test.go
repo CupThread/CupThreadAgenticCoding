@@ -521,3 +521,98 @@ func TestCommentsListPageCapGuard(t *testing.T) {
 		t.Errorf("requests = %d, want exactly maxCommentPages (%d)", n, maxCommentPages)
 	}
 }
+
+// TestCommentsCreatePostsReplyFields covers the public comment create command
+// (previously untested): the POST path, the reply fields riding in the JSON
+// body, and the success confirmation.
+func TestCommentsCreatePostsReplyFields(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testComment("cmt_new_1", "thanks for the detail")))
+	}))
+	defer server.Close()
+
+	out, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
+		"--body", "thanks for the detail",
+		"--parent-id", "cmt_parent_1",
+		"--reply-to", "clerk_42",
+		"--app-key", "key_live_x",
+		"--user-token", "usr_1")
+	if err != nil {
+		t.Fatalf("comments create: %v", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1/feature-requests/fr_1/comments" {
+		t.Errorf("request = %s %s", gotMethod, gotPath)
+	}
+	for _, want := range []string{`"body":"thanks for the detail"`, `"parentId":"cmt_parent_1"`, `"replyToClerkId":"clerk_42"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("request body missing %q:\n%s", want, gotBody)
+		}
+	}
+	if !strings.Contains(out, "cmt_new_1") {
+		t.Errorf("output missing created comment id:\n%s", out)
+	}
+}
+
+// TestCommentsCreateInvalidParent covers the SEC-50 reply contract (issue
+// #135): a parentId that is not a visible comment on the request in the URL
+// is rejected with 400 invalid_parent, and the CLI must state the rule —
+// visible, same request — while preserving the wire code in the chain.
+func TestCommentsCreateInvalidParent(t *testing.T) {
+	var gotRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRequests++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"The comment you are replying to was not found on this feature request","code":"invalid_parent"}`))
+	}))
+	defer server.Close()
+
+	_, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
+		"--body", "a reply", "--parent-id", "cmt_foreign_1")
+	if err == nil {
+		t.Fatal("expected an invalid-parent error")
+	}
+	for _, want := range []string{
+		"cannot reply",
+		"no longer available",
+		"visible comment on feature request",
+		"hidden or deleted",
+		"different request",
+		"invalid_parent",
+		"The comment you are replying to was not found on this feature request",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+	if gotRequests != 1 {
+		t.Errorf("requests = %d, want exactly 1 (the losing reply creates nothing)", gotRequests)
+	}
+}
+
+// TestCommentsCreateOther400PassesThrough pins the mapping boundary: a 400
+// that is not invalid_parent (for example a schema validation failure) must
+// surface as the generic API error, not the reply-specific guidance.
+func TestCommentsCreateOther400PassesThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Validation failed","code":"validation_error"}`))
+	}))
+	defer server.Close()
+
+	_, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
+		"--body", "a comment", "--parent-id", "cmt_1")
+	if err == nil {
+		t.Fatal("expected a validation error")
+	}
+	if strings.Contains(err.Error(), "cannot reply") || strings.Contains(err.Error(), "no longer available") {
+		t.Errorf("error = %q, must not use the invalid_parent guidance for another 400 code", err)
+	}
+	if !strings.Contains(err.Error(), "Validation failed") {
+		t.Errorf("error = %q, want the server message", err)
+	}
+}
