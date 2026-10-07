@@ -72,6 +72,55 @@ func TestPostTokenSurfacesOAuthError(t *testing.T) {
 	}
 }
 
+// TestRevokeSendsClientIdentity pins the issue #144 contract: the revocation
+// endpoint authenticates the caller (RFC 7009 §2.1) and answers 400
+// invalid_request without a client_id, so Revoke must always send client_id
+// alongside the token. The CLI is a public client, so client_id alone must
+// suffice — no client_secret on the wire.
+func TestRevokeSendsClientIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != RevokePath {
+			t.Errorf("revoke path = %q, want %q", r.URL.Path, RevokePath)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if got := r.Form.Get("client_id"); got != FirstPartyClientID {
+			t.Errorf("client_id = %q, want %q", got, FirstPartyClientID)
+		}
+		if got := r.Form.Get("token"); got != "cpr_stored" {
+			t.Errorf("token = %q, want %q", got, "cpr_stored")
+		}
+		if got := r.Form.Get("client_secret"); got != "" {
+			t.Errorf("client_secret = %q, want none (public client)", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := Revoke(context.Background(), server.URL+RevokePath, FirstPartyClientID, "cpr_stored"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+}
+
+// TestRevokeSurfacesIdentityError pins that a revocation rejected on client
+// identity (issue #144: 400 invalid_request / invalid_client, 401
+// invalid_client) propagates as an APIError instead of being swallowed, so
+// `auth logout --revoke` can warn about it best-effort.
+func TestRevokeSurfacesIdentityError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"client_id is required"}`))
+	}))
+	defer server.Close()
+
+	err := Revoke(context.Background(), server.URL+RevokePath, FirstPartyClientID, "cpr_stored")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "invalid_request" {
+		t.Fatalf("expected APIError invalid_request, got %v", err)
+	}
+}
+
 // TestRefreshBoundsStalledTokenEndpoint pins the issue #56 regression: postForm
 // used to send via http.DefaultClient, which has no timeout, so an endpoint
 // that accepts the connection but never answers hung Refresh — and with it

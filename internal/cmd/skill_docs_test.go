@@ -348,10 +348,6 @@ func TestAPISkillOAuthServerDocs(t *testing.T) {
 	}
 }
 
-// TestAPISkillIssue152 pins the public-API contract synced for issue #152:
-// private image attachments, shipNotifyEmail, fail-closed OAuth consent,
-// 409 already_finalized, public-read 429s and offset clamps, and the
-// free|pro tier (business removed).
 // TestAPISkillDeviceFlowSlowDownEnforcement pins the issue #145 sync: the
 // device-token row must state that the server enforces RFC 8628 §3.5 —
 // polls inside the advertised interval get slow_down, every slow_down grows
@@ -370,6 +366,10 @@ func TestAPISkillDeviceFlowSlowDownEnforcement(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue152 pins the public-API contract synced for issue #152:
+// private image attachments, shipNotifyEmail, fail-closed OAuth consent,
+// 409 already_finalized, public-read 429s and offset clamps, and the
+// free|pro tier (business removed).
 func TestAPISkillIssue152(t *testing.T) {
 	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
@@ -394,6 +394,52 @@ func TestAPISkillIssue152(t *testing.T) {
 	}
 	if strings.Contains(doc, "upload_finalized_concurrently") {
 		t.Error("cupthread-api/SKILL.md uses the approximate code upload_finalized_concurrently; the wire code is already_finalized")
+	}
+}
+
+// TestAPISkillIssue144 pins the authenticated-revocation contract synced for
+// issue #144: the RFC 7009 revoke endpoint requires client identity — a
+// required client_id (400 invalid_request when missing, 400 invalid_client
+// for unknown clients, 401 invalid_client for confidential-client secret
+// failures), revokes only tokens issued to the authenticated client, and
+// answers 400 unsupported_token_type for values that are neither cpt_ nor
+// cpr_ tokens.
+func TestAPISkillIssue144(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"required `client_id`",
+		"`client_id is required`",
+		"`Unknown client`",
+		"invalid_client",
+		"`client_secret`",
+		"unsupported_token_type",
+		"revokes nothing",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#144 marker %q", marker)
+		}
+	}
+	if strings.Contains(doc, "optional `client_id`") {
+		t.Error("cupthread-api/SKILL.md still describes the revoke client_id as optional; issue #144 makes it required")
+	}
+}
+
+// TestAPISkillIssue146 pins the public-config contract synced for issue
+// #146 (SEC-518): the optional allowedEmbedOrigins embed allowlist on both
+// public config routes, its presence semantics, and its origin rules.
+func TestAPISkillIssue146(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"allowedEmbedOrigins",
+		"SEC-518",
+		"an empty array is never returned",
+		"at most 10 exact `https://` origins",
+		"frame-ancestors",
+		"Same `PublicAppConfig` (including `allowedEmbedOrigins`)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#146 marker %q", marker)
+		}
 	}
 }
 
