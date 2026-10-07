@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/httpx"
 )
 
 // Transient-failure retry defaults: a body-less GET/HEAD that answers
@@ -67,6 +69,13 @@ type Client struct {
 	// CLI leaves it nil in --json/-o yaml mode so the machine stream and
 	// stdout stay parse-clean.
 	Stderr io.Writer
+	// MaxResponseBytes caps how many bytes of any single response body the
+	// client buffers (REL-1): a declared oversize Content-Length is rejected
+	// unread and a chunked body stops allocating one byte past the cap. Zero
+	// or negative applies httpx.DefaultMaxResponseBytes; a size rejection
+	// surfaces as a wrapped *httpx.ResponseTooLargeError and is never
+	// retried.
+	MaxResponseBytes int64
 }
 
 // New creates a client for baseURL.
@@ -354,7 +363,10 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 // exponential backoff when the API answers 429/502/503/504, honoring a
 // server Retry-After when present; Client.NoRetry restores single-shot
 // semantics. Mutations (POST/PUT/PATCH/DELETE) — including the OAuth
-// token/refresh POSTs — are always a single attempt.
+// token/refresh POSTs — are always a single attempt. A response rejected
+// for exceeding the response-size cap (MaxResponseBytes, REL-1) is returned
+// immediately as a wrapped *httpx.ResponseTooLargeError — never retried,
+// whatever status it carried.
 func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query url.Values, headers map[string]string, body, out any) error {
 	data, err := encodeRequestBody(body)
 	if err != nil {
@@ -433,7 +445,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		if err != nil {
 			return fmt.Errorf("%s %s: %w", method, path, err)
 		}
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := c.readResponseBody(resp)
 		resp.Body.Close()
 		if err != nil {
 			return fmt.Errorf("%s %s: read response: %w", method, path, err)
@@ -449,6 +461,16 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 		}
 		return decodeResponse(method, path, resp, respBody, out, attempt+1)
 	}
+}
+
+// readResponseBody reads one response attempt under the client's
+// response-size cap (REL-1, issue #137): a declared oversize Content-Length
+// is rejected unread, and the streamed read stops one byte past the cap, so
+// even a chunked body cannot over-allocate. A size rejection returns a
+// wrapped *httpx.ResponseTooLargeError; the retry loop returns it without
+// spending another attempt.
+func (c *Client) readResponseBody(resp *http.Response) ([]byte, error) {
+	return httpx.ReadBounded(resp.Body, resp.ContentLength, c.MaxResponseBytes)
 }
 
 // idempotentAttempt reports whether a request is safe to replay when the
@@ -729,7 +751,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 		return fmt.Errorf("upload %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := c.readResponseBody(resp)
 	if err != nil {
 		return fmt.Errorf("upload %s: read response: %w", endpoint, err)
 	}

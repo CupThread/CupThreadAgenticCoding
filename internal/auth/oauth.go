@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +21,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/httpx"
 )
 
 // FirstPartyClientID is the pre-registered public client for the official CLI.
@@ -366,7 +367,18 @@ func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet
 // the way the timeout-less http.DefaultClient would.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// postForm posts the form and returns the response body, bounded like every
+// other response the CLI buffers (REL-1): OAuth token, device, and revocation
+// bodies are small JSON documents, so the shared CLI default is far more
+// than any legitimate endpoint needs. A size rejection surfaces as a wrapped
+// *httpx.ResponseTooLargeError naming the endpoint and the limit.
 func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
+	return postFormLimit(ctx, rawURL, form, httpx.DefaultMaxResponseBytes)
+}
+
+// postFormLimit is postForm with the response-size cap made explicit; tests
+// use it to pin the bounded-read behavior against small limits.
+func postFormLimit(ctx context.Context, rawURL string, form url.Values, limit int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
@@ -379,9 +391,9 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 		return nil, fmt.Errorf("POST %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpx.ReadBounded(resp.Body, resp.ContentLength, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("POST %s: read response: %w", rawURL, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var parsed struct {
