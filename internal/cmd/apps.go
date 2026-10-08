@@ -60,7 +60,7 @@ page until the response reports hasMore=false:
 			}
 			path := "/api/v1/public/apps/" + url.PathEscape(args[0]) + "/changelog"
 			var resp api.ListPublicChangelogResponse
-			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", path, q, nil, &resp); err != nil {
+			if err := A.unauthenticatedClient().Do(cmd.Context(), "GET", path, q, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -120,7 +120,7 @@ unauthenticated feed with 401.`,
 				q.Set("q", query)
 			}
 			var resp api.ListPublicFeatureRequestsResponse
-			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", "/api/v1/feature-requests", q, nil, &resp); err != nil {
+			if err := A.unauthenticatedClient().Do(cmd.Context(), "GET", "/api/v1/feature-requests", q, nil, &resp); err != nil {
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
 					return fmt.Errorf("this board requires sign-in; the CLI reads the public feed unauthenticated: %w", err)
@@ -187,7 +187,7 @@ over-budget caller gets 429.`,
 				return errors.New("pass an app key, or both --workspace-slug and --app-slug")
 			}
 			var config api.PublicAppConfig
-			if err := api.New(A.baseURL()).Do(cmd.Context(), "GET", path, nil, nil, &config); err != nil {
+			if err := A.unauthenticatedClient().Do(cmd.Context(), "GET", path, nil, nil, &config); err != nil {
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
 					return fmt.Errorf("app not found or not public: %w", err)

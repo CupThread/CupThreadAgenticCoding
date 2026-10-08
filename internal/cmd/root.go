@@ -235,6 +235,22 @@ func (a *app) buildClient() *api.Client {
 	return client
 }
 
+// unauthenticatedClient returns a credential-free client with the same
+// retry/notice wiring as buildClient's, for the public (pre-login) endpoints
+// and the auth login --token session probe. Hand-rolled api.New(...) clients
+// at those call sites silently dropped --no-retry/$CUPTHREAD_NO_RETRY and the
+// human-mode stderr retry notices (issue #202).
+func (a *app) unauthenticatedClient() *api.Client {
+	client := api.New(a.baseURL())
+	client.NoRetry = flagNoRetry || noRetryEnv()
+	// Retry notices go to stderr and only in human mode, so stdout and the
+	// machine-readable stream stay parse-clean.
+	if !a.structured() {
+		client.Stderr = os.Stderr
+	}
+	return client
+}
+
 // refreshAcrossProcesses rotates the stored OAuth pair without the
 // cross-process race in which one concurrent CLI invocation replays an
 // already-rotated refresh token; the server treats the replay as theft and
