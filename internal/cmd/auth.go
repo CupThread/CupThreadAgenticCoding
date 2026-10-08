@@ -134,7 +134,7 @@ func loginWithToken(ctx context.Context, token string) error {
 		return fmt.Errorf("invalid --token: %w", err)
 	}
 
-	probe := api.New(A.baseURL())
+	probe := A.unauthenticatedClient()
 	probe.Token = func(context.Context) (string, error) { return token, nil }
 	var me api.MeResponse
 	if err := probe.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
