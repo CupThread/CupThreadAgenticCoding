@@ -57,6 +57,9 @@ func newChangelogListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The server clamps the page size to 100 silently; clamp here
+			// too so an offset walk steps by the served size (issue #201).
+			limit = A.clampListLimit(limit, changelogPageSize)
 			var resp api.ListChangelogResponse
 			q := query(map[string]string{
 				"appId":  appID,
@@ -91,10 +94,14 @@ func newChangelogListCmd() *cobra.Command {
 			return nil
 		},
 	}
-	list.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server default 100)")
+	list.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server page cap 100)")
 	list.Flags().IntVar(&offset, "offset", 0, "Entries to skip for paging")
 	return list
 }
+
+// changelogPageSize is the changelog listing's server page cap (the route's
+// parseListPagination maxLimit); the list command clamps --limit to it.
+const changelogPageSize = 100
 
 func shortID(id string) string {
 	if len(id) > 12 {
@@ -262,9 +269,10 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Deleted changelog entry %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("deleted", args[0])
 			}
+			A.out.Printf("✓ Deleted changelog entry %s", args[0])
 			return nil
 		},
 	}
@@ -308,9 +316,10 @@ func newChangelogUnpublishCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/unpublish"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Unpublished %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("unpublished", args[0])
 			}
+			A.out.Printf("✓ Unpublished %s", args[0])
 			return nil
 		},
 	}

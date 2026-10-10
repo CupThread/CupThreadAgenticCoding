@@ -227,8 +227,8 @@ over-budget caller gets 429.`,
 
 func newAppsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List apps in the workspace",
+		Use:                   "list",
+		Short:                 "List apps in the workspace",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -273,8 +273,8 @@ func boolYesNo(b bool) string {
 func newAppsCreateCmd() *cobra.Command {
 	var name, storeURL string
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a new app in the workspace",
+		Use:                   "create",
+		Short:                 "Create a new app in the workspace",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
@@ -396,11 +396,11 @@ type appUseAppRef struct {
 
 func newAppsUpdateCmd() *cobra.Command {
 	var (
-		name, slug           string
+		name, slug                           string
 		storeURL, appStoreURL, googlePlayURL string
-		iconPath             string
-		public               bool
-		platforms            []string
+		iconPath                             string
+		public                               bool
+		platforms                            []string
 	)
 	update := &cobra.Command{
 		Use:   "update <app-id-or-slug>",
@@ -420,7 +420,7 @@ fails, the command reports "partially applied" — in --json/--yaml mode the
 error payload carries "applied" and "failed" lists so scripts can tell what
 went live.
 Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Issue #91: mirror the server's field rules locally so bad
 			// flag values fail before any request — the app lookup
@@ -762,7 +762,7 @@ func newAppSettingsCmd() *cobra.Command {
 The --input body (file, or "-" / "@" for stdin) is capped locally at the
 console route's 1 MB request-body limit; larger input fails with
 input_too_large before any request is sent.`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read and validate --input before anything else: an oversized or
 			// malformed body must fail locally, before any HTTP request
