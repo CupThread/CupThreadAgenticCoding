@@ -44,8 +44,8 @@ func newNotificationsCmd() *cobra.Command {
 func newNotificationsListCmd() *cobra.Command {
 	var limit, offset int
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List notifications (newest first)",
+		Use:                   "list",
+		Short:                 "List notifications (newest first)",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -103,8 +103,8 @@ func newNotificationsReadCmd() *cobra.Command {
 
 func newNotificationsReadAllCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "read-all",
-		Short: "Mark every notification as read",
+		Use:                   "read-all",
+		Short:                 "Mark every notification as read",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -126,8 +126,8 @@ func newNotificationPrefsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "prefs", Short: "Per-channel notification preferences"}
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "show",
-			Short: "Show notification preferences",
+			Use:                   "show",
+			Short:                 "Show notification preferences",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())

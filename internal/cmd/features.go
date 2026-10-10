@@ -54,8 +54,8 @@ func newFeaturesListCmd() *cobra.Command {
 	var sort string
 	var payerOnly bool
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List feature requests",
+		Use:                   "list",
+		Short:                 "List feature requests",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -219,8 +219,8 @@ func newFeaturesGetCmd() *cobra.Command {
 func newFeaturesCreateCmd() *cobra.Command {
 	var title, description, columnSlug, versionID string
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a feature request on behalf of a user",
+		Use:                   "create",
+		Short:                 "Create a feature request on behalf of a user",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if title == "" || description == "" {

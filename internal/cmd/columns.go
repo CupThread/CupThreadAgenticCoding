@@ -22,8 +22,8 @@ var columnKinds = []string{"pending_review", "normal", "done"}
 
 func newColumnsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List roadmap columns of the app",
+		Use:                   "list",
+		Short:                 "List roadmap columns of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -67,8 +67,8 @@ func newColumnsCreateCmd() *cobra.Command {
 	var name, slug, kind, color string
 	var visible bool
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a roadmap column",
+		Use:                   "create",
+		Short:                 "Create a roadmap column",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
@@ -195,8 +195,8 @@ func newVersionsCmd() *cobra.Command {
 
 func newVersionsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List versions of the app",
+		Use:                   "list",
+		Short:                 "List versions of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -227,8 +227,8 @@ func newVersionsCreateCmd() *cobra.Command {
 	var label, description, releasedAt string
 	var released bool
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a version",
+		Use:                   "create",
+		Short:                 "Create a version",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if label == "" {

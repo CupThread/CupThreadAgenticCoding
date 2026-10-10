@@ -74,8 +74,8 @@ func Execute() error {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "cupthread",
-		Short:         "Manage your CupThread projects from the command line",
+		Use:   "cupthread",
+		Short: "Manage your CupThread projects from the command line",
 		Long: `cupthread — the official CupThread CLI.
 
 Manage the projects you created on cupthread.com (workspaces, apps, inbox,
