@@ -117,6 +117,7 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 			}
 			A.cfg = cfg
 			A.cfgBaseline = cfg.Snapshot()
+			A.warnOAuthIssuerDivergence()
 			A.client = A.buildClient()
 			return nil
 		},
@@ -125,7 +126,7 @@ Log in with 'cupthread auth login' (OAuth via browser) or
 	pf := root.PersistentFlags()
 	pf.StringVarP(&flagOutput, "output", "o", "", "Output format for results: table, json or yaml (default table)")
 	pf.BoolVar(&flagJSON, "json", false, "Shorthand for --output json")
-	pf.StringVar(&flagBaseURL, "base-url", "", "API base URL (default $CUPTHREAD_BASE_URL, then https://api.cupthread.com)")
+	pf.StringVar(&flagBaseURL, "base-url", "", "API base URL (default $CUPTHREAD_BASE_URL, then https://api.cupthread.com); OAuth token refresh/revocation always target the credential's issuing server")
 	pf.StringVar(&flagConfig, "config", "", "Config file path (default $CUPTHREAD_CONFIG, then ~/.config/cupthread/config.json)")
 	pf.StringVarP(&flagWorkspace, "workspace", "w", "", "Workspace ID (default: saved default from 'workspaces use')")
 	pf.StringVarP(&flagApp, "app", "a", "", "App ID (default: saved default from 'apps use')")
@@ -185,6 +186,33 @@ func (a *app) baseURL() string {
 		return strings.TrimRight(a.cfg.BaseURL, "/")
 	}
 	return config.DefaultBaseURL
+}
+
+// warnOAuthIssuerDivergence surfaces a deliberate base-URL override that
+// disagrees with the server that issued the stored OAuth credential: ordinary
+// API calls follow the override, while token refresh and revocation stay
+// pinned to the issuer (issue #191). One stderr warning per invocation, in
+// every output mode, so neither the human nor a parsing agent mistakes a
+// retargeted run for one talking to the credential's own server. It stays
+// quiet without an explicit --base-url/$CUPTHREAD_BASE_URL override (the
+// effective URL then matches the issuer by construction) and while
+// $CUPTHREAD_TOKEN keeps the stored credential inactive.
+func (a *app) warnOAuthIssuerDivergence() {
+	if flagBaseURL == "" && os.Getenv("CUPTHREAD_BASE_URL") == "" {
+		return
+	}
+	if config.EnvToken() != "" {
+		return
+	}
+	authState := a.cfg.Auth
+	if authState == nil || authState.Method != "oauth" {
+		return
+	}
+	effective, issuer := a.baseURL(), authState.IssuerBaseURL(a.cfg.BaseURL)
+	if effective == issuer {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: API requests target %s, but the stored OAuth credential was issued by %s — API calls follow the override while token refresh and revocation stay pinned to the issuing server\n", effective, issuer)
 }
 
 // buildClient wires the API client with a token provider that transparently
@@ -258,7 +286,10 @@ func (a *app) unauthenticatedClient() *api.Client {
 // future invocation (issue #62). It holds an exclusive lock on
 // <config>.lock, re-reads the on-disk pair under the lock so a rotation
 // another process already committed is adopted instead of replayed, and
-// persists the rotated pair merged onto the latest on-disk config.
+// persists the rotated pair merged onto the latest on-disk config. The token
+// endpoint is resolved from the credential's issuing server, never from the
+// effective --base-url override: the refresh token must only ever travel to
+// the server that minted it (issue #191).
 func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (string, error) {
 	lock, err := config.LockConfig(a.cfgPath)
 	if err != nil {
@@ -295,7 +326,7 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 		refreshToken = d.RefreshToken
 	}
 
-	_, tokenURL, _, _ := auth.Endpoints(a.baseURL())
+	_, tokenURL, _, _ := auth.Endpoints(snap.IssuerBaseURL(a.cfg.BaseURL))
 	refreshCtx, cancel := context.WithTimeout(ctx, oauthRefreshTimeout)
 	defer cancel()
 	set, err := auth.Refresh(refreshCtx, tokenURL, snap.ClientID, refreshToken)
@@ -374,7 +405,12 @@ func (a *app) acknowledgeAuth() {
 	a.cfgBaseline.Auth = &authCopy
 }
 
-// applyTokenSet stores a fresh OAuth token pair on the config.
+// applyTokenSet stores a fresh OAuth token pair on the config. It deliberately
+// leaves Auth.IssuedBaseURL untouched: the only caller-driven stamping happens
+// at login (rememberLoginBaseURL), because during a transparent refresh the
+// effective base URL may be a deliberate override while the credential's
+// issuer never changes — re-stamping here would aim the next refresh at the
+// override host (issue #191).
 func (a *app) applyTokenSet(set *auth.TokenSet) {
 	method := "oauth"
 	prefix := ""

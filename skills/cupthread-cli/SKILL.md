@@ -73,12 +73,20 @@ endpoint in the config until `auth logout`, so later invocations without the fla
 instead of silently falling back to production. Flags and env still override it per invocation; when a
 non-default endpoint is stored, `auth status` shows it as "Credential issued for".
 
+The credential's issuing server is pinned in the config (`issuedBaseUrl` on the stored login) and never
+changes with later overrides: transparent token refresh and `auth logout --revoke` always talk to the
+server that issued the credential, so a wrong or different `--base-url`/`$CUPTHREAD_BASE_URL` can never
+capture the long-lived refresh token. While an override points somewhere else, every invocation prints
+one warning on stderr ("API requests target …, but the stored OAuth credential was issued by …") —
+ordinary API calls follow the override, the credential protocol does not.
+
 Switching accounts: `cupthread auth logout` clears the credential plus the saved default workspace,
 per-workspace app defaults and base URL (back to pristine first-run state); `cupthread auth login`
 drops saved defaults the new account cannot see (with a warning) instead of silently targeting the
 previous user's workspace. Add `--revoke` to also invalidate the stored OAuth token pair server-side
-(best-effort POST of the refresh token to the RFC 7009 `/api/v1/oauth/revoke` endpoint, which
-cascades to the paired access token). PATs cannot be revoked from the CLI — the token-management API
+(best-effort POST of the refresh token to the issuing server's RFC 7009 `/api/v1/oauth/revoke`
+endpoint, which cascades to the paired access token). PATs cannot be revoked from the CLI — the
+token-management API
 requires an interactive Console session — so `--revoke` then prints the Console path
 (Settings → API Tokens) instead of sending a request. The interactive OAuth flows store the token
 pair as soon as the server issues it; the post-login session check is advisory — if it fails, login
@@ -109,7 +117,9 @@ successful (exit 0) mutation as a bug and report it.
 - `-w, --workspace <id>`: Target workspace ID (overrides default).
 - `-a, --app <id>`: Target app ID (overrides default).
 - `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`; a non-default login is
-  remembered until `auth logout`).
+  remembered until `auth logout`). OAuth token refresh and `logout --revoke` ignore the override and
+  always target the credential's issuing server; a diverging override prints one stderr warning per
+  invocation.
 - `--no-retry`: Disable automatic retry/backoff on transient failures. By default body-less GET requests
   that answer 429/502/503/504 are retried up to 3 times with capped exponential backoff (honoring
   `Retry-After` when present), so a mid-batch blip no longer aborts a command; mutations (POST/PUT/

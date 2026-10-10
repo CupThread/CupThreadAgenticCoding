@@ -33,16 +33,20 @@ const (
 	invalidGrantBd = `{"error":"invalid_grant","error_description":"Refresh token has been revoked"}`
 )
 
-// seedOAuthConfig writes an oauth config with the given pair to cfgPath.
-func seedOAuthConfig(t *testing.T, cfgPath, access, refresh string, expires time.Time) {
+// seedOAuthConfig writes an oauth config with the given pair to cfgPath,
+// pinned to issuerURL as the credential's issuing server — the config a real
+// login produces, and the origin the transparent refresh must target
+// regardless of any base-URL override.
+func seedOAuthConfig(t *testing.T, cfgPath, issuerURL, access, refresh string, expires time.Time) {
 	t.Helper()
 	cfg := &config.Config{
 		Auth: &config.Auth{
-			Method:       "oauth",
-			AccessToken:  access,
-			RefreshToken: refresh,
-			ExpiresAt:    expires.UTC().Format(time.RFC3339),
-			ClientID:     auth.FirstPartyClientID,
+			Method:        "oauth",
+			AccessToken:   access,
+			RefreshToken:  refresh,
+			ExpiresAt:     expires.UTC().Format(time.RFC3339),
+			ClientID:      auth.FirstPartyClientID,
+			IssuedBaseURL: issuerURL,
 		},
 	}
 	if err := cfg.Save(cfgPath); err != nil {
@@ -106,10 +110,10 @@ func TestTokenProviderSkipsRefreshWhenDiskPairChanged(t *testing.T) {
 	withRaceTestEnv(t, server.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
 	// Another process rotated and persisted the pair after our process
 	// started: the disk now holds a newer pair than the one we loaded.
-	seedOAuthConfig(t, cfgPath, "cpt_disk_access", "cpt_disk_refresh", time.Now().Add(time.Hour))
+	seedOAuthConfig(t, cfgPath, server.URL, "cpt_disk_access", "cpt_disk_refresh", time.Now().Add(time.Hour))
 
 	a := raceTestApp(t, cfgPath, server.URL)
 	token, err := a.client.Token(context.Background())
@@ -145,7 +149,7 @@ func TestTokenProviderCrossProcessLockSingleRefresh(t *testing.T) {
 	withRaceTestEnv(t, server.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
 
 	// Both "processes" load the same stale pair before either refreshes.
 	var apps []*app
@@ -199,12 +203,13 @@ func TestTokenProviderCrossProcessLockSingleRefresh(t *testing.T) {
 func TestTokenProviderInvalidGrantAdoptsNewerDiskPair(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	var tokenPosts atomic.Int32
+	var issuerURL string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/oauth/token" {
 			tokenPosts.Add(1)
 			// The winning process persisted its fresh pair while our
 			// refresh was in flight, then the server rejected our replay.
-			seedOAuthConfig(t, cfgPath, "cpt_winner_access", "cpt_winner_refresh", time.Now().Add(time.Hour))
+			seedOAuthConfig(t, cfgPath, issuerURL, "cpt_winner_access", "cpt_winner_refresh", time.Now().Add(time.Hour))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(invalidGrantBd))
@@ -213,9 +218,10 @@ func TestTokenProviderInvalidGrantAdoptsNewerDiskPair(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
+	issuerURL = server.URL
 	withRaceTestEnv(t, server.URL)
 
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
 	a := raceTestApp(t, cfgPath, server.URL)
 
 	token, err := a.client.Token(context.Background())
@@ -253,7 +259,7 @@ func TestTokenProviderInvalidGrantReportsRevokedChain(t *testing.T) {
 	withRaceTestEnv(t, server.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
 	a := raceTestApp(t, cfgPath, server.URL)
 
 	_, err := a.client.Token(context.Background())
@@ -289,7 +295,7 @@ func TestTokenProviderRefreshesOnceWhenDiskUnchanged(t *testing.T) {
 	withRaceTestEnv(t, server.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
 	// A concurrent process set a default workspace after our process loaded
 	// the config: the refresh's merge-save must not revert it.
 	withDisk, err := config.Load(cfgPath)
@@ -351,7 +357,7 @@ func TestTokenProviderNoRefreshWhenTokenValid(t *testing.T) {
 	withRaceTestEnv(t, server.URL)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	seedOAuthConfig(t, cfgPath, staleAccess, staleRefresh, time.Now().Add(10*time.Minute))
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(10*time.Minute))
 	a := raceTestApp(t, cfgPath, server.URL)
 
 	token, err := a.client.Token(context.Background())
