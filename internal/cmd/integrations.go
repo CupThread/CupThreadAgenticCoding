@@ -182,7 +182,7 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if A.structured() {
 					return A.out.Structured(resp)
 				}
-				A.out.Printf("%s", resp.URL)
+				A.out.PrintfSafe("%s", resp.URL)
 				return nil
 			},
 		},
@@ -452,7 +452,7 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 				if A.structured() {
 					return A.out.Structured(resp)
 				}
-				A.out.Printf("%s", resp.URL)
+				A.out.PrintfSafe("%s", resp.URL)
 				return nil
 			},
 		},

@@ -179,6 +179,16 @@ func (w *Writer) Printf(format string, args ...any) {
 	fmt.Fprintf(w.w, format+"\n", args...)
 }
 
+// PrintfSafe writes a formatted human line that carries server-derived text:
+// the formatted line passes through the strict StripTerminalControls
+// stripper, so a hostile value can neither emit OSC/SGR escape sequences nor
+// forge extra output lines (tab and newline included). It is the human-line
+// counterpart of the Table-cell sanitizer for call sites that bypass Table;
+// Structured output stays byte-faithful.
+func (w *Writer) PrintfSafe(format string, args ...any) {
+	fmt.Fprintln(w.w, StripTerminalControls(fmt.Sprintf(format, args...)))
+}
+
 func joinTabs(fields []string) string {
 	out := ""
 	for i, f := range fields {

@@ -83,7 +83,7 @@ func newBillingCheckoutCmd() *cobra.Command {
 				}
 				return errors.New(msg)
 			}
-			A.out.Printf("Checkout URL: %s", *resp.CheckoutURL)
+			A.out.PrintfSafe("Checkout URL: %s", *resp.CheckoutURL)
 			if open {
 				if err := auth.OpenBrowser(*resp.CheckoutURL); err != nil {
 					A.out.Printf("(could not open a browser; use the URL above)")
@@ -123,7 +123,7 @@ func newBillingPortalCmd() *cobra.Command {
 				}
 				return errors.New(msg)
 			}
-			A.out.Printf("Portal URL: %s", *resp.PortalURL)
+			A.out.PrintfSafe("Portal URL: %s", *resp.PortalURL)
 			if open {
 				if err := auth.OpenBrowser(*resp.PortalURL); err != nil {
 					A.out.Printf("(could not open a browser; use the URL above)")

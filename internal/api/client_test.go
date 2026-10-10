@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // requestIDPattern mirrors the API's accepted correlation-ID charset and
@@ -1091,4 +1092,101 @@ func TestUploadAppIconCapturesValidationDetails(t *testing.T) {
 	if len(apiErr.Details) == 0 {
 		t.Error("Details = empty, want the raw server JSON retained")
 	}
+}
+
+// assertNoTerminalControls is the strict error-text assertion (issue #183):
+// no C0 control (tab and newline included), DEL, or C1 control may survive in
+// a rendered APIError — the code points that drive OSC/SGR sequences, forge
+// output lines, or rewrite them.
+func assertNoTerminalControls(t *testing.T, s string) {
+	t.Helper()
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("text contains control rune %U: %q", r, s)
+			return
+		}
+	}
+}
+
+// TestAPIErrorMessageStripsTerminalControls pins the issue #183 construction
+// contract: the `error` text of a non-2xx JSON response — a protocol-legal
+// payload whose \u001b escapes decode into real ESC bytes — must reach
+// APIError.Message and Error() with every terminal control stripped while the
+// visible text survives, on every command that prints an API error.
+func TestAPIErrorMessageStripsTerminalControls(t *testing.T) {
+	hostile := "\x1b]8;;https://evil.example/verify\x1b\\CupThread Security\x1b]8;;\x1b\\" +
+		" \x1b[31mACCOUNT COMPROMISED\x1b[0m\r✓ Forged success line\u009b31mC1 SGR\u009b0m"
+	payload, err := json.Marshal(map[string]string{"error": hostile, "code": "bad"})
+	if err != nil {
+		t.Fatalf("marshal hostile payload: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err = client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	assertNoTerminalControls(t, apiErr.Message)
+	assertNoTerminalControls(t, apiErr.Error())
+	for _, want := range []string{"CupThread Security", "ACCOUNT COMPROMISED", "Forged success line", "C1 SGR"} {
+		if !strings.Contains(apiErr.Message, want) {
+			t.Errorf("Message %q lost visible text %q", apiErr.Message, want)
+		}
+	}
+}
+
+// TestUploadAppIconErrorBodySanitizedAndTruncated pins the issue #183
+// multipart fallback: a non-JSON error body (e.g. an HTML page from a proxy)
+// becomes Message sanitized and capped — no terminal controls, at most
+// errorMessageMaxRunes runes before the ellipsis.
+func TestUploadAppIconErrorBodySanitizedAndTruncated(t *testing.T) {
+	t.Run("non-JSON body with escape bytes is sanitized", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("<html>\x1b]8;;https://evil.example\x1b\\click\u009d me\x07</html>"))
+		}))
+		defer server.Close()
+
+		client := New(server.URL)
+		_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("png"))
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got %v", err)
+		}
+		assertNoTerminalControls(t, apiErr.Message)
+		if !strings.Contains(apiErr.Message, "click me") {
+			t.Errorf("Message = %q, want the visible body text", apiErr.Message)
+		}
+	})
+
+	t.Run("oversized body is truncated", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("gateway says: " + strings.Repeat("A", 500) + "\x1b[31mred\x1b[0m"))
+		}))
+		defer server.Close()
+
+		client := New(server.URL)
+		_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("png"))
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got %v", err)
+		}
+		if got := utf8.RuneCountInString(apiErr.Message); got != errorMessageMaxRunes+1 {
+			t.Errorf("Message length = %d runes, want %d (cap + ellipsis)", got, errorMessageMaxRunes+1)
+		}
+		if !strings.HasSuffix(apiErr.Message, "…") {
+			t.Errorf("Message = %q, want the ellipsis-marked truncation", apiErr.Message)
+		}
+		if !strings.HasPrefix(apiErr.Message, "gateway says: AAA") {
+			t.Errorf("Message = %q, want the body prefix preserved", apiErr.Message)
+		}
+		assertNoTerminalControls(t, apiErr.Message)
+	})
 }

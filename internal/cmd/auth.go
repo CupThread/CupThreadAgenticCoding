@@ -11,6 +11,7 @@ import (
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/CupThread/CupThreadAgenticCoding/internal/auth"
 	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -201,6 +202,16 @@ func loginWithPKCE(ctx context.Context) error {
 	return finishOAuthLogin(ctx, set, loginResult{Method: "oauth"})
 }
 
+// printDeviceProgress writes the device-flow verification URI and user code
+// to stderr. Both come from the device-authorization endpoint, so they pass
+// through the strict terminal-control stripper before reaching the terminal;
+// the final login result still echoes them verbatim for agents relaying them
+// to a human.
+func printDeviceProgress(verificationURI, userCode string) {
+	fmt.Fprintf(os.Stderr, "First, open:  %s\n", output.StripTerminalControls(verificationURI))
+	fmt.Fprintf(os.Stderr, "Enter code:   %s\n", output.StripTerminalControls(userCode))
+}
+
 func loginWithDevice(ctx context.Context) error {
 	_, tokenURL, deviceAuthorizeURL, _ := auth.Endpoints(A.baseURL())
 	start, err := auth.StartDevice(ctx, deviceAuthorizeURL, tokenURL, auth.FirstPartyClientID)
@@ -211,8 +222,7 @@ func loginWithDevice(ctx context.Context) error {
 	// go to stderr in both modes so stdout carries at most one
 	// machine-readable document — the final login result, which also
 	// echoes the URI and code for agents relaying them to a human.
-	fmt.Fprintf(os.Stderr, "First, open:  %s\n", start.VerificationURI)
-	fmt.Fprintf(os.Stderr, "Enter code:   %s\n", start.UserCode)
+	printDeviceProgress(start.VerificationURI, start.UserCode)
 	set, err := start.Wait(ctx)
 	if err != nil {
 		return err
