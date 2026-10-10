@@ -112,6 +112,28 @@ func (a *app) warnf(format string, args ...any) {
 	a.out.Printf(format, args...)
 }
 
+// clampListLimit normalizes a console listing's --limit the way the server's
+// parseListPagination silently does: below 1 becomes 1 (the server would
+// degrade 0 to the route default, a different page size than requested) and
+// above the route's maxLimit becomes the cap. features list has clamped
+// locally since #178; the other console listings share this helper so an
+// offset-stepping walk advances by the page size the server actually serves
+// instead of silently skipping rows (issue #201). The rewrite is announced
+// through warnf, so structured stdout stays a single document.
+func (a *app) clampListLimit(requested, maxLimit int) int {
+	effective := requested
+	switch {
+	case requested < 1:
+		effective = 1
+	case requested > maxLimit:
+		effective = maxLimit
+	}
+	if effective != requested {
+		a.warnf("⚠ --limit %d is outside the server's 1-%d page range; requesting %d instead", requested, maxLimit, effective)
+	}
+	return effective
+}
+
 // decodeStrictRawJSON validates that data holds exactly one JSON value and
 // returns it verbatim as json.RawMessage (only trailing whitespace is
 // allowed). Decoding into any instead would rebuild every number through

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -452,5 +453,61 @@ func TestInboxBulkTriage(t *testing.T) {
 	if _, err := runRoot(t, emptyServer.URL, args...); err == nil ||
 		!strings.Contains(err.Error(), "at most 50") {
 		t.Fatalf("error = %v, want at-most-50 message", err)
+	}
+}
+
+// TestInboxListClampsLimit pins the local --limit clamp on the submissions
+// listing (issue #201): the server clamps a parsed page size to its
+// parseListPagination maxLimit (200) silently, so an offset walk stepped by a
+// larger requested limit would skip rows without any hint. The CLI clamps
+// first — over-cap to 200, 0/negative to 1 (matching features list) — and
+// announces the rewrite through warnf: table mode keeps it on stdout, --json
+// mode moves it to stderr so stdout stays a single document. The 200 boundary
+// passes through verbatim with no warning.
+func TestInboxListClampsLimit(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var captured capturedRequest
+	server := inboxServer(t, http.StatusOK, `{"submissions": [], "total": 0}`, &captured)
+	defer server.Close()
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"500", "200"},
+		{"0", "1"},
+		{"-5", "1"},
+	} {
+		out, err := runRoot(t, server.URL, "inbox", "list", "--workspace", "ws_1", "--limit", tc.requested)
+		if err != nil {
+			t.Fatalf("inbox list --limit %s: %v", tc.requested, err)
+		}
+		if got := captured.Query.Get("limit"); got != tc.sent {
+			t.Errorf("--limit %s sent limit = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --limit "+tc.requested+" is outside the server's 1-200 page range") {
+			t.Errorf("--limit %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "inbox", "list", "--workspace", "ws_1", "--limit", "200")
+	if err != nil {
+		t.Fatalf("inbox list --limit 200: %v", err)
+	}
+	if got := captured.Query.Get("limit"); got != "200" {
+		t.Errorf("boundary --limit 200 sent limit = %q, want 200", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --limit 200 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"inbox", "list", "--workspace", "ws_1", "--limit", "500", "--json")
+	if err != nil {
+		t.Fatalf("inbox list --json --limit 500: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --limit 500 is outside the server's 1-200 page range; requesting 200 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }

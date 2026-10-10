@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -421,5 +422,60 @@ func TestChangelogUpdateScheduleAtValueSendsString(t *testing.T) {
 	}
 	if string(gotBody) != `{"scheduledAt":"2026-10-01T09:00:00Z"}` {
 		t.Errorf("request body = %s, want {\"scheduledAt\":\"2026-10-01T09:00:00Z\"}", gotBody)
+	}
+}
+
+// TestChangelogListClampsLimit pins the local --limit clamp on the changelog
+// listing (issue #201): the server's parseListPagination caps this route's
+// page at 100 (not the 200 of the other console listings), so the CLI clamps
+// first — over-cap to 100, 0/negative to 1 (matching features list) — and
+// announces the rewrite: stdout in table mode, stderr in --json mode, and
+// nothing at all on the verbatim 100 boundary.
+func TestChangelogListClampsLimit(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server, _, gotQuery := changelogServer(t, changelogListFixture)
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"500", "100"},
+		{"101", "100"},
+		{"0", "1"},
+		{"-5", "1"},
+	} {
+		out, err := runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+			"--limit", tc.requested)
+		if err != nil {
+			t.Fatalf("changelog list --limit %s: %v", tc.requested, err)
+		}
+		if got := gotQuery.Get("limit"); got != tc.sent {
+			t.Errorf("--limit %s sent limit = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --limit "+tc.requested+" is outside the server's 1-100 page range") {
+			t.Errorf("--limit %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+		"--limit", "100")
+	if err != nil {
+		t.Fatalf("changelog list --limit 100: %v", err)
+	}
+	if got := gotQuery.Get("limit"); got != "100" {
+		t.Errorf("boundary --limit 100 sent limit = %q, want 100", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --limit 100 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"changelog", "list", "--workspace", "ws_1", "--app", "app_1", "--limit", "500", "--json")
+	if err != nil {
+		t.Fatalf("changelog list --json --limit 500: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --limit 500 is outside the server's 1-100 page range; requesting 100 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }
