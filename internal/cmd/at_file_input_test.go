@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -80,13 +82,16 @@ func TestReadInputFileAtSyntax(t *testing.T) {
 	t.Run("@missing names the path without the sigil", func(t *testing.T) {
 		missing := filepath.Join(dir, "missing.json")
 		_, err := readInputFile("@"+missing, maxConsoleBodyBytes)
-		if err == nil {
-			t.Fatal("@missing read succeeded, want a filesystem error")
+		// The not-exist wording is OS-specific ("no such file or directory"
+		// vs Windows' "The system cannot find the file specified."), so match
+		// on the sentinel, not the text.
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("@missing read err = %v, want a not-exist error", err)
 		}
-		if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "no such file or directory") {
+		if !strings.Contains(err.Error(), missing) {
 			t.Errorf("error = %q, want it to name %s", err, missing)
 		}
-		if strings.Contains(err.Error(), "@") {
+		if strings.Contains(err.Error(), "@"+missing) {
 			t.Errorf("error = %q, want the @ sigil stripped from the named path", err)
 		}
 	})
