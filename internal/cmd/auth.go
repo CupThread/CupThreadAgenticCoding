@@ -64,11 +64,17 @@ issuer: token refresh and 'auth logout --revoke' always target that server
 even when an override retargets ordinary API calls (a divergence prints one
 warning on stderr).
 
+$CUPTHREAD_TOKEN outranks any stored credential: while it is set, a login
+here is saved but stays inactive — every command keeps authenticating with
+the environment token — and this command says so with a warning.
+
 With --json/--output yaml every method prints a single structured document
 on stdout — {method, email, tokenPrefix, baseUrl} where method is "token",
 "oauth" or "device" — and all progress (browser URL, device-flow
 verification URI and user code, context-reconcile warnings) moves to
-stderr. The device payload also echoes verificationUri and userCode.`,
+stderr. The device payload also echoes verificationUri and userCode, and
+effectiveCredential is set to "env ($CUPTHREAD_TOKEN)" when the
+environment token is overriding the saved login.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if token != "" {
@@ -99,11 +105,22 @@ type loginResult struct {
 	// waited for.
 	VerificationURI string `json:"verificationUri,omitempty"`
 	UserCode        string `json:"userCode,omitempty"`
+	// EffectiveCredential names what requests actually authenticate as after
+	// this login: "env ($CUPTHREAD_TOKEN)" when the environment token
+	// overrides the just-saved credential — the stored login is inactive
+	// until the variable is unset (issue #184). Empty means the saved login
+	// itself is effective.
+	EffectiveCredential string `json:"effectiveCredential,omitempty"`
 }
 
 // reportLogin emits the login outcome: one JSON/YAML document on stdout in
-// structured mode, the human confirmation line otherwise.
+// structured mode, the human confirmation line otherwise. Either way the
+// $CUPTHREAD_TOKEN override is disclosed when set: the confirmation line
+// would otherwise describe a credential that is not, and will not be, in
+// effect (issue #184).
 func (a *app) reportLogin(res loginResult) error {
+	res.EffectiveCredential = envCredentialOverride()
+	a.warnEnvTokenOverride("the freshly saved login stays inactive until it is unset")
 	if a.structured() {
 		return a.out.Structured(res)
 	}
@@ -234,9 +251,12 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 		if A.structured() {
 			res.TokenPrefix = A.cfg.Auth.TokenPrefix
 			res.BaseURL = A.baseURL()
+			res.EffectiveCredential = envCredentialOverride()
+			A.warnEnvTokenOverride("the freshly saved login stays inactive until it is unset")
 			return A.out.Structured(res)
 		}
 		A.out.Printf("✓ Logged in (OAuth, token %s…) at %s", A.cfg.Auth.TokenPrefix, A.baseURL())
+		A.warnEnvTokenOverride("the freshly saved login stays inactive until it is unset")
 		return nil
 	}
 	if reconcileWorkspaceContext(&me, A.warnf) {
@@ -287,6 +307,10 @@ Logout also clears the saved default workspace, per-workspace app defaults
 and base URL, so the next login starts from a clean slate instead of
 inheriting the previous account's context.
 
+$CUPTHREAD_TOKEN is not touched: while it is set it still authenticates every
+command after logout, so the confirmation carries a warning — unset it to
+fully de-provision this machine.
+
 By default this only clears local state. Pass --revoke to also invalidate
 the stored credential server-side before it is removed: for an OAuth login
 the CLI posts the stored refresh token to the issuing server's RFC 7009
@@ -302,7 +326,8 @@ them (Settings → API Tokens) instead of sending a request that cannot
 succeed.
 
 With --json/--output yaml, stdout carries a single
-{"loggedOut":true,"configPath":…,"cleared":[…]} document; revocation
+{"loggedOut":true,"configPath":…,"cleared":[…]} document (envOverride names
+$CUPTHREAD_TOKEN when it is still authenticating every command); revocation
 notices and warnings go to stderr so scripts can parse stdout directly.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -326,11 +351,13 @@ notices and warnings go to stderr so scripts can parse stdout directly.`,
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
+			A.warnEnvTokenOverride("unset it to fully de-provision this machine")
 			if A.structured() {
 				return A.out.Structured(logoutResult{
-					LoggedOut:  true,
-					ConfigPath: A.cfgPath,
-					Cleared:    cleared,
+					LoggedOut:   true,
+					ConfigPath:  A.cfgPath,
+					Cleared:     cleared,
+					EnvOverride: envTokenOverrideName(),
 				})
 			}
 			A.out.Printf("✓ Credentials removed from %s", A.cfgPath)
@@ -400,6 +427,49 @@ type logoutResult struct {
 	LoggedOut  bool     `json:"loggedOut"`
 	ConfigPath string   `json:"configPath"`
 	Cleared    []string `json:"cleared,omitempty"`
+	// EnvOverride names the environment variable that still authenticates
+	// every command after this logout: the stored credential is gone, but the
+	// machine is not de-provisioned while the variable lives on (issue #184).
+	// Empty when no override is set.
+	EnvOverride string `json:"envOverride,omitempty"`
+}
+
+// envTokenOverrideName returns the environment variable outranking the stored
+// credential, or "" when none is set — the value logoutResult.EnvOverride
+// carries so structured consumers can tell a de-provisioned machine from one
+// where $CUPTHREAD_TOKEN still authenticates every command (issue #184).
+func envTokenOverrideName() string {
+	if config.EnvToken() == "" {
+		return ""
+	}
+	return "CUPTHREAD_TOKEN"
+}
+
+// envCredentialOverride is the loginResult.EffectiveCredential value for a
+// login that stored a credential while $CUPTHREAD_TOKEN is set; empty means
+// the stored login itself is what requests use (issue #184).
+func envCredentialOverride() string {
+	name := envTokenOverrideName()
+	if name == "" {
+		return ""
+	}
+	return "env ($" + name + ")"
+}
+
+// warnEnvTokenOverride discloses, on stderr in every output mode, that
+// $CUPTHREAD_TOKEN still outranks the credential this command just stored or
+// cleared: logout's "Credentials removed" would otherwise claim a
+// de-provisioning that has not happened, and login's confirmation would
+// describe a credential that is not in effect (issue #184). It bypasses
+// warnf so the warning reaches stderr in table mode too — the moment the
+// misleading action runs is exactly when the operator must hear about it.
+// Disclosure only: the command still succeeds with exit code 0, and in
+// structured mode stdout keeps carrying exactly one document.
+func (a *app) warnEnvTokenOverride(consequence string) {
+	if config.EnvToken() == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "⚠ $CUPTHREAD_TOKEN is set and still authenticates every command — %s\n", consequence)
 }
 
 // reconcileWorkspaceContext drops workspace context inherited from a previous

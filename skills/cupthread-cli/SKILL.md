@@ -57,6 +57,13 @@ cupthread auth login --token cpt_...
 export CUPTHREAD_TOKEN="cpt_..."
 ```
 
+`$CUPTHREAD_TOKEN` outranks any stored credential, so while it is set a fresh
+`auth login` is saved but stays inactive and `auth logout` alone does not
+de-provision the machine. Both commands disclose the override when it is set
+(a stderr warning; `effectiveCredential` / `envOverride` fields in the
+structured payloads) — unset the variable to make the stored login effective
+or finish de-provisioning.
+
 Check current authentication status:
 ```sh
 cupthread auth status
