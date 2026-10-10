@@ -120,10 +120,11 @@ func Load(path string) (*Config, error) {
 // (created 0600 — the file holds access tokens), is synced to disk, and is
 // renamed over the destination, so a reader always observes either the old
 // or the new complete document and concurrent saves neither interleave nor
-// fail on a shared temporary name (issue #139). Save is atomic but not
-// serialized across processes: callers that mutate shared config state must
-// go through Update (or hold LockConfig themselves) so independent changes
-// cannot be lost.
+// fail on a shared temporary name (issue #139); the replace itself retries
+// the transient races Windows reports between concurrent renames
+// (replace_windows.go). Save is atomic but not serialized across processes:
+// callers that mutate shared config state must go through Update (or hold
+// LockConfig themselves) so independent changes cannot be lost.
 func (c *Config) Save(path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -151,10 +152,7 @@ func (c *Config) Save(path string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close config: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace config: %w", err)
-	}
-	return nil
+	return replaceConfig(tmpName, path)
 }
 
 // Snapshot returns a deep copy of c, for use as the baseline a later

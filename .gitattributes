@@ -1,0 +1,6 @@
+# Go sources are gated byte-exactly against gofmt — the ci.yml gofmt step and
+# internal/release's TestModuleTreeIsGofmtClean compare on-disk bytes with
+# gofmt's canonical output, which uses LF. Force LF checkouts everywhere so a
+# Windows clone (core.autocrlf defaults to true there) does not turn every
+# file into a CRLF variant and fail the gate on all 100+ sources at once.
+*.go text eol=lf
