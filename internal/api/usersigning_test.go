@@ -101,6 +101,13 @@ func goldenSigningCases(t *testing.T) []goldenCase {
 			canonical:   "cpt-user-attrs-v1\n" + testAppKey + "\n" + testToken + "\nunset\nunset\nunset\njpy\n1758000000",
 			signature:   "b227f3014d7e00747cb2054a9d53fe60b5a015f36999d7ca2ad02d817effba0e",
 		},
+		{
+			name:        "issue #196 golden: mrr 99 and lowercase currency sign as sent",
+			body:        `{"isPaying":true,"mrr":99,"currency":"usd","userToken":"3fa85f64-5717-4562-b3fc-2c963f66afa6"}`,
+			headerToken: testToken,
+			canonical:   "cpt-user-attrs-v1\n" + testAppKey + "\n" + testToken + "\ntrue\nunset\n99\nusd\n1758000000",
+			signature:   "06a006bb698c0c1845578ab27889156b2df02beb628205dae8d70140ef340208",
+		},
 	}
 }
 
@@ -207,5 +214,106 @@ func TestSignSDKAttributePayloadSignatureShape(t *testing.T) {
 	}
 	if strings.ToLower(signature) != signature {
 		t.Errorf("signature %q is not lowercase hex", signature)
+	}
+}
+
+// TestCanonicalCurrencyRejectsExplicitNull pins issue #196: currency is not
+// nullable server-side, so no canonicalization path may render an explicit
+// null as an empty line (the old json.Unmarshal no-op) — it fails loudly
+// instead.
+func TestCanonicalCurrencyRejectsExplicitNull(t *testing.T) {
+	if got, err := canonicalCurrency(json.RawMessage(`null`)); err == nil {
+		t.Errorf("canonicalCurrency(null) = %q, want an error", got)
+	} else if !strings.Contains(err.Error(), "omit the key instead") && !strings.Contains(err.Error(), "omit it instead") {
+		t.Errorf("error = %v, want self-diagnosing guidance to omit the field", err)
+	}
+	raw := map[string]json.RawMessage{"currency": json.RawMessage(`null`)}
+	if _, err := CanonicalizeSDKAttributePayload(SDKAttributePayload{
+		AppKey: testAppKey, UserToken: testToken, Raw: raw, Timestamp: testStamp,
+	}); err == nil {
+		t.Error("canonicalize with currency null: want error, no empty canonical line")
+	}
+}
+
+// TestValidateSDKAttributeBodySchemaMirror checks the local mirror of the
+// server's EndUserAttributesInputSchema (SaaS
+// packages/shared/src/schemas/end-users.ts): bodies the server always
+// rejects at zod parse fail validation, bodies it accepts pass — including
+// the nullable plan/mrr, the rune-based plan length, and the zod v4 UUID
+// alternatives (reserved nil/max forms pass, wrong variant nibble fails).
+func TestValidateSDKAttributeBodySchemaMirror(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string // empty = must validate
+	}{
+		{name: "empty body", body: `{}`},
+		{name: "valid full body", body: `{"isPaying":true,"mrr":99,"currency":"usd","userToken":"3fa85f64-5717-4562-b3fc-2c963f66afa6"}`},
+		{name: "unknown keys are stripped server-side", body: `{"email":"a@b.c","nickname":"x"}`},
+		{name: "nullable plan and mrr sign as null", body: `{"plan":null,"mrr":null}`},
+		{name: "mrr exactly at the cap", body: `{"mrr":1000000}`},
+		{name: "plan at 64 ascii chars", body: `{"plan":"` + strings.Repeat("a", 64) + `"}`},
+		{name: "plan length counts code points not bytes", body: `{"plan":"` + strings.Repeat("✓", 64) + `"}`},
+		{name: "reserved nil uuid body token", body: `{"userToken":"00000000-0000-0000-0000-000000000000"}`},
+		{name: "reserved max uuid body token", body: `{"userToken":"ffffffff-ffff-ffff-ffff-ffffffffffff"}`},
+
+		{name: "currency explicit null", body: `{"currency":null}`, wantErr: "explicit null is not accepted server-side"},
+		{name: "currency not a code", body: `{"currency":"dollars"}`, wantErr: "must be a 3-letter alphabetic code"},
+		{name: "currency short", body: `{"currency":"us"}`, wantErr: "must be a 3-letter alphabetic code"},
+		{name: "currency with a digit", body: `{"currency":"u5d"}`, wantErr: "must be a 3-letter alphabetic code"},
+		{name: "currency wrong type", body: `{"currency":3}`, wantErr: "currency must be a string"},
+		{name: "mrr over the cap", body: `{"mrr":1000001}`, wantErr: "must be at most 1000000"},
+		{name: "mrr fractionally over the cap", body: `{"mrr":1000000.5}`, wantErr: "must be at most 1000000"},
+		{name: "mrr wrong type", body: `{"mrr":"expensive"}`, wantErr: "mrr must be a number"},
+		{name: "plan empty", body: `{"plan":""}`, wantErr: "must be 1-64 characters, got 0"},
+		{name: "plan 65 chars", body: `{"plan":"` + strings.Repeat("a", 65) + `"}`, wantErr: "must be 1-64 characters, got 65"},
+		{name: "plan wrong type", body: `{"plan":7}`, wantErr: "plan must be a string or null"},
+		{name: "isPaying explicit null", body: `{"isPaying":null}`, wantErr: "explicit null is not accepted server-side"},
+		{name: "isPaying wrong type", body: `{"isPaying":"yes"}`, wantErr: "isPaying must be a boolean"},
+		{name: "userToken not a uuid", body: `{"userToken":"not-a-uuid"}`, wantErr: "must be an RFC 4122 UUID"},
+		{name: "userToken empty", body: `{"userToken":""}`, wantErr: "must be an RFC 4122 UUID"},
+		{name: "userToken explicit null", body: `{"userToken":null}`, wantErr: "explicit null is not accepted server-side"},
+		{name: "userToken wrong variant nibble", body: `{"userToken":"3fa85f64-5717-4562-c3fc-2c963f66afa6"}`, wantErr: "must be an RFC 4122 UUID"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := DecodeSDKAttributeBody([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			err = ValidateSDKAttributeBody(raw)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateSDKAttributeBody(%s): %v, want accepted", tc.body, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateSDKAttributeBody(%s): nil error, want %q", tc.body, tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateResolvedSDKToken mirrors the route's UUID_RE gate on the
+// resolved token: case-insensitive 8-4-4-4-12 hex, no version constraint —
+// the shape that also guards the X-User-Token header fallback.
+func TestValidateResolvedSDKToken(t *testing.T) {
+	for _, token := range []string{
+		testToken,
+		"3FA85F64-5717-4562-B3FC-2C963F66AFA6", // UUID_RE is case-insensitive
+		"00000000-0000-0000-0000-000000000000",
+	} {
+		if err := ValidateResolvedSDKToken(token); err != nil {
+			t.Errorf("ValidateResolvedSDKToken(%q): %v, want accepted", token, err)
+		}
+	}
+	for _, token := range []string{"", "local-user", "not-a-uuid", "3fa85f64_5717_4562_b3fc_2c963f66afa6"} {
+		if err := ValidateResolvedSDKToken(token); err == nil {
+			t.Errorf("ValidateResolvedSDKToken(%q): nil error, want rejected", token)
+		}
 	}
 }
