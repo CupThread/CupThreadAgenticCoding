@@ -72,6 +72,9 @@ open/in_progress/resolved/archived.`,
 			if err != nil {
 				return err
 			}
+			// The server clamps the page size to 200 silently; clamp here
+			// too so an offset walk steps by the served size (issue #201).
+			limit = A.clampListLimit(limit, inboxPageSize)
 			qv := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
 			if triageStatus != "" {
 				qv.Set("triage_status", triageStatus)
@@ -118,7 +121,7 @@ open/in_progress/resolved/archived.`,
 			return nil
 		},
 	}
-	list.Flags().IntVar(&limit, "limit", 50, "Maximum submissions to list")
+	list.Flags().IntVar(&limit, "limit", 50, "Maximum submissions to list (1-200, server page cap 200)")
 	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
 	list.Flags().StringVar(&triageStatus, "triage-status", "", "Filter by triage status: open, in_progress, resolved, archived or active (open + in_progress)")
 	list.Flags().StringVar(&assignedTo, "assigned-to", "", "Filter by assignee user ID, or \"unassigned\"")
@@ -127,6 +130,10 @@ open/in_progress/resolved/archived.`,
 	list.Flags().StringVar(&q, "q", "", "Title substring search (max 50 chars)")
 	return list
 }
+
+// inboxPageSize is the submissions listing's server page cap (the route's
+// parseListPagination maxLimit); the list command clamps --limit to it.
+const inboxPageSize = 200
 
 // newInboxGetCmd shows the full triage detail of one submission, including the
 // workspace-scoped activity log.

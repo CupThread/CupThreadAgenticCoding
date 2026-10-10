@@ -15,6 +15,32 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      # The GOOS-specific source files (lock_windows.go, the !unix && !windows
+      # config-lock stub, the confirm_tty variants) are invisible to the
+      # linux-only steps above; compile every supported target so a break to
+      # them cannot ship silently (issue #193).
+      - run: GOOS=windows go build ./... && GOOS=windows go vet ./...
+      - run: GOOS=plan9 go build ./...
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...

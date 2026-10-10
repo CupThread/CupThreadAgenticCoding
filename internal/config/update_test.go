@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -55,8 +56,13 @@ func TestSaveLeavesNoTempFilesAndKeepsMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	seedConfig(t, path, baseSeedConfig())
 
-	if perm := mustMode(t, path); perm != 0o600 {
-		t.Fatalf("config perms = %o, want 600", perm)
+	if runtime.GOOS != "windows" {
+		// Windows maps os.CreateTemp's 0600 mode to the read-only bit, so
+		// Perm() reports 0666 there; the restrictive-perms guarantee is
+		// unix-only.
+		if perm := mustMode(t, path); perm != 0o600 {
+			t.Fatalf("config perms = %o, want 600", perm)
+		}
 	}
 	// The old shared-name temp file must not exist either — a stale
 	// <config>.tmp next to the config would mean a save died mid-flight.
@@ -253,8 +259,10 @@ func TestUpdateTwoWritersFromSameBaseline(t *testing.T) {
 		t.Errorf("Auth = %+v, want the seeded credential", disk.Auth)
 	}
 	assertNoTempFiles(t, path)
-	if perm := mustMode(t, path); perm != 0o600 {
-		t.Errorf("config perms = %o, want 600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := mustMode(t, path); perm != 0o600 {
+			t.Errorf("config perms = %o, want 600", perm)
+		}
 	}
 }
 

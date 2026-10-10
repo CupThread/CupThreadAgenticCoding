@@ -103,8 +103,8 @@ the app.configure capability (workspace admin or owner) but accepts tokens.`,
 
 func newIntegrationsStatusCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show connection status of all integrations",
+		Use:                   "status",
+		Short:                 "Show connection status of all integrations",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -167,8 +167,8 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "github", Short: "GitHub integration (OAuth, repos, per-app config, sync)"}
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "auth-url",
-			Short: "Print the GitHub OAuth authorize URL to open",
+			Use:                   "auth-url",
+			Short:                 "Print the GitHub OAuth authorize URL to open",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())
@@ -198,15 +198,16 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/github"), nil, nil, nil); err != nil {
 					return err
 				}
-				if !A.structured() {
-					A.out.Printf("✓ Disconnected GitHub")
+				if A.structured() {
+					return A.emitMutationResult("disconnected", "github")
 				}
+				A.out.Printf("✓ Disconnected GitHub")
 				return nil
 			},
 		},
 		&cobra.Command{
-			Use:   "repos",
-			Short: "List GitHub repositories accessible to the integration",
+			Use:                   "repos",
+			Short:                 "List GitHub repositories accessible to the integration",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())
@@ -283,8 +284,8 @@ URL in a browser and finish the OAuth flow in the Console.`,
 func newGitHubCategoriesCmd() *cobra.Command {
 	var owner, repo string
 	categories := &cobra.Command{
-		Use:   "categories",
-		Short: "List Discussion categories of a GitHub repository",
+		Use:                   "categories",
+		Short:                 "List Discussion categories of a GitHub repository",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if owner == "" || repo == "" {
@@ -377,9 +378,10 @@ func newGitHubConfigCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PATCH", path, nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
+			if A.structured() {
+				return A.emitMutationResult("config_updated", appRec.AppID)
 			}
+			A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
 			return nil
 		},
 	}
@@ -432,71 +434,72 @@ func newGitHubSyncCmd() *cobra.Command {
 func newIntegrationsProviderCmd(prov string) *cobra.Command {
 	sub := &cobra.Command{Use: prov, Short: fmt.Sprintf("%s import integration", prov)}
 	sub.AddCommand(
-			&cobra.Command{
-				Use:   "auth-url",
-				Short: fmt.Sprintf("Print the %s OAuth authorize URL to open", prov),
-				DisableFlagsInUseLine: true,
-				RunE: func(cmd *cobra.Command, args []string) error {
-					ws, err := workspaceClient(cmd.Context())
-					if err != nil {
-						return err
-					}
-					var resp struct {
-						URL string `json:"url"`
-					}
-					if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov+"/authorize"), nil, nil, &resp); err != nil {
-						return err
-					}
-					if A.structured() {
-						return A.out.Structured(resp)
-					}
-					A.out.Printf("%s", resp.URL)
-					return nil
-				},
+		&cobra.Command{
+			Use:                   "auth-url",
+			Short:                 fmt.Sprintf("Print the %s OAuth authorize URL to open", prov),
+			DisableFlagsInUseLine: true,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ws, err := workspaceClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+				var resp struct {
+					URL string `json:"url"`
+				}
+				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov+"/authorize"), nil, nil, &resp); err != nil {
+					return err
+				}
+				if A.structured() {
+					return A.out.Structured(resp)
+				}
+				A.out.Printf("%s", resp.URL)
+				return nil
 			},
-			newProviderConnectCmd(prov),
-			&cobra.Command{
-				Use:   "disconnect",
-				Short: fmt.Sprintf("Disconnect %s", prov),
-				RunE: func(cmd *cobra.Command, args []string) error {
-					ws, err := workspaceClient(cmd.Context())
-					if err != nil {
-						return err
-					}
-					if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/"+prov), nil, nil, nil); err != nil {
-						return err
-					}
-					if !A.structured() {
-						A.out.Printf("✓ Disconnected %s", prov)
-					}
-					return nil
-				},
+		},
+		newProviderConnectCmd(prov),
+		&cobra.Command{
+			Use:   "disconnect",
+			Short: fmt.Sprintf("Disconnect %s", prov),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ws, err := workspaceClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/"+prov), nil, nil, nil); err != nil {
+					return err
+				}
+				if A.structured() {
+					return A.emitMutationResult("disconnected", prov)
+				}
+				A.out.Printf("✓ Disconnected %s", prov)
+				return nil
 			},
-			&cobra.Command{
-				Use:   "status",
-				Short: fmt.Sprintf("Show %s connection status", prov),
-				DisableFlagsInUseLine: true,
-				RunE: func(cmd *cobra.Command, args []string) error {
-					ws, err := workspaceClient(cmd.Context())
-					if err != nil {
-						return err
-					}
-					var resp api.ImportIntegrationResponse
-					if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov), nil, nil, &resp); err != nil {
-						return err
-					}
-					if A.structured() {
-						return A.out.Structured(resp)
-					}
-					A.out.Printf("Connected: %s", boolYesNo(resp.Integration != nil))
-					if resp.Integration != nil {
-						A.out.Printf("Account:   %s", orDash(deref(resp.Integration.AccountLogin)))
-					}
-					A.out.Printf("OAuth configured: %s", boolYesNo(resp.OAuthConfigured))
-					return nil
-				},
+		},
+		&cobra.Command{
+			Use:                   "status",
+			Short:                 fmt.Sprintf("Show %s connection status", prov),
+			DisableFlagsInUseLine: true,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ws, err := workspaceClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+				var resp api.ImportIntegrationResponse
+				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+prov), nil, nil, &resp); err != nil {
+					return err
+				}
+				if A.structured() {
+					return A.out.Structured(resp)
+				}
+				A.out.Printf("Connected: %s", boolYesNo(resp.Integration != nil))
+				if resp.Integration != nil {
+					A.out.Printf("Account:   %s", orDash(deref(resp.Integration.AccountLogin)))
+				}
+				A.out.Printf("OAuth configured: %s", boolYesNo(resp.OAuthConfigured))
+				return nil
 			},
-		)
+		},
+	)
 	return sub
 }
 

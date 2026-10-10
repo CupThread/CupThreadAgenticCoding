@@ -128,6 +128,14 @@ go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
 go build -o bin/cupthread ./cmd/cupthread
 ```
 
+### Platform support
+
+| Platform | Build & tests | Cross-process config lock |
+| --- | --- | --- |
+| macOS / Linux | ✅ first-class — CI builds, vets, and tests every push | ✅ `flock(LOCK_EX)` on `<config>.lock` |
+| Windows | ✅ first-class — CI builds, vets, and tests every push | ✅ blocking exclusive `LockFileEx` on `<config>.lock` |
+| Other targets (`plan9`, `js/wasm`, …) | ⚠️ compiles (kept green by CI cross-compile gates) but unsupported | ❌ no-op stub — concurrent invocations can race a token refresh or a config update; the CLI prints a warning on the first transparent token refresh |
+
 ### Releases and versioning
 
 Releases are tag-driven. Pushing an annotated `vX.Y.Z` tag triggers the
@@ -316,7 +324,7 @@ bin/cupthread skills link /path/to/project
 |---|---|
 | `CUPTHREAD_TOKEN` | Access token for CI/agents; overrides stored credentials |
 | `CUPTHREAD_SDK_SIGNING_SECRET` | SDK signing secret fallback for `api sign-user-attrs`; an explicit `--secret` wins |
-| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout` |
+| `CUPTHREAD_BASE_URL` | API base URL override (default `https://api.cupthread.com`); a non-default login is remembered in the config until `auth logout`. OAuth token refresh/revocation always target the credential's issuing server, never the override |
 | `CUPTHREAD_NO_RETRY` | Set to `1` to disable automatic retry/backoff on transient failures (same as `--no-retry`) |
 | `CUPTHREAD_CONFIG` | Config file override (default `~/.config/cupthread/config.json`) |
 | `CUPTHREAD_GITHUB_TOKEN` | GitHub PAT fallback for `integrations github connect` (an explicit `--token` wins; `--token -`/`@` reads stdin) |

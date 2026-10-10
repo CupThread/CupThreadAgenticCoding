@@ -15,6 +15,10 @@ type FileLock struct {
 	f *os.File
 }
 
+// LockSupported reports whether LockConfig provides real cross-process
+// mutual exclusion on this platform.
+const LockSupported = true
+
 // LockConfig takes an exclusive advisory lock (flock LOCK_EX, blocking) on
 // <path>.lock, serializing credential rotation across concurrent CLI
 // processes. The lock file is created next to the config if missing and is
