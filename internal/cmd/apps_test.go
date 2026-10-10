@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -735,6 +736,13 @@ func TestAppsUpdateMissingIconFileFailsBeforeRequests(t *testing.T) {
 // file name must upload under the sanitized name — the wire body must never
 // carry the injected MIME part header — and the command still succeeds.
 func TestAppsUpdateIconCRLFFilenameUploadsSanitized(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows forbids control bytes in file names, so the POSIX-legal
+		// CRLF fixture below cannot exist there; the wire-level sanitization
+		// is covered on every platform by
+		// api.TestUploadAppIconFilenameControlBytesSanitized.
+		t.Skip("control bytes are not legal in Windows file names")
+	}
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 
 	iconPath := filepath.Join(t.TempDir(), "icon\r\nX-Injected: yes.png")
