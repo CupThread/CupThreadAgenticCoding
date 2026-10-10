@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,8 +36,13 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("config file perms = %o, want 600", perm)
+	if runtime.GOOS != "windows" {
+		// Windows maps os.CreateTemp's 0600 mode to the read-only bit, so
+		// Perm() reports 0666 there; the restrictive-perms guarantee is
+		// unix-only.
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("config file perms = %o, want 600", perm)
+		}
 	}
 
 	loaded, err := Load(path)

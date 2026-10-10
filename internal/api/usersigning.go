@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"regexp"
 	"strconv"
+	"unicode/utf8"
 )
 
 // SDKAttributeSignatureVersion is the domain tag on line 1 of the canonical
@@ -151,6 +153,17 @@ func canonicalCurrency(raw json.RawMessage) (string, error) {
 	switch fieldState(raw) {
 	case "unset":
 		return "unset", nil
+	case "null":
+		// EndUserAttributesInputSchema (SaaS packages/shared/src/schemas/
+		// end-users.ts) keeps currency non-nullable, so a body carrying
+		// `currency: null` always fails the server's zod parse and its
+		// signature is never verified. The server's canonicalField
+		// (SaaS apps/api/src/lib/sdk-attributes-signing.ts) would render
+		// "null", but json.Unmarshal(null, *string) silently no-ops —
+		// rendering that as an empty canonical line diverged from the
+		// server on an unverifiable body. Error instead so no path
+		// produces an empty currency line (issue #196).
+		return "", errors.New("currency must be a string; explicit null is not accepted server-side (the field is not nullable), so omit it instead")
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
@@ -266,4 +279,116 @@ func ResolveSDKUserToken(raw map[string]json.RawMessage, headerToken string) (st
 		return headerToken, nil
 	}
 	return "", errors.New("a userToken is required (body userToken or the X-User-Token header)")
+}
+
+// The signed body targets EndUserAttributesInputSchema (SaaS
+// packages/shared/src/schemas/end-users.ts), so these wire constraints are
+// mirrored locally: a body the server can never accept must fail before a
+// signature is produced and sent, with the offending field and the accepted
+// form named, instead of burning a round trip on a guaranteed 400 (issue
+// #196; the schema-mirror precedent is validateAppsUpdateFlags on apps
+// update).
+const MaxSDKAttributeMRR = 1_000_000
+
+var (
+	// currency: z.string().length(3).regex(/^[A-Za-z]{3}$/) — the anchored
+	// regex implies exactly three ASCII letters, so it subsumes length(3).
+	sdkCurrencyRE = regexp.MustCompile(`^[A-Za-z]{3}$`)
+	// Body userToken: zod v4's z.string().uuid() (RFC 9562/4122 — version
+	// nibble 1-8, variant [89abAB], plus the reserved all-zero and all-ones
+	// UUIDs). The route additionally checks the resolved token against
+	// UUID_RE (SaaS apps/api/src/lib/ids.ts); every zod-uuid match satisfies
+	// it, and sdkResolvedTokenRE covers the X-User-Token header fallback that
+	// skips the schema check server-side.
+	sdkBodyTokenRE     = regexp.MustCompile(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$`)
+	sdkResolvedTokenRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
+// ValidateSDKAttributeBody mirrors the server schema for the fields the
+// canonical string signs. Unknown keys are stripped server-side and sign
+// nowhere, so they stay accepted; plan and mrr may be explicitly null
+// (nullable server-side) and sign as "null"; isPaying, currency, and
+// userToken are not nullable and are rejected before a dead-on-arrival
+// signature is produced. Type errors are re-checked here (with the same
+// messages the canonicalizer produces) so rejection happens before any
+// signing work.
+func ValidateSDKAttributeBody(raw map[string]json.RawMessage) error {
+	if v, ok := raw["isPaying"]; ok {
+		switch fieldState(v) {
+		case "null":
+			return errors.New("invalid isPaying: explicit null is not accepted server-side (the field is not nullable); omit the key instead")
+		case "value":
+			var b bool
+			if err := json.Unmarshal(v, &b); err != nil {
+				return fmt.Errorf("isPaying must be a boolean, got %s", jsonKind(v))
+			}
+		}
+	}
+	if v, ok := raw["plan"]; ok && fieldState(v) == "value" {
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return fmt.Errorf("plan must be a string or null, got %s", jsonKind(v))
+		}
+		// zod measures string length in Unicode code points (v4
+		// codePointLength counts a surrogate pair once), so rune count —
+		// not byte length — mirrors it.
+		if n := utf8.RuneCountInString(s); n < 1 || n > 64 {
+			return fmt.Errorf("invalid plan: must be 1-64 characters, got %d", n)
+		}
+	}
+	if v, ok := raw["mrr"]; ok && fieldState(v) == "value" {
+		var f float64
+		if err := json.Unmarshal(v, &f); err != nil {
+			return fmt.Errorf("mrr must be a number or null, got %s", jsonKind(v))
+		}
+		if f > MaxSDKAttributeMRR {
+			return fmt.Errorf("invalid mrr %s: must be at most %d", bytesTrimRaw(v), int64(MaxSDKAttributeMRR))
+		}
+	}
+	if v, ok := raw["currency"]; ok {
+		switch fieldState(v) {
+		case "null":
+			return errors.New("invalid currency: explicit null is not accepted server-side (the field is not nullable); omit the key instead")
+		case "value":
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return fmt.Errorf("currency must be a string, got %s", jsonKind(v))
+			}
+			if !sdkCurrencyRE.MatchString(s) {
+				return fmt.Errorf("invalid currency %q: must be a 3-letter alphabetic code (e.g. %q)", s, "usd")
+			}
+		}
+	}
+	if v, ok := raw["userToken"]; ok {
+		switch fieldState(v) {
+		case "null":
+			return errors.New("invalid userToken: explicit null is not accepted server-side (the field is not nullable); omit the key instead")
+		case "value":
+			var s string
+			if err := json.Unmarshal(v, &s); err != nil {
+				return fmt.Errorf("userToken must be a string, got %s", jsonKind(v))
+			}
+			if !sdkBodyTokenRE.MatchString(s) {
+				return fmt.Errorf("invalid userToken %q: must be an RFC 4122 UUID (8-4-4-4-12 hex, e.g. %q)", s, "3fa85f64-5717-4562-b3fc-2c963f66afa6")
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateResolvedSDKToken mirrors the route's UUID_RE check on the resolved
+// token (SaaS apps/api/src/domains/end-users/routes.ts). The body userToken
+// is already schema-checked by ValidateSDKAttributeBody, so in practice only
+// the X-User-Token header fallback reaches this.
+func ValidateResolvedSDKToken(token string) error {
+	if !sdkResolvedTokenRE.MatchString(token) {
+		return fmt.Errorf("invalid userToken %q: the body userToken or --user-token (X-User-Token) value must be an RFC 4122 UUID (8-4-4-4-12 hex)", token)
+	}
+	return nil
+}
+
+// bytesTrimRaw renders a raw JSON scalar without surrounding whitespace for
+// error messages.
+func bytesTrimRaw(raw json.RawMessage) string {
+	return string(bytes.TrimSpace(raw))
 }

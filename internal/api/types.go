@@ -38,9 +38,9 @@ type Subscription struct {
 }
 
 type MeWorkspaceEntry struct {
-	Workspace    Workspace     `json:"workspace"`
+	Workspace    Workspace       `json:"workspace"`
 	Membership   WorkspaceMember `json:"membership"`
-	Subscription *Subscription `json:"subscription"`
+	Subscription *Subscription   `json:"subscription"`
 }
 
 type MeResponse struct {
@@ -60,29 +60,29 @@ type MeResponse struct {
 // ─── Apps ────────────────────────────────────────────────────────────────────
 
 type AppRecord struct {
-	AppID               string   `json:"appId"`
-	AppKey              string   `json:"appKey"`
-	Slug                string   `json:"slug"`
-	Name                string   `json:"name"`
-	StoreURL            *string  `json:"storeUrl"`
-	StoreKind           *string  `json:"storeKind"`
-	AppStoreURL         *string  `json:"appStoreUrl"`
-	GooglePlayURL       *string  `json:"googlePlayUrl"`
-	IconURL             *string  `json:"iconUrl"`
-	AllowPublic         bool     `json:"allowPublic"`
-	AllowedPlatforms    []string `json:"allowedPlatforms"`
-	MaxAttachmentBytes  int      `json:"maxAttachmentBytes"`
-	GithubOwner         *string  `json:"githubOwner"`
-	GithubRepo          *string  `json:"githubRepo"`
-	GithubRepositoryID  *string  `json:"githubRepositoryId"`
-	GithubCategoryID    *string  `json:"githubDiscussionCategoryId"`
-	GithubCategoryName  *string  `json:"githubDiscussionCategoryName"`
-	GithubCategorySlug  *string  `json:"githubDiscussionCategorySlug"`
-	GithubSyncEnabled   bool     `json:"githubSyncEnabled"`
-	GithubSyncStatus    bool     `json:"githubSyncStatusEnabled"`
-	GithubSyncComments  bool     `json:"githubSyncCommentsEnabled"`
-	CreatedAt           string   `json:"createdAt"`
-	UpdatedAt           string   `json:"updatedAt"`
+	AppID              string   `json:"appId"`
+	AppKey             string   `json:"appKey"`
+	Slug               string   `json:"slug"`
+	Name               string   `json:"name"`
+	StoreURL           *string  `json:"storeUrl"`
+	StoreKind          *string  `json:"storeKind"`
+	AppStoreURL        *string  `json:"appStoreUrl"`
+	GooglePlayURL      *string  `json:"googlePlayUrl"`
+	IconURL            *string  `json:"iconUrl"`
+	AllowPublic        bool     `json:"allowPublic"`
+	AllowedPlatforms   []string `json:"allowedPlatforms"`
+	MaxAttachmentBytes int      `json:"maxAttachmentBytes"`
+	GithubOwner        *string  `json:"githubOwner"`
+	GithubRepo         *string  `json:"githubRepo"`
+	GithubRepositoryID *string  `json:"githubRepositoryId"`
+	GithubCategoryID   *string  `json:"githubDiscussionCategoryId"`
+	GithubCategoryName *string  `json:"githubDiscussionCategoryName"`
+	GithubCategorySlug *string  `json:"githubDiscussionCategorySlug"`
+	GithubSyncEnabled  bool     `json:"githubSyncEnabled"`
+	GithubSyncStatus   bool     `json:"githubSyncStatusEnabled"`
+	GithubSyncComments bool     `json:"githubSyncCommentsEnabled"`
+	CreatedAt          string   `json:"createdAt"`
+	UpdatedAt          string   `json:"updatedAt"`
 }
 
 type ListAppsResponse struct {
@@ -91,18 +91,18 @@ type ListAppsResponse struct {
 }
 
 type AppSettings struct {
-	AppID                  string `json:"appId"`
-	AllowAnonymousRoadmap  bool   `json:"allowAnonymousRoadmap"`
-	AllowAnonymousVote     bool   `json:"allowAnonymousVote"`
-	AllowAnonymousFeedback bool   `json:"allowAnonymousFeedback"`
-	AllowAnonymousChangelog bool  `json:"allowAnonymousChangelog"`
-	SDK                    json.RawMessage `json:"sdk"`
-	UpdatedAt              string `json:"updatedAt"`
+	AppID                   string          `json:"appId"`
+	AllowAnonymousRoadmap   bool            `json:"allowAnonymousRoadmap"`
+	AllowAnonymousVote      bool            `json:"allowAnonymousVote"`
+	AllowAnonymousFeedback  bool            `json:"allowAnonymousFeedback"`
+	AllowAnonymousChangelog bool            `json:"allowAnonymousChangelog"`
+	SDK                     json.RawMessage `json:"sdk"`
+	UpdatedAt               string          `json:"updatedAt"`
 }
 
 type WorkspaceSettingsResponse struct {
-	Workspace Workspace            `json:"workspace"`
-	Apps      []AppWithSettings    `json:"apps"`
+	Workspace Workspace         `json:"workspace"`
+	Apps      []AppWithSettings `json:"apps"`
 }
 
 type AppWithSettings struct {
@@ -114,28 +114,28 @@ type AppWithSettings struct {
 // ─── Inbox (feedback submissions) ────────────────────────────────────────────
 
 type SubmissionRecord struct {
-	SubmissionID       string  `json:"submissionId"`
-	AppID              *string `json:"appId"`
-	AppKey             *string `json:"appKey"`
-	WorkspaceSlug      string  `json:"workspaceSlug"`
-	Title              string  `json:"title"`
-	Description        string  `json:"description"`
-	ReporterName       *string `json:"reporterName"`
-	ReporterEmail      *string `json:"reporterEmail"`
-	Platform           string  `json:"platform"`
-	AppVersion         *string `json:"appVersion"`
-	BuildNumber        *string `json:"buildNumber"`
-	Priority           string  `json:"priority"`
-	Status             string  `json:"status"`
-	TriageStatus       string  `json:"triageStatus"`
-	AssignedTo         *string `json:"assignedTo"`
-	FirstTriagedAt     *string `json:"firstTriagedAt"`
-	ResolvedAt         *string `json:"resolvedAt"`
-	GithubDiscussionID *string `json:"githubDiscussionId"`
+	SubmissionID        string  `json:"submissionId"`
+	AppID               *string `json:"appId"`
+	AppKey              *string `json:"appKey"`
+	WorkspaceSlug       string  `json:"workspaceSlug"`
+	Title               string  `json:"title"`
+	Description         string  `json:"description"`
+	ReporterName        *string `json:"reporterName"`
+	ReporterEmail       *string `json:"reporterEmail"`
+	Platform            string  `json:"platform"`
+	AppVersion          *string `json:"appVersion"`
+	BuildNumber         *string `json:"buildNumber"`
+	Priority            string  `json:"priority"`
+	Status              string  `json:"status"`
+	TriageStatus        string  `json:"triageStatus"`
+	AssignedTo          *string `json:"assignedTo"`
+	FirstTriagedAt      *string `json:"firstTriagedAt"`
+	ResolvedAt          *string `json:"resolvedAt"`
+	GithubDiscussionID  *string `json:"githubDiscussionId"`
 	GithubDiscussionURL *string `json:"githubDiscussionUrl"`
-	GithubError        *string `json:"githubError"`
-	CreatedAt          string  `json:"createdAt"`
-	UpdatedAt          string  `json:"updatedAt"`
+	GithubError         *string `json:"githubError"`
+	CreatedAt           string  `json:"createdAt"`
+	UpdatedAt           string  `json:"updatedAt"`
 }
 
 type ListSubmissionsResponse struct {
@@ -218,16 +218,16 @@ type RetrySubmissionResponse struct {
 }
 
 type DeliveryJob struct {
-	ID           string  `json:"id"`
-	SubmissionID string  `json:"submissionId"`
-	WorkspaceID  *string `json:"workspaceId"`
-	Status       string  `json:"status"`
-	Attempts     int     `json:"attempts"`
-	MaxAttempts  int     `json:"maxAttempts"`
-	NextAttemptAt string `json:"nextAttemptAt"`
-	LastError    *string `json:"lastError"`
-	CreatedAt    string  `json:"createdAt"`
-	UpdatedAt    string  `json:"updatedAt"`
+	ID            string  `json:"id"`
+	SubmissionID  string  `json:"submissionId"`
+	WorkspaceID   *string `json:"workspaceId"`
+	Status        string  `json:"status"`
+	Attempts      int     `json:"attempts"`
+	MaxAttempts   int     `json:"maxAttempts"`
+	NextAttemptAt string  `json:"nextAttemptAt"`
+	LastError     *string `json:"lastError"`
+	CreatedAt     string  `json:"createdAt"`
+	UpdatedAt     string  `json:"updatedAt"`
 }
 
 type ListDeliveryJobsResponse struct {
@@ -316,17 +316,17 @@ type ListPublicFeatureRequestsResponse struct {
 // ─── Feature request comments ────────────────────────────────────────────────
 
 type FeatureRequestComment struct {
-	ID                 string  `json:"id"`
-	FeatureRequestID   string  `json:"featureRequestId"`
-	AuthorName         *string `json:"authorName"`
-	AuthorEmail        *string `json:"authorEmail"`
-	AuthorAvatarURL    *string `json:"authorAvatarUrl"`
-	Body               string  `json:"body"`
-	ParentID           *string `json:"parentId"`
-	ReplyToClerkID     *string `json:"replyToClerkId"`
-	ReplyToAuthorName  *string `json:"replyToAuthorName"`
-	IsHidden           bool    `json:"isHidden"`
-	CreatedAt          string  `json:"createdAt"`
+	ID                string  `json:"id"`
+	FeatureRequestID  string  `json:"featureRequestId"`
+	AuthorName        *string `json:"authorName"`
+	AuthorEmail       *string `json:"authorEmail"`
+	AuthorAvatarURL   *string `json:"authorAvatarUrl"`
+	Body              string  `json:"body"`
+	ParentID          *string `json:"parentId"`
+	ReplyToClerkID    *string `json:"replyToClerkId"`
+	ReplyToAuthorName *string `json:"replyToAuthorName"`
+	IsHidden          bool    `json:"isHidden"`
+	CreatedAt         string  `json:"createdAt"`
 }
 
 // ListCommentsResponse is the page shape shared by the public thread listing
@@ -364,17 +364,17 @@ type CreateCommentInput struct {
 // ─── Columns & versions ──────────────────────────────────────────────────────
 
 type Column struct {
-	ID        string  `json:"id"`
-	AppID     string  `json:"appId"`
-	Name      string  `json:"name"`
-	Slug      string  `json:"slug"`
-	Position  int     `json:"position"`
-	IsVisible bool    `json:"isVisible"`
-	IsSystem  bool    `json:"isSystem"`
-	Kind      string  `json:"kind"`
-	Color     string  `json:"color"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
+	ID        string `json:"id"`
+	AppID     string `json:"appId"`
+	Name      string `json:"name"`
+	Slug      string `json:"slug"`
+	Position  int    `json:"position"`
+	IsVisible bool   `json:"isVisible"`
+	IsSystem  bool   `json:"isSystem"`
+	Kind      string `json:"kind"`
+	Color     string `json:"color"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 type ListColumnsResponse struct {
@@ -517,19 +517,19 @@ type GitHubReposResponse struct {
 }
 
 type GitHubRepo struct {
-	ID            any    `json:"id"`
-	Owner         string `json:"owner"`
-	Name          string `json:"name"`
-	FullName      string `json:"fullName"`
-	IsPrivate     bool   `json:"isPrivate"`
-	HasDiscussions bool  `json:"hasDiscussions"`
-	HasIssues     bool   `json:"hasIssues"`
-	HTMLURL       string `json:"htmlUrl"`
+	ID             any    `json:"id"`
+	Owner          string `json:"owner"`
+	Name           string `json:"name"`
+	FullName       string `json:"fullName"`
+	IsPrivate      bool   `json:"isPrivate"`
+	HasDiscussions bool   `json:"hasDiscussions"`
+	HasIssues      bool   `json:"hasIssues"`
+	HTMLURL        string `json:"htmlUrl"`
 }
 
 type GitHubCategoriesResponse struct {
-	RepositoryID string             `json:"repositoryId"`
-	Categories   []GitHubCategory   `json:"categories"`
+	RepositoryID string           `json:"repositoryId"`
+	Categories   []GitHubCategory `json:"categories"`
 }
 
 type GitHubCategory struct {
@@ -592,16 +592,16 @@ type TierLimits struct {
 }
 
 type SubscriptionUsage struct {
-	Tier         string `json:"tier"`
-	Status       string `json:"status"`
+	Tier         string     `json:"tier"`
+	Status       string     `json:"status"`
 	Limits       TierLimits `json:"limits"`
-	ExtraApps    int    `json:"extraApps"`
-	ExtraMembers int    `json:"extraMembers"`
-	MonthlyPrice float64 `json:"monthlyPrice"`
+	ExtraApps    int        `json:"extraApps"`
+	ExtraMembers int        `json:"extraMembers"`
+	MonthlyPrice float64    `json:"monthlyPrice"`
 	Usage        struct {
-		Apps                int `json:"apps"`
+		Apps                 int `json:"apps"`
 		SubmissionsThisMonth int `json:"submissionsThisMonth"`
-		Members             int `json:"members"`
+		Members              int `json:"members"`
 	} `json:"usage"`
 }
 
@@ -650,13 +650,13 @@ type ListMembersResponse struct {
 }
 
 type Invitation struct {
-	ID                 string `json:"id"`
-	WorkspaceID        string `json:"workspaceId"`
-	Email              string `json:"email"`
-	Role               string `json:"role"`
+	ID                   string `json:"id"`
+	WorkspaceID          string `json:"workspaceId"`
+	Email                string `json:"email"`
+	Role                 string `json:"role"`
 	InvitedByClerkUserID string `json:"invitedByClerkUserId"`
-	CreatedAt          string `json:"createdAt"`
-	UpdatedAt          string `json:"updatedAt"`
+	CreatedAt            string `json:"createdAt"`
+	UpdatedAt            string `json:"updatedAt"`
 }
 
 type ListInvitationsResponse struct {
