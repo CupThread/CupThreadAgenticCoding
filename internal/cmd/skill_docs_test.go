@@ -852,3 +852,47 @@ func TestBoundedInputDocs(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillIssue204WidthHints pins the issue #204 sync of the public
+// image-delivery contract on GET /api/v1/files/:key: the optional integer
+// width hint accepts only the fixed 16–160 size set, width-hint responses
+// (WebP thumbnail or original fallback) cache for five minutes while hintless
+// requests keep the immutable one-day policy, clients must decode by the
+// response content type rather than the URL extension, and public image URLs
+// are handled as opaque URLs. It also rejects the stale max-age=60 cache
+// policy the row carried before SaaS #649 moved the canonical originals to a
+// content-addressed one-day entry with 15-second negative caching.
+func TestAPISkillIssue204WidthHints(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"`Cache-Control: public, max-age=86400, immutable`",
+		"a missing key 404s with `Cache-Control: public, max-age=15`",
+		"`16, 32, 36, 56, 64, 72, 80, 112, 128, 160`",
+		`400 {"error": "Unsupported image width"}`,
+		"the original bytes are served as the fallback",
+		"`Cache-Control: public, max-age=300` (five minutes)",
+		"(`image/webp` when transformed)",
+		"rather than infer the format from the URL extension",
+		"as opaque — preserve the path and query string",
+		// PRIV-19 avatar reads: documented sizes only, appended to the stored
+		// URL, with an original-image fallback; other hosts untouched.
+		"appended `?width=` thumbnail hint",
+		"always with a fallback to the original URL",
+		"must be passed through untouched",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#204 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		"max-age=60",
+		// A thumbnail helper must never widen the size set beyond the
+		// documented fixed values.
+		"width=192",
+		"width=256",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+}

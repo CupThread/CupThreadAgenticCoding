@@ -199,6 +199,12 @@ The whole `inbox` group is `[token-safe]` (workspace.read / content.manage).
 > the platform and is separate from the triage lifecycle — use `inbox triage`
 > (never a `--status` flag) to change triage state.
 
+`inbox list` is offset/limit-paginated with a server page cap of **200**:
+the CLI clamps `--limit` into 1–200 locally (a value outside the range is
+rewritten, with a `⚠` notice), so step `--offset` by the served page size —
+the `(N shown, N total)` trailer — never by a larger requested limit, or the
+walk silently skips rows.
+
 ### Notifications
 ```sh
 cupthread notifications list               # List notifications, newest first (table ends with the unread count)
@@ -216,6 +222,11 @@ full notification event enum (14 types, in server enum order — mirror of
 a type missing from it silently suppresses that notification for the whole
 channel. `--events` values are validated against this enum locally with a
 self-diagnosing error before anything is sent.
+`notifications list` is offset/limit-paginated with a server page cap of
+**200** (`--limit` is clamped into 1–200 locally, with a `⚠` notice when a
+value is rewritten) and, unlike `changelog list`, prints no more-pages hint —
+walk it by the served page size (`--offset 0, 200, 400, …`), not by a larger
+requested limit.
 
 ### Feature Requests & Roadmap
 ```sh
@@ -337,7 +348,7 @@ User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`);
 ### Changelog & Releases
 ```sh
 cupthread changelog list                   # List published and draft changelogs
-cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (server default: 100/page)
+cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (--limit clamps to the 100/page server cap)
 cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --publish-now
 cupthread changelog update <entry-id> --title "v1.2.0"   # Edit a draft (also --body-file, --version-id,
                                            # --version-label, --link-request-ids, --schedule-at)
@@ -348,6 +359,9 @@ Draft editing, `unpublish`, and `delete` are `[token-safe]` (content.manage;
 clearing a schedule with `--schedule-at ""` stays token-safe too).
 `changelog list` (console) is offset/limit-paginated and reports `total` +
 `hasMore`; the table view prints the next `--offset` when more pages remain.
+The page size caps at **100** (`--limit` is clamped into 1–100 locally, with
+a `⚠` notice when a value is rewritten), so step `--offset` by the served
+page size.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
 Drafts (create/edit/delete without publishing) work for every workspace role
