@@ -85,6 +85,43 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 	return data, nil
 }
 
+// NotRegularFileError reports a request-body path that opened to something
+// other than a regular file — a FIFO, character device, socket, or similar.
+// Such a source is unbounded or not yet written, so reading it could hang the
+// command forever (a writer-less FIFO) or buffer until memory is exhausted
+// (/dev/zero); it is rejected before the first read instead (issue #192).
+type NotRegularFileError struct {
+	Path string
+	Mode os.FileMode
+}
+
+func (e *NotRegularFileError) Error() string {
+	return fmt.Sprintf("%q: not a regular file", e.Path)
+}
+
+// readRegularFile is the file-backed half of the bounded-input discipline:
+// open path once, verify the descriptor itself is a regular file, then read
+// at most max bytes through readBounded. Checking the opened descriptor
+// (fstat, not Stat-before-open) closes the check-then-read gap: a file swapped
+// for a FIFO or grown past the cap after an earlier advisory Stat still fails
+// here, before any HTTP request (issue #192). The open goes through
+// openInputFile so a FIFO cannot even park the open(2) call.
+func readRegularFile(path string, max int64) ([]byte, error) {
+	f, err := openInputFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &NotRegularFileError{Path: path, Mode: fi.Mode()}
+	}
+	return readBounded(f, max)
+}
+
 // reportInputTooLarge renders an InputTooLargeError as the command's single
 // structured stdout document in --json/-o yaml mode. It returns the rendering
 // error only: callers keep returning the original error so the process still
