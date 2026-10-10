@@ -268,7 +268,8 @@ requested limit.
 
 ### Feature Requests & Roadmap
 ```sh
-cupthread features list                    # List feature requests
+cupthread features list                    # List feature requests (scoped to the resolved app)
+cupthread features list --all-apps         # Cross-app triage view: every app in the workspace
 cupthread features list --sort revenue     # Sort by user ARR/MRR (Pro plan)
 cupthread features get <request-id>        # View feature request details (requester info, commenters)
 cupthread features create --title "Dark mode" --description "Add dark theme support"
@@ -288,15 +289,19 @@ The public portal reads (`GET /api/v1/public/columns/{appKey}` and
 separate: they share a 60 requests/minute per-IP budget with the public
 comment thread and changelog feed, and an anonymous `200` can be up to 30
 seconds stale.
-`features list` reads the console (workspace-scoped) listing. The ID-taking
-commands (`features get/update/approve/delete/forward`) resolve
-`<request-id>` within the **resolved app** — the `--app` flag, else the saved
-default from `apps use` — so an ID from another app in the same workspace
-fails with "not found" instead of being mutated; with no app resolved the
-lookup stays workspace-wide. Resolution pages through the whole workspace
-listing (200 per page), so a request past the newest page still resolves;
-prefix ambiguity is judged across every page, and resolution gives up after
-50 pages (≈10k requests) with a clear error. To walk the
+`features list` reads the console (workspace-scoped) listing, scoped like the
+ID-taking commands to the **resolved app** — the `--app` flag, else the saved
+default from `apps use` — so every ID it shows resolves in
+`features get/update/approve/delete/forward`; pass `--all-apps` for the
+workspace-wide cross-app view (mutually exclusive with `--app`). The ID-taking
+commands resolve
+`<request-id>` within the **resolved app** — so an ID from another app in the
+same workspace fails with "not found" (the error names the app the scan
+covered and the `--app` escape hatch) instead of being mutated; with no app
+resolved the lookup stays workspace-wide. Resolution pages through the whole
+app's listing (200 per page), so a request past the newest page still
+resolves; prefix ambiguity is judged across every page, and resolution gives
+up after 50 pages (≈10k requests) with a clear error. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
