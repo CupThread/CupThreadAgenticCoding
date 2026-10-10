@@ -57,6 +57,13 @@ cupthread auth login --token cpt_...
 export CUPTHREAD_TOKEN="cpt_..."
 ```
 
+`$CUPTHREAD_TOKEN` outranks any stored credential, so while it is set a fresh
+`auth login` is saved but stays inactive and `auth logout` alone does not
+de-provision the machine. Both commands disclose the override when it is set
+(a stderr warning; `effectiveCredential` / `envOverride` fields in the
+structured payloads) — unset the variable to make the stored login effective
+or finish de-provisioning.
+
 Check current authentication status:
 ```sh
 cupthread auth status
@@ -268,7 +275,8 @@ requested limit.
 
 ### Feature Requests & Roadmap
 ```sh
-cupthread features list                    # List feature requests
+cupthread features list                    # List feature requests (scoped to the resolved app)
+cupthread features list --all-apps         # Cross-app triage view: every app in the workspace
 cupthread features list --sort revenue     # Sort by user ARR/MRR (Pro plan)
 cupthread features get <request-id>        # View feature request details (requester info, commenters)
 cupthread features create --title "Dark mode" --description "Add dark theme support"
@@ -288,15 +296,19 @@ The public portal reads (`GET /api/v1/public/columns/{appKey}` and
 separate: they share a 60 requests/minute per-IP budget with the public
 comment thread and changelog feed, and an anonymous `200` can be up to 30
 seconds stale.
-`features list` reads the console (workspace-scoped) listing. The ID-taking
-commands (`features get/update/approve/delete/forward`) resolve
-`<request-id>` within the **resolved app** — the `--app` flag, else the saved
-default from `apps use` — so an ID from another app in the same workspace
-fails with "not found" instead of being mutated; with no app resolved the
-lookup stays workspace-wide. Resolution pages through the whole workspace
-listing (200 per page), so a request past the newest page still resolves;
-prefix ambiguity is judged across every page, and resolution gives up after
-50 pages (≈10k requests) with a clear error. To walk the
+`features list` reads the console (workspace-scoped) listing, scoped like the
+ID-taking commands to the **resolved app** — the `--app` flag, else the saved
+default from `apps use` — so every ID it shows resolves in
+`features get/update/approve/delete/forward`; pass `--all-apps` for the
+workspace-wide cross-app view (mutually exclusive with `--app`). The ID-taking
+commands resolve
+`<request-id>` within the **resolved app** — so an ID from another app in the
+same workspace fails with "not found" (the error names the app the scan
+covered and the `--app` escape hatch) instead of being mutated; with no app
+resolved the lookup stays workspace-wide. Resolution pages through the whole
+app's listing (200 per page), so a request past the newest page still
+resolves; prefix ambiguity is judged across every page, and resolution gives
+up after 50 pages (≈10k requests) with a clear error. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
@@ -340,16 +352,29 @@ interactive login or the Console web UI.
 
 ### Comments & @Replies
 ```sh
-cupthread comments list <featureRequestId> # List comments on a feature request
-cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
+cupthread comments list <featureRequestId> # List comments on a feature request (no login required)
 ```
 
-`comments create --parent-id` must reference a visible comment on the same
-feature request (not hidden or deleted). The API rejects anything else with
-`400 invalid_parent` — "The comment you are replying to was not found on this
-feature request" — and stores nothing; the CLI surfaces that as an explicit
-error. Take `--parent-id` from `comments list` on the same request, and don't
-bother crafting `--reply-to-author-name`: the server always resolves the
+`comments list` needs no credential: it reads the public thread GET through a
+credential-free client and never sends the console bearer, so a clean machine
+(or a logged-out CI script) can read public board threads (issue #182).
+
+`comments create` cannot succeed with any CLI credential and fails locally
+before sending anything: the comment POST requires a signed-in end-user
+session (the route authenticates a Clerk session JWT, and every CLI
+credential — personal access token or OAuth login — is a `cpt_` bearer the
+route cannot accept). Post the comment from the CupThread web portal while
+signed in instead. The command stays declared, with `--body` and
+`--parent-id`, for a future credential that can sign in; its former
+`--author-name`, `--author-email`, `--author-avatar-url`, and `--reply-to`
+flags and its `--app-key`/`--user-token` headers are gone — the server
+schema strips author and reply identity (PRIV-04, SEC-50) and the route
+reads neither header. Under any future credential, `--parent-id` must
+reference a visible comment on the same feature request (not hidden or
+deleted); the API rejects anything else with `400 invalid_parent` — "The
+comment you are replying to was not found on this feature request" — and
+stores nothing; take `--parent-id` from `comments list` on the same request.
+`--reply-to-author-name` stays ignored: the server always resolves the
 replied-to author from the parent comment itself.
 
 Both list commands walk the thread's keyset pagination (PROD-31: 200
@@ -378,9 +403,12 @@ workspace role whose capabilities include it.
 
 ### User Profiles
 ```sh
-cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
+cupthread users profile <userId>           # Look up a public developer profile, apps, and comments (no login required)
 cupthread users profile u_9f2c… --app-key key_live_…  # App-scoped u_* ids from board/comment payloads need --app-key
 ```
+`users profile` needs no credential either: like `comments list` it reads a
+public endpoint through a credential-free client and never sends the console
+bearer (issue #182).
 User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it. Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19) — the CLI prints `—` for `null`; when consuming the `--json` output, render a placeholder rather than assuming the value's host.
 
 ### Changelog & Releases

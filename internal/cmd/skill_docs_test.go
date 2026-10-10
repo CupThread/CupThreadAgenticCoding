@@ -801,17 +801,77 @@ func TestAPISkillIssue135(t *testing.T) {
 }
 
 // TestCLISkillIssue135 pins the CLI skill's comments-create guidance: the
-// --parent-id rule, the wire code, and the ignored reply-to-author-name flag.
+// --parent-id rule, the wire code, and the ignored reply-to-author-name flag
+// (the SEC-50 reply contract now phrased as a future-credential rule since
+// issue #181 made the command fail fast).
 func TestCLISkillIssue135(t *testing.T) {
 	doc := readSkill(t, "cupthread-cli")
 	for _, marker := range []string{
-		"must reference a visible comment on the same",
+		"reference a visible comment on the same",
 		"`400 invalid_parent`",
-		"The comment you are replying to was not found on this",
-		"crafting `--reply-to-author-name`",
+		"comment you are replying to was not found on this feature request",
+		"`--reply-to-author-name` stays ignored",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#135 marker %q", marker)
+		}
+	}
+}
+
+// TestCLISkillIssue181CommentsCreateUnavailable pins the issue #181 docs
+// contract: the CLI skill must no longer present `comments create` as a
+// credential-usable command (it never was — the POST needs a Clerk end-user
+// session), must teach the local fail-fast with the web-portal guidance, and
+// must no longer recommend `--reply-to`.
+func TestCLISkillIssue181CommentsCreateUnavailable(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"`comments create` cannot succeed with any CLI credential and fails locally",
+		"before sending anything",
+		"requires a signed-in end-user",
+		"Post the comment from the CupThread web portal while",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required issue-#181 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// The old runnable block presented the command as working and
+		// recommended --reply-to, whose wire field the server schema strips.
+		"comments create <featureRequestId> --body",
+		"[--reply-to <clerkId>]",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-cli/SKILL.md still teaches the impossible invocation %q (issue #181)", stale)
+		}
+	}
+}
+
+// TestIssue181CommentsCreateFailFastHelp pins the truthful help text and the
+// flag cleanup: the Long help states the command can never succeed with a CLI
+// credential and names the web portal, and the dead identity/reply/header
+// flags are no longer declared so cobra rejects them as unknown.
+func TestIssue181CommentsCreateFailFastHelp(t *testing.T) {
+	create := newCommentsCreateCmd()
+	for _, marker := range []string{
+		"cannot succeed with any CLI credential",
+		"signed-in end-user session",
+		"fails locally, before sending anything",
+		"Post the comment from the CupThread web",
+		"guaranteed 401 round-trip",
+	} {
+		if !strings.Contains(create.Long, marker) {
+			t.Errorf("comments create Long missing issue-#181 marker %q:\n%s", marker, create.Long)
+		}
+	}
+	for _, dead := range []string{"author-name", "author-email", "author-avatar-url", "reply-to", "app-key", "user-token"} {
+		if create.Flags().Lookup(dead) != nil {
+			t.Errorf("comments create still declares the dead flag --%s (issue #181)", dead)
+		}
+	}
+	for _, kept := range []string{"body", "parent-id", "reply-to-author-name"} {
+		if create.Flags().Lookup(kept) == nil {
+			t.Errorf("comments create lost the kept flag --%s", kept)
 		}
 	}
 }

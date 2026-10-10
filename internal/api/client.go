@@ -124,7 +124,11 @@ func hasRequestIDHeader(headers map[string]string) bool {
 
 // APIError is a non-2xx API response.
 type APIError struct {
-	Status  int
+	Status int
+	// Message is the server's `error` text (or the raw body when it does not
+	// parse as JSON). Both decode sites pass it through serverErrorText, so
+	// it carries no terminal control characters and is capped — safe to
+	// interpolate into human lines or structured payloads as-is.
 	Message string
 	Code    string
 	// RequestID is the X-Request-Id correlation value the API echoed on the
@@ -209,6 +213,22 @@ func (e *APIError) detailsSuffix() string {
 // output's table-cell sanitizer so the two surfaces cannot diverge.
 func sanitizeErrorText(s string) string {
 	return output.StripTerminalControls(s)
+}
+
+// errorMessageMaxRunes caps the server-supplied message kept in
+// APIError.Message: an HTML error page from a proxy or a hostile megabyte
+// error string must not flood the single error line (the Details cap plays
+// the same role per validation group).
+const errorMessageMaxRunes = 200
+
+// serverErrorText normalizes a server-supplied error string for
+// APIError.Message: surrounding whitespace is dropped, terminal controls are
+// stripped (the same predicate as validation details and table cells), and
+// the result is capped. It runs at the two error-decode sites so both the
+// human Error() rendering and the structured error payload are covered, and
+// clean messages pass through byte-identical.
+func serverErrorText(s string) string {
+	return truncateRunes(sanitizeErrorText(strings.TrimSpace(s)), errorMessageMaxRunes)
 }
 
 // truncateRunes shortens s to max runes, marking the cut with an ellipsis.
@@ -680,7 +700,7 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 			Details json.RawMessage `json:"details"`
 		}
 		if json.Unmarshal(data, &parsed) == nil && parsed.Error != "" {
-			apiErr.Message = parsed.Error
+			apiErr.Message = serverErrorText(parsed.Error)
 			apiErr.Code = parsed.Code
 			apiErr.Details = parsed.Details
 		}
@@ -861,7 +881,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{
 			Status:  resp.StatusCode,
-			Message: strings.TrimSpace(string(body)),
+			Message: serverErrorText(string(body)),
 			Body:    body,
 		}
 		var parsed struct {
@@ -870,7 +890,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			Details json.RawMessage `json:"details"`
 		}
 		if json.Unmarshal(body, &parsed) == nil && parsed.Error != "" {
-			apiErr.Message = parsed.Error
+			apiErr.Message = serverErrorText(parsed.Error)
 			apiErr.Code = parsed.Code
 			apiErr.Details = parsed.Details
 		}
