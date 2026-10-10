@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 // Client-side request-body caps, mirroring the server's SEC-36 intake limits
@@ -52,16 +53,23 @@ func humanBytes(n int64) string {
 	}
 }
 
-// readInputFile reads flag input where "@" or "-" means stdin, otherwise a
-// filesystem path, buffering at most max bytes. It reads exactly one byte
-// past the cap to detect overflow, so an unbounded pipe or sparse file is cut
-// off instead of being read into memory to exhaustion; the error is returned
-// before any request is built or sent.
+// readInputFile reads flag input where "@" or "-" means stdin, a leading "@"
+// followed by more characters means the file named by the rest (the curl-style
+// @path spelling the help texts, the apps settings set error and SKILL.md
+// already teach — issue #188), and anything else a filesystem path, buffering
+// at most max bytes. It reads exactly one byte past the cap to detect
+// overflow, so an unbounded pipe or sparse file is cut off instead of being
+// read into memory to exhaustion; the error is returned before any request is
+// built or sent. A file whose literal name starts with "@" is referenced via
+// the plain-path branch, e.g. ./@name.
 func readInputFile(path string, max int64) ([]byte, error) {
 	var r io.Reader
 	if path == "@" || path == "-" {
 		r = os.Stdin
 	} else {
+		if strings.HasPrefix(path, "@") {
+			path = path[1:]
+		}
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err

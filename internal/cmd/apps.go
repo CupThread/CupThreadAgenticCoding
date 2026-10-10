@@ -759,9 +759,9 @@ func newAppSettingsCmd() *cobra.Command {
 		Short: "Update app settings (flags, or --input for the raw JSON body)",
 		Long: `Update app settings from flags or a raw JSON --input body.
 
-The --input body (file, or "-" / "@" for stdin) is capped locally at the
-console route's 1 MB request-body limit; larger input fails with
-input_too_large before any request is sent.`,
+The --input body (a file path, "@path", or "-" / "@" for stdin) is capped
+locally at the console route's 1 MB request-body limit; larger input fails
+with input_too_large before any request is sent.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read and validate --input before anything else: an oversized or
@@ -830,7 +830,7 @@ input_too_large before any request is sent.`,
 	set.Flags().Bool("anon-vote", true, "Allow anonymous voting")
 	set.Flags().Bool("anon-feedback", true, "Allow anonymous feedback")
 	set.Flags().Bool("anon-changelog", true, "Allow anonymous changelog viewing")
-	set.Flags().StringVar(&inputPath, "input", "", "JSON file (or \"-\"/\"@\" for stdin; max 1 MB) with the raw update body, sent verbatim (numbers keep full precision), e.g. {\"sdk\":{\"theme\":\"dark\"}}")
+	set.Flags().StringVar(&inputPath, "input", "", "JSON file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB) with the raw update body, sent verbatim (numbers keep full precision), e.g. {\"sdk\":{\"theme\":\"dark\"}}")
 	cmd.AddCommand(set)
 	return cmd
 }
