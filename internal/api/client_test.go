@@ -1,15 +1,19 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // requestIDPattern mirrors the API's accepted correlation-ID charset and
@@ -1090,5 +1094,116 @@ func TestUploadAppIconCapturesValidationDetails(t *testing.T) {
 	}
 	if len(apiErr.Details) == 0 {
 		t.Error("Details = empty, want the raw server JSON retained")
+	}
+}
+
+// TestEscapeQuotesMultipartFilenameSanitizesControlBytes pins the
+// Content-Disposition rendering used by postMultipartFile (issue #180): `"`
+// and `\` keep their backslash escaping, every C0/DEL control byte —
+// including the \r\n that would otherwise inject MIME part headers — becomes
+// `_`, clean names render byte-identically, and the rendered value never
+// exceeds maxMultipartFilenameBytes (truncated on a rune boundary and never
+// in the middle of a backslash escape).
+func TestEscapeQuotesMultipartFilenameSanitizesControlBytes(t *testing.T) {
+	cases := map[string]string{
+		// Golden regression pin: pure-ASCII names are unchanged.
+		"icon.png": "icon.png",
+		`a"b\c`:    `a\"b\\c`,
+		// The issue's injection payload and other control bytes become `_`.
+		"icon\r\nX-Injected: yes.png": "icon__X-Injected: yes.png",
+		"tab\there.png":               "tab_here.png",
+		"del\x7f.png":                 "del_.png",
+		"bell\x07.png":                "bell_.png",
+		// Multi-byte runes are not control bytes and must survive.
+		"icônic.png": "icônic.png",
+	}
+	for in, want := range cases {
+		if got := escapeQuotes(in); got != want {
+			t.Errorf("escapeQuotes(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in := range cases {
+		out := escapeQuotes(in)
+		for _, r := range out {
+			if r < 0x20 || r == 0x7f {
+				t.Errorf("escapeQuotes(%q) = %q: renders control rune %#x", in, out, r)
+			}
+		}
+	}
+
+	// Length cap: the rendered value never exceeds the budget.
+	if got := escapeQuotes(strings.Repeat("a", 300)); len(got) != maxMultipartFilenameBytes {
+		t.Errorf("escapeQuotes(300×a) length = %d, want %d", len(got), maxMultipartFilenameBytes)
+	}
+	// The budget never splits a multi-byte rune…
+	if got := escapeQuotes(strings.Repeat("a", 254) + "ô"); len(got) != 254 {
+		t.Errorf("escapeQuotes(254×a + ô) = %d bytes, want the ô dropped whole", len(got))
+	}
+	if !utf8.ValidString(escapeQuotes(strings.Repeat("ô", 300))) {
+		t.Error("escapeQuotes(300×ô) is not valid UTF-8: truncated mid-rune")
+	}
+	// …nor a backslash escape: a `"` whose escape would not fit is dropped
+	// whole instead of leaving a dangling backslash before the closing quote.
+	if got := escapeQuotes(strings.Repeat("a", 254) + `"`); strings.HasSuffix(got, `\`) {
+		t.Errorf("escapeQuotes(254×a + %q) = %q: ends with a dangling escape", `"`, got)
+	}
+	if got := escapeQuotes(strings.Repeat("a", 253) + `"`); got != strings.Repeat("a", 253)+`\"` {
+		t.Errorf("escapeQuotes(253×a + %q) = %q, want the full escape inside the budget", `"`, got)
+	}
+}
+
+// TestUploadAppIconFilenameControlBytesSanitized sends a CRLF-named file
+// through postMultipartFile and inspects the raw request body (issue #180):
+// the injected part header must not exist on the wire, the quoted filename
+// must be free of control bytes, and the server must see the sanitized name.
+func TestUploadAppIconFilenameControlBytesSanitized(t *testing.T) {
+	var raw []byte
+	var gotFilename string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		raw = body
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Errorf("parse content type: %v", err)
+			return
+		}
+		form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1 << 20)
+		if err != nil {
+			t.Errorf("parse multipart: %v", err)
+			return
+		}
+		if parts := form.File["file"]; len(parts) == 1 {
+			gotFilename = parts[0].Filename
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"appId":"app_1","iconUrl":"https://cdn.example.com/icon.png"}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	if _, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon\r\nX-Injected: yes.png", []byte("png-bytes")); err != nil {
+		t.Fatalf("UploadAppIcon: %v", err)
+	}
+	if gotFilename != "icon__X-Injected: yes.png" {
+		t.Errorf("server saw filename %q, want the sanitized name", gotFilename)
+	}
+	if bytes.Contains(raw, []byte("\r\nX-Injected:")) {
+		t.Errorf("raw body contains the injected header line:\n%q", raw)
+	}
+	i := bytes.Index(raw, []byte(`filename="`))
+	if i < 0 {
+		t.Fatalf("raw body has no filename= attribute:\n%q", raw)
+	}
+	for _, b := range raw[i+len(`filename="`):] {
+		if b == '"' {
+			break
+		}
+		if b < 0x20 || b == 0x7f {
+			t.Errorf("raw body filename renders control byte %#x:\n%q", b, raw)
+		}
 	}
 }

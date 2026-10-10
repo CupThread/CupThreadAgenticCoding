@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -724,5 +727,69 @@ func TestAppsUpdateMissingIconFileFailsBeforeRequests(t *testing.T) {
 		"--icon", filepath.Join(t.TempDir(), "missing.png"), "--name", "Valid Name")
 	if err == nil || !strings.Contains(err.Error(), "invalid --icon") {
 		t.Fatalf("error = %v, want invalid --icon naming the unreadable path", err)
+	}
+}
+
+// TestAppsUpdateIconCRLFFilenameUploadsSanitized is the end-to-end guard for
+// issue #180: `apps update --icon` with a POSIX-legal but newline-bearing
+// file name must upload under the sanitized name — the wire body must never
+// carry the injected MIME part header — and the command still succeeds.
+func TestAppsUpdateIconCRLFFilenameUploadsSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	iconPath := filepath.Join(t.TempDir(), "icon\r\nX-Injected: yes.png")
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotFilename string
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPost &&
+			r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/icon":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read body: %v", err)
+				return
+			}
+			raw = body
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil {
+				t.Errorf("parse content type: %v", err)
+				return
+			}
+			form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1 << 20)
+			if err != nil {
+				t.Errorf("parse multipart: %v", err)
+				return
+			}
+			if parts := form.File["file"]; len(parts) == 1 {
+				gotFilename = parts[0].Filename
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Acme iOS","iconUrl":"https://cdn.example.com/icon.png"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "update", "app_1", "--icon", iconPath, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("apps update --icon: %v", err)
+	}
+	if gotFilename != "icon__X-Injected: yes.png" {
+		t.Errorf("server saw filename %q, want the sanitized name", gotFilename)
+	}
+	if bytes.Contains(raw, []byte("\r\nX-Injected:")) {
+		t.Errorf("wire body contains the injected header line:\n%q", raw)
+	}
+	for _, want := range []string{"Updated app app_1", "https://cdn.example.com/icon.png"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
