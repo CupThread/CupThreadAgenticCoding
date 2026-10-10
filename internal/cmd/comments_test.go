@@ -522,97 +522,90 @@ func TestCommentsListPageCapGuard(t *testing.T) {
 	}
 }
 
-// TestCommentsCreatePostsReplyFields covers the public comment create command
-// (previously untested): the POST path, the reply fields riding in the JSON
-// body, and the success confirmation.
-func TestCommentsCreatePostsReplyFields(t *testing.T) {
-	var gotMethod, gotPath, gotBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		gotBody = string(body)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(testComment("cmt_new_1", "thanks for the detail")))
-	}))
-	defer server.Close()
+// TestCommentsCreateFailsFastLocally pins the issue #181 core contract: the
+// comment POST requires a Clerk end-user session no CLI credential can
+// supply, so `comments create` must fail locally with the web-portal
+// guidance and ZERO HTTP requests — with no credential, with a stored cpt_
+// credential, and with an env token alike, in both output modes, and with
+// empty stdout (the failure goes to the error channel, never the
+// machine-readable stream).
+func TestCommentsCreateFailsFastLocally(t *testing.T) {
+	storedTokenCfg := `{"auth":{"method":"token","accessToken":"cpt_pat1234567890","tokenPrefix":"cpt_pat123"}}`
+	cases := []struct {
+		name string
+		env  bool   // set $CUPTHREAD_TOKEN instead of a stored credential
+		cfg  string // stored-credential config seed; "" = no credential at all
+		json bool
+	}{
+		{name: "no credential"},
+		{name: "stored cpt_ credential", cfg: storedTokenCfg},
+		{name: "env token", env: true},
+		{name: "stored credential, --json", cfg: storedTokenCfg, json: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env {
+				t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+			}
+			var requests int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
 
-	out, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
-		"--body", "thanks for the detail",
-		"--parent-id", "cmt_parent_1",
-		"--reply-to", "clerk_42",
-		"--app-key", "key_live_x",
-		"--user-token", "usr_1")
-	if err != nil {
-		t.Fatalf("comments create: %v", err)
-	}
-	if gotMethod != http.MethodPost || gotPath != "/api/v1/feature-requests/fr_1/comments" {
-		t.Errorf("request = %s %s", gotMethod, gotPath)
-	}
-	for _, want := range []string{`"body":"thanks for the detail"`, `"parentId":"cmt_parent_1"`, `"replyToClerkId":"clerk_42"`} {
-		if !strings.Contains(gotBody, want) {
-			t.Errorf("request body missing %q:\n%s", want, gotBody)
-		}
-	}
-	if !strings.Contains(out, "cmt_new_1") {
-		t.Errorf("output missing created comment id:\n%s", out)
+			args := []string{"comments", "create", "fr_1", "--body", "hello"}
+			if tc.json {
+				args = append(args, "--json")
+			}
+			var out string
+			var err error
+			if tc.cfg == "" {
+				out, err = runRoot(t, server.URL, args...)
+			} else {
+				out, err = runRootWithSeededConfig(t, server.URL, tc.cfg, args...)
+			}
+			if err == nil {
+				t.Fatal("expected the web-portal error, got success")
+			}
+			for _, want := range []string{
+				"posting comments requires a signed-in end-user session",
+				"CupThread web portal",
+				"no CLI credential",
+				"nothing was sent",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to contain %q", err, want)
+				}
+			}
+			if requests != 0 {
+				t.Errorf("requests = %d, want 0 (the command must fail before any round-trip)", requests)
+			}
+			if strings.TrimSpace(out) != "" {
+				t.Errorf("stdout = %q, want empty (a failed command prints nothing to the output stream)", out)
+			}
+		})
 	}
 }
 
-// TestCommentsCreateInvalidParent covers the SEC-50 reply contract (issue
-// #135): a parentId that is not a visible comment on the request in the URL
-// is rejected with 400 invalid_parent, and the CLI must state the rule —
-// visible, same request — while preserving the wire code in the chain.
-func TestCommentsCreateInvalidParent(t *testing.T) {
-	var gotRequests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotRequests++
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"The comment you are replying to was not found on this feature request","code":"invalid_parent"}`))
-	}))
-	defer server.Close()
+// TestCommentsCreateDeadFlagsRejected pins the issue #181 flag cleanup: the
+// author-identity and reply flags the server schema strips (PRIV-04, SEC-50)
+// and the identity headers the route never reads no longer exist, so cobra
+// rejects them as unknown flags before any credential is even consulted.
+func TestCommentsCreateDeadFlagsRejected(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	for _, flag := range []string{"author-name", "author-email", "author-avatar-url", "reply-to", "app-key", "user-token"} {
+		t.Run(flag, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer server.Close()
 
-	_, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
-		"--body", "a reply", "--parent-id", "cmt_foreign_1")
-	if err == nil {
-		t.Fatal("expected an invalid-parent error")
-	}
-	for _, want := range []string{
-		"cannot reply",
-		"no longer available",
-		"visible comment on feature request",
-		"hidden or deleted",
-		"different request",
-		"invalid_parent",
-		"The comment you are replying to was not found on this feature request",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to contain %q", err, want)
-		}
-	}
-	if gotRequests != 1 {
-		t.Errorf("requests = %d, want exactly 1 (the losing reply creates nothing)", gotRequests)
-	}
-}
-
-// TestCommentsCreateOther400PassesThrough pins the mapping boundary: a 400
-// that is not invalid_parent (for example a schema validation failure) must
-// surface as the generic API error, not the reply-specific guidance.
-func TestCommentsCreateOther400PassesThrough(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"Validation failed","code":"validation_error"}`))
-	}))
-	defer server.Close()
-
-	_, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1",
-		"--body", "a comment", "--parent-id", "cmt_1")
-	if err == nil {
-		t.Fatal("expected a validation error")
-	}
-	if strings.Contains(err.Error(), "cannot reply") || strings.Contains(err.Error(), "no longer available") {
-		t.Errorf("error = %q, must not use the invalid_parent guidance for another 400 code", err)
-	}
-	if !strings.Contains(err.Error(), "Validation failed") {
-		t.Errorf("error = %q, want the server message", err)
+			_, err := runPublicRoot(t, server.URL, "comments", "create", "fr_1", "--body", "hi", "--"+flag, "x")
+			if err == nil || !strings.Contains(err.Error(), "unknown flag: --"+flag) {
+				t.Errorf("error = %v, want unknown-flag rejection of --%s", err, flag)
+			}
+		})
 	}
 }
