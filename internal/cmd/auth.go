@@ -60,7 +60,10 @@ Logging in against a non-default API endpoint (--base-url or
 $CUPTHREAD_BASE_URL) remembers that endpoint in the config file, so later
 invocations reach the same server without the flag. --base-url and
 $CUPTHREAD_BASE_URL still override it per invocation; 'cupthread auth
-logout' forgets it.
+logout' forgets it. Whatever endpoint issued the credential stays its
+issuer: token refresh and 'auth logout --revoke' always target that server
+even when an override retargets ordinary API calls (a divergence prints one
+warning on stderr).
 
 With --json/--output yaml every method prints a single structured document
 on stdout — {method, email, tokenPrefix, baseUrl} where method is "token",
@@ -243,16 +246,25 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 	return A.reportLogin(res)
 }
 
-// rememberLoginBaseURL stores the base URL the credential was issued against,
-// so later invocations without --base-url/$CUPTHREAD_BASE_URL reach the same
-// server instead of silently falling back to production. The default URL is
-// never stored: an empty field keeps following config.DefaultBaseURL.
+// rememberLoginBaseURL records, at login time, the server the fresh
+// credential was issued against: the config-level BaseURL so later
+// invocations without --base-url/$CUPTHREAD_BASE_URL reach the same server
+// instead of silently falling back to production, and Auth.IssuedBaseURL so
+// the credential protocol (token refresh, logout --revoke) stays pinned to
+// that issuer even when a later invocation overrides the API endpoint
+// (issue #191). The default URL is never stored: empty fields keep following
+// config.DefaultBaseURL. Both values must move together or the remembered
+// endpoint and the credential's pinned issuer would disagree.
 func (a *app) rememberLoginBaseURL() {
-	if url := a.baseURL(); url != config.DefaultBaseURL {
+	url := a.baseURL()
+	if url == config.DefaultBaseURL {
+		a.cfg.BaseURL = ""
+	} else {
 		a.cfg.BaseURL = url
-		return
 	}
-	a.cfg.BaseURL = ""
+	if a.cfg.Auth != nil {
+		a.cfg.Auth.IssuedBaseURL = a.cfg.BaseURL
+	}
 }
 
 func newAuthLogoutCmd() *cobra.Command {
@@ -271,11 +283,12 @@ inheriting the previous account's context.
 
 By default this only clears local state. Pass --revoke to also invalidate
 the stored credential server-side before it is removed: for an OAuth login
-the CLI posts the stored refresh token to the server's RFC 7009 revocation
-endpoint, which disables the whole token pair (the access token dies with
-it). Revocation is best-effort — a network failure or server error prints a
-warning and the local credentials are removed anyway, so logout never gets
-stuck on a unreachable server.
+the CLI posts the stored refresh token to the issuing server's RFC 7009
+revocation endpoint (pinned to the credential's issuer, regardless of any
+--base-url override), which disables the whole token pair (the access token
+dies with it). Revocation is best-effort — a network failure or server
+error prints a warning and the local credentials are removed anyway, so
+logout never gets stuck on a unreachable server.
 
 Personal access tokens (auth login --token) have no CLI-reachable
 revocation endpoint: --revoke then prints the Console path that revokes
@@ -363,11 +376,16 @@ func revokeStoredCredential(ctx context.Context, a *app) {
 	if clientID == "" {
 		clientID = auth.FirstPartyClientID
 	}
-	if err := auth.Revoke(ctx, auth.RevokeEndpoint(a.baseURL()), clientID, token); err != nil {
+	// Revocation is part of the credential protocol: it targets the server
+	// that issued the token, not whatever --base-url/$CUPTHREAD_BASE_URL
+	// names — sending a long-lived refresh token to any other host would be
+	// the exact leak the issuer pinning exists to prevent (issue #191).
+	issuer := authState.IssuerBaseURL(a.cfg.BaseURL)
+	if err := auth.Revoke(ctx, auth.RevokeEndpoint(issuer), clientID, token); err != nil {
 		a.warnf("⚠ Server-side revocation failed (%v): the credential may still be live — revoke it in the Console (Settings → Authorized Apps). Local credentials are removed anyway.", err)
 		return
 	}
-	a.warnf("✓ Revoked the server-side %s at %s", kind, a.baseURL())
+	a.warnf("✓ Revoked the server-side %s at %s", kind, issuer)
 }
 
 // logoutResult is the machine-readable payload of 'auth logout'. Cleared
@@ -469,8 +487,13 @@ func newAuthStatusCmd() *cobra.Command {
 				User              string `json:"user,omitempty"`
 			}
 			row := statusRow{BaseURL: A.baseURL(), Method: "not logged in"}
-			if stored := strings.TrimRight(A.cfg.BaseURL, "/"); stored != "" {
-				row.IssuedBaseURL = stored
+			// The credential's issuing server comes from the credential
+			// itself (Auth.IssuedBaseURL, pinned at login), falling back to
+			// the remembered config base URL for pre-pinning credentials —
+			// so the line stays truthful even if cfg.BaseURL is later
+			// changed or an override retargets API requests (issue #191).
+			if issuer := A.cfg.Auth.IssuerBaseURL(A.cfg.BaseURL); issuer != "" && issuer != config.DefaultBaseURL {
+				row.IssuedBaseURL = issuer
 			}
 			env := config.EnvToken()
 			if env != "" {
