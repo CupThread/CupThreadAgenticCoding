@@ -312,6 +312,7 @@ type recordedCommentRequest struct {
 	method  string
 	path    string
 	query   string
+	auth    string
 	appKey  string
 	userTok string
 }
@@ -326,6 +327,7 @@ func serveCommentPages(t *testing.T, pages []string) (*httptest.Server, *[]recor
 			method:  r.Method,
 			path:    r.URL.Path,
 			query:   r.URL.RawQuery,
+			auth:    r.Header.Get("Authorization"),
 			appKey:  r.Header.Get("X-App-Key"),
 			userTok: r.Header.Get("X-User-Token"),
 		})
@@ -340,8 +342,8 @@ func serveCommentPages(t *testing.T, pages []string) (*httptest.Server, *[]recor
 }
 
 // runPublicRoot also executes the CLI with a test bearer token: the public
-// thread endpoint itself is anonymous-capable, but the CLI gates every
-// command behind a login.
+// thread command must ignore credentials entirely (issue #182) — the token
+// proves no caller identity leaks onto the public GET.
 func runPublicRoot(t *testing.T, serverURL string, args ...string) (string, error) {
 	t.Helper()
 	return runModerationRoot(t, serverURL, args...)
@@ -399,6 +401,74 @@ func TestCommentsListWalksAllPages(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestCommentsListWorksLoggedOut covers issue #182: with no stored credential
+// and no $CUPTHREAD_TOKEN, the public thread GET must go through — the
+// command previously failed client-side with "not logged in" before any
+// request left the process — and the request must carry no Authorization
+// header.
+func TestCommentsListWorksLoggedOut(t *testing.T) {
+	server, seen := serveCommentPages(t, []string{
+		commentPage(testComment("cmt_a1", "logged out one"), 1, ""),
+	})
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "comments", "list", "fr_1")
+	if err != nil {
+		t.Fatalf("comments list logged out: %v", err)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %d, want 1", len(*seen))
+	}
+	if (*seen)[0].auth != "" {
+		t.Errorf("Authorization header = %q, want none on the public thread GET", (*seen)[0].auth)
+	}
+	if !strings.Contains(out, "logged out one") {
+		t.Errorf("output missing comment body:\n%s", out)
+	}
+}
+
+// TestCommentsListLoggedOutForwardsIdentityHeaders pins that the optional
+// SDK-style caller identity (--app-key/--user-token) still rides on the
+// credential-free client while the console bearer stays off the wire.
+func TestCommentsListLoggedOutForwardsIdentityHeaders(t *testing.T) {
+	server, seen := serveCommentPages(t, []string{
+		commentPage(testComment("cmt_a1", "one"), 1, ""),
+	})
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "comments", "list", "fr_1",
+		"--app-key", "key_live_x", "--user-token", "usr_1"); err != nil {
+		t.Fatalf("comments list logged out with identity headers: %v", err)
+	}
+	req := (*seen)[0]
+	if req.appKey != "key_live_x" || req.userTok != "usr_1" {
+		t.Errorf("X-App-Key=%q X-User-Token=%q, want both forwarded", req.appKey, req.userTok)
+	}
+	if req.auth != "" {
+		t.Errorf("Authorization header = %q, want none", req.auth)
+	}
+}
+
+// TestCommentsListNeverSendsBearerWhenLoggedIn is the issue #182 guard: the
+// public thread GET rides a client with no Token provider, so even a fully
+// logged-in invocation must not put the cpt_ bearer on the wire (on
+// anonymous boards it buys nothing, and it cannot satisfy a sign-in-only
+// board either). A refactor that re-attaches the authenticated client sends
+// the env token and fails here.
+func TestCommentsListNeverSendsBearerWhenLoggedIn(t *testing.T) {
+	server, seen := serveCommentPages(t, []string{
+		commentPage(testComment("cmt_a1", "one"), 1, ""),
+	})
+	defer server.Close()
+
+	if _, err := runModerationRoot(t, server.URL, "comments", "list", "fr_1"); err != nil {
+		t.Fatalf("comments list with a credential: %v", err)
+	}
+	if (*seen)[0].auth != "" {
+		t.Errorf("Authorization header = %q, want the public GET to stay bearer-free even when logged in", (*seen)[0].auth)
 	}
 }
 
