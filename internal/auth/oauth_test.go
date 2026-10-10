@@ -598,3 +598,40 @@ func TestDeviceWaitServerExpiredTokenWithoutClientExpiry(t *testing.T) {
 		t.Errorf("terminal expired_token answered after %d polls, want exactly 1", log.count())
 	}
 }
+
+// TestDeviceWaitProgressLineStripsTerminalControls pins the issue #183
+// stderr contract: the "Waiting for authorization (code …)" progress line
+// echoes a server-supplied user code, so it must reach the terminal with
+// every terminal control stripped while the visible text survives.
+func TestDeviceWaitProgressLineStripsTerminalControls(t *testing.T) {
+	server, _ := scriptedDeviceTokenServer([]string{"authorization_pending"})
+	defer server.Close()
+
+	d := &DeviceStart{
+		deviceCode: "dc_test",
+		tokenURL:   server.URL,
+		clientID:   FirstPartyClientID,
+		UserCode:   "\x1b]8;;https://evil.example\x1b\\CODE\x1b]8;;\x1b\\\u009b31mred\u009b0m",
+		Interval:   5 * time.Millisecond,
+		ExpiresAt:  time.Now().Add(40 * time.Millisecond),
+	}
+
+	stop := captureStderr(t)
+	_, waitErr := d.Wait(context.Background())
+	stderr := stop()
+
+	if waitErr == nil || waitErr.Error() != "device code expired" {
+		t.Fatalf("Wait error = %v, want device code expired", waitErr)
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		for _, r := range line {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("stderr contains control rune %U:\n%q", r, stderr)
+				break
+			}
+		}
+	}
+	if !strings.Contains(stderr, "Waiting for authorization (code ]8;;https://evil.example\\CODE]8;;\\31mred0m)...") {
+		t.Errorf("stderr lost the visible code text:\n%q", stderr)
+	}
+}

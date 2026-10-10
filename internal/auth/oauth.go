@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
 
 // FirstPartyClientID is the pre-registered public client for the official CLI.
@@ -370,9 +372,10 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 var slowDownPenalty = 5 * time.Second
 
 // Wait polls until the user confirms, denies, or the code expires. Progress
-// is written to stderr.
+// is written to stderr; the server-supplied user code is stripped of terminal
+// controls before it is echoed there.
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
-	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", d.UserCode)
+	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
 	for {
 		// A zero ExpiresAt (server did not advertise expires_in) leaves the
 		// timer nil — receiving from a nil channel blocks forever — so the
