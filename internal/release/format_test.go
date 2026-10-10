@@ -19,7 +19,9 @@ import (
 
 // unformattedGoFiles walks root and returns the module-relative paths of every
 // .go file whose bytes differ from go/format's canonical output. A file that
-// fails to parse is a hard error: the tree must always compile.
+// fails to parse is a hard error: the tree must always compile. Dot-directories
+// are skipped: they hold tool state (.git metadata, agent and editor scratch
+// trees), never module sources, so local junk cannot fail the gate.
 func unformattedGoFiles(root string) ([]string, error) {
 	var unformatted []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -27,7 +29,7 @@ func unformattedGoFiles(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == ".git" {
+			if strings.HasPrefix(d.Name(), ".") {
 				return filepath.SkipDir
 			}
 			return nil
