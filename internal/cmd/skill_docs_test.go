@@ -650,6 +650,24 @@ func TestAPISkillIssue132(t *testing.T) {
 	}
 }
 
+// TestCLISkillWebhookSecretGuidance pins the issue #190 sync: the CLI skill's
+// secret-handling guidance must cover the per-app GitHub webhook secret — the
+// stdin form, the $CUPTHREAD_GITHUB_WEBHOOK_SECRET fallback, and the
+// deliberate-clear precedence — so the last inline-only secret flag cannot
+// lose its documented off-the-command-line path again.
+func TestCLISkillWebhookSecretGuidance(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"--webhook-secret -",
+		"$CUPTHREAD_GITHUB_WEBHOOK_SECRET",
+		`--webhook-secret ""`,
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required webhook-secret marker %q", marker)
+		}
+	}
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))

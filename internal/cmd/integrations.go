@@ -46,6 +46,40 @@ func resolveIntegrationToken(provider, tokenFlag string) (string, error) {
 	return "", fmt.Errorf("%s token is required: pass --token <value>, pipe it via --token - (stdin), or set $%s (or use auth-url for the OAuth flow)", provider, integrationEnvToken(provider))
 }
 
+// webhookSecretEnvVar is the environment fallback for the per-app GitHub
+// webhook secret, so the secret never has to appear on a command line.
+const webhookSecretEnvVar = "CUPTHREAD_GITHUB_WEBHOOK_SECRET"
+
+// resolveWebhookSecret applies the secret-input convention (mirroring
+// resolveIntegrationToken) to the per-app webhook secret: a "-" or "@" flag
+// value reads stdin (trailing whitespace trimmed), an inline flag value wins,
+// and $CUPTHREAD_GITHUB_WEBHOOK_SECRET is the fallback. Unlike the connect
+// tokens, an empty flag value is a deliberate clear rather than "unset", so
+// the env fallback is consulted only when the flag was not passed at all —
+// `--webhook-secret ""` clears the stored secret even with the variable
+// exported. ok is false when no source is set and the caller should leave the
+// field out of the request body entirely.
+func resolveWebhookSecret(secretFlag string, flagChanged bool) (secret string, ok bool, err error) {
+	if flagChanged {
+		if secretFlag == "-" || secretFlag == "@" {
+			data, err := readInputFile(secretFlag, maxSecretBytes)
+			if err != nil {
+				return "", false, err
+			}
+			trimmed := strings.TrimSpace(string(data))
+			if trimmed == "" {
+				return "", false, errors.New("stdin carried no webhook secret")
+			}
+			return trimmed, true, nil
+		}
+		return secretFlag, true, nil
+	}
+	if env := strings.TrimSpace(os.Getenv(webhookSecretEnvVar)); env != "" {
+		return env, true, nil
+	}
+	return "", false, nil
+}
+
 func newIntegrationsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "integrations",
@@ -290,6 +324,13 @@ func newGitHubConfigCmd() *cobra.Command {
 		Short: "Set the per-app GitHub repository and sync options",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			secret, haveSecret, err := resolveWebhookSecret(webhookSecret, cmd.Flags().Changed("webhook-secret"))
+			if err != nil {
+				if perr := A.reportInputTooLarge(err); perr != nil {
+					return perr
+				}
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -317,8 +358,8 @@ func newGitHubConfigCmd() *cobra.Command {
 			if cmd.Flags().Changed("category-slug") {
 				body["githubDiscussionCategorySlug"] = nilIfEmpty(categorySlug)
 			}
-			if cmd.Flags().Changed("webhook-secret") {
-				body["githubWebhookSecret"] = nilIfEmpty(webhookSecret)
+			if haveSecret {
+				body["githubWebhookSecret"] = nilIfEmpty(secret)
 			}
 			if cmd.Flags().Changed("sync-enabled") {
 				body["githubSyncEnabled"] = syncEnabled
@@ -348,7 +389,7 @@ func newGitHubConfigCmd() *cobra.Command {
 	config_.Flags().StringVar(&categoryID, "category-id", "", "Discussion category ID (see integrations github categories)")
 	config_.Flags().StringVar(&categoryName, "category-name", "", "Discussion category name")
 	config_.Flags().StringVar(&categorySlug, "category-slug", "", "Discussion category slug")
-	config_.Flags().StringVar(&webhookSecret, "webhook-secret", "", "GitHub webhook secret")
+	config_.Flags().StringVar(&webhookSecret, "webhook-secret", "", "GitHub webhook secret: value, \"-\"/\"@\" for stdin (recommended); falls back to $CUPTHREAD_GITHUB_WEBHOOK_SECRET; \"\" clears")
 	config_.Flags().BoolVar(&syncEnabled, "sync-enabled", true, "Enable GitHub sync for this app")
 	config_.Flags().BoolVar(&statusSync, "status-sync", true, "Sync status changes to GitHub")
 	config_.Flags().BoolVar(&commentsSync, "comments-sync", false, "Sync comments to GitHub")
