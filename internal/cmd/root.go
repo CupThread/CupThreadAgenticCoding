@@ -265,6 +265,15 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 		return "", fmt.Errorf("lock config for token refresh: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	if !config.LockSupported {
+		// The platform has no real config lock (issue #193): this refresh
+		// runs without cross-process serialization. Mirrors the retry-notice
+		// convention — one line on stderr, human mode only, so stdout and
+		// the machine-readable stream stay parse-clean.
+		if !a.structured() {
+			fmt.Fprintf(os.Stderr, "warning: this platform has no cross-process config lock; concurrent cupthread invocations could race a token refresh — avoid running them simultaneously\n")
+		}
+	}
 
 	// Cross-process double-check: another CLI process may have rotated the
 	// pair between this process's start and now. Adopting the disk pair

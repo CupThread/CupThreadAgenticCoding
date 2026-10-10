@@ -128,6 +128,14 @@ go install github.com/CupThread/CupThreadAgenticCoding/cmd/cupthread@latest
 go build -o bin/cupthread ./cmd/cupthread
 ```
 
+### Platform support
+
+| Platform | Build & tests | Cross-process config lock |
+| --- | --- | --- |
+| macOS / Linux | ✅ first-class — CI builds, vets, and tests every push | ✅ `flock(LOCK_EX)` on `<config>.lock` |
+| Windows | ✅ first-class — CI builds, vets, and tests every push | ✅ blocking exclusive `LockFileEx` on `<config>.lock` |
+| Other targets (`plan9`, `js/wasm`, …) | ⚠️ compiles (kept green by CI cross-compile gates) but unsupported | ❌ no-op stub — concurrent invocations can race a token refresh or a config update; the CLI prints a warning on the first transparent token refresh |
+
 ### Releases and versioning
 
 Releases are tag-driven. Pushing an annotated `vX.Y.Z` tag triggers the

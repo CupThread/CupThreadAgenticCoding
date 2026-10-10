@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -55,8 +56,13 @@ func assertCleanConfigState(t *testing.T, cfgPath string) {
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("config perms = %o, want 600", perm)
+	if runtime.GOOS != "windows" {
+		// Windows maps os.CreateTemp's 0600 mode to the read-only bit, so
+		// Perm() reports 0666 there; the restrictive-perms guarantee is
+		// unix-only.
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Errorf("config perms = %o, want 600", perm)
+		}
 	}
 	entries, err := os.ReadDir(filepath.Dir(cfgPath))
 	if err != nil {

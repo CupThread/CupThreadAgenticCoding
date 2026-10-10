@@ -28,6 +28,7 @@ type releaseWorkflow struct {
 
 type workflowJob struct {
 	Permissions map[string]string `yaml:"permissions"`
+	RunsOn      string            `yaml:"runs-on"`
 	Needs       needsList         `yaml:"needs"`
 	Env         map[string]string `yaml:"env"`
 	Steps       []workflowStep    `yaml:"steps"`
