@@ -137,14 +137,37 @@ func sanitizeCells(fields []string) []string {
 	return out
 }
 
+// isTerminalControl reports whether r is a character terminals act on rather
+// than display: the C0 control range, DEL, and the C1 range U+0080–U+009F.
+// xterm-class emulators decode the C1 code points as command introducers even
+// in UTF-8 mode (U+009B is CSI, U+009D is OSC, U+0090 is DCS), so they carry
+// the same ESC-sequence threats without a literal ESC byte.
+func isTerminalControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// StripTerminalControls removes every character a terminal may interpret as a
+// command: C0 controls, DEL, and the C1 control range, with no exceptions.
+// It is the strict form for server-supplied text inlined into human-readable
+// lines (API error messages), where layout characters have no place either.
+func StripTerminalControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if isTerminalControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // sanitize strips control characters that turn user-generated content into
 // terminal commands: ESC drives CSI/SGR/OSC sequences (including OSC 8
-// hyperlinks), and the remaining C0 controls plus DEL forge or rewrite output
-// lines (CR, BEL). Tab and newline are layout, not terminal commands, and
+// hyperlinks), the remaining C0 controls plus DEL forge or rewrite output
+// lines (CR, BEL), and the C1 range U+0080–U+009F repeats all of it without
+// an ESC byte. Tab and newline are layout, not terminal commands, and
 // stay. Structured JSON/YAML output bypasses this and remains byte-faithful.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f {
+		if isTerminalControl(r) && r != '\t' && r != '\n' {
 			return -1
 		}
 		return r
