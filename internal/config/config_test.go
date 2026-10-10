@@ -135,3 +135,23 @@ func TestValidateToken(t *testing.T) {
 		}
 	}
 }
+
+func TestStoresCredentials(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *Config
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"no auth section", &Config{DefaultWorkspace: "ws_1"}, false},
+		{"empty auth section", &Config{Auth: &Auth{}}, false},
+		{"access token only", &Config{Auth: &Auth{AccessToken: "cpt_x"}}, true},
+		{"refresh token only", &Config{Auth: &Auth{RefreshToken: "rt_x"}}, true},
+		{"full oauth pair", &Config{Auth: &Auth{AccessToken: "cpt_x", RefreshToken: "rt_x"}}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.cfg.StoresCredentials(); got != tc.want {
+			t.Errorf("%s: StoresCredentials() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

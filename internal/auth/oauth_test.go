@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -346,5 +348,290 @@ func TestDeviceWaitReturnsTokenSet(t *testing.T) {
 	}
 	if log.count() != 2 {
 		t.Errorf("flow used %d polls, want 2 (pending, then success)", log.count())
+	}
+}
+
+// captureStderr swaps os.Stderr for a pipe and returns a stop function that
+// restores it and yields everything written in between. The swap is also
+// restored if the test fails before the stop function runs (same pattern as
+// internal/cmd's captureStdStream).
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		os.Stderr = old
+		_ = w.Close()
+		_, _ = io.Copy(io.Discard, r)
+		_ = r.Close()
+	})
+	return func() string {
+		stopped = true
+		os.Stderr = old
+		if err := w.Close(); err != nil {
+			t.Errorf("close capture pipe: %v", err)
+		}
+		data, err := io.ReadAll(r)
+		if err != nil {
+			t.Errorf("read captured stream: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			t.Errorf("close capture reader: %v", err)
+		}
+		return string(data)
+	}
+}
+
+// deviceAuthorizeServer answers every device_authorize POST with body.
+func deviceAuthorizeServer(body string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// TestStartDeviceExpiresIn pins the issue #185 contract: a device_authorize
+// response that omits expires_in — or sends a zero/negative value — means
+// "no advertised expiry": ExpiresAt stays zero, a warning names the field,
+// and interval defaulting is untouched. A positive value still sets the
+// client-side clock. RFC 8628 §3.2 makes the field REQUIRED, but --base-url
+// targets dev/staging/self-hosted servers that drop it.
+func TestStartDeviceExpiresIn(t *testing.T) {
+	cases := []struct {
+		name          string
+		authorizeBody string
+		wantZero      bool
+		wantWarning   bool
+	}{
+		{
+			name:          "omitted",
+			authorizeBody: `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify"}`,
+			wantZero:      true,
+			wantWarning:   true,
+		},
+		{
+			name:          "zero",
+			authorizeBody: `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":0}`,
+			wantZero:      true,
+			wantWarning:   true,
+		},
+		{
+			name:          "negative",
+			authorizeBody: `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":-5}`,
+			wantZero:      true,
+			wantWarning:   true,
+		},
+		{
+			name:          "positive",
+			authorizeBody: `{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":900}`,
+			wantZero:      false,
+			wantWarning:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := deviceAuthorizeServer(tc.authorizeBody)
+			defer server.Close()
+
+			stop := captureStderr(t)
+			start, err := StartDevice(context.Background(), server.URL, server.URL, FirstPartyClientID)
+			stderr := stop()
+			if err != nil {
+				t.Fatalf("StartDevice: %v", err)
+			}
+			if tc.wantZero && !start.ExpiresAt.IsZero() {
+				t.Errorf("ExpiresAt = %v, want the zero time (no advertised expiry)", start.ExpiresAt)
+			}
+			if !tc.wantZero {
+				if start.ExpiresAt.IsZero() {
+					t.Fatal("ExpiresAt is zero, want the advertised expiry")
+				}
+				if until := time.Until(start.ExpiresAt); until < 890*time.Second || until > 910*time.Second {
+					t.Errorf("ExpiresAt sits %v away, want ~900s", until)
+				}
+			}
+			if tc.wantWarning && !strings.Contains(stderr, "expires_in") {
+				t.Errorf("stderr = %q, want a warning naming expires_in", stderr)
+			}
+			if !tc.wantWarning && strings.Contains(stderr, "warning") {
+				t.Errorf("stderr = %q, want no warning for an advertised expiry", stderr)
+			}
+			// The interval defaulting that already exists must survive the
+			// new expiry handling unchanged (response omitted interval too).
+			if start.Interval != 5*time.Second {
+				t.Errorf("Interval = %v, want the 5s default", start.Interval)
+			}
+		})
+	}
+}
+
+// TestDeviceWaitCompletesWithoutExpiresIn pins the issue #185 behavior end
+// to end: a server that omits expires_in must not abort the flow before the
+// first poll — Wait keeps polling and completes the login.
+func TestDeviceWaitCompletesWithoutExpiresIn(t *testing.T) {
+	token, log := scriptedDeviceTokenServer([]string{"authorization_pending", "success"})
+	defer token.Close()
+	authorize := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify"}`)
+	defer authorize.Close()
+
+	stop := captureStderr(t)
+	start, err := StartDevice(context.Background(), authorize.URL, token.URL, FirstPartyClientID)
+	if err != nil {
+		t.Fatalf("StartDevice: %v", err)
+	}
+	if !start.ExpiresAt.IsZero() {
+		t.Fatalf("ExpiresAt = %v, want zero", start.ExpiresAt)
+	}
+	start.Interval = 20 * time.Millisecond // shrink the 5s default for the test
+
+	set, err := start.Wait(context.Background())
+	stop()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if set.AccessToken != "cpt_dev" || set.RefreshToken != "cpr_dev" {
+		t.Errorf("set = %+v", set)
+	}
+	if log.count() != 2 {
+		t.Errorf("flow used %d polls, want 2 (pending, then success)", log.count())
+	}
+}
+
+// TestDeviceWaitNegativeExpiresInPolls pins that a non-positive expires_in
+// is treated like "no advertised expiry" (polls on), not like "already
+// expired" (instant abort with zero polls — the bug in #185).
+func TestDeviceWaitNegativeExpiresInPolls(t *testing.T) {
+	token, log := scriptedDeviceTokenServer([]string{"authorization_pending", "success"})
+	defer token.Close()
+	authorize := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":-5}`)
+	defer authorize.Close()
+
+	stop := captureStderr(t)
+	start, err := StartDevice(context.Background(), authorize.URL, token.URL, FirstPartyClientID)
+	if err != nil {
+		t.Fatalf("StartDevice: %v", err)
+	}
+	start.Interval = 20 * time.Millisecond
+
+	set, err := start.Wait(context.Background())
+	stop()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if set.AccessToken != "cpt_dev" {
+		t.Errorf("AccessToken = %q, want cpt_dev", set.AccessToken)
+	}
+	if log.count() != 2 {
+		t.Errorf("flow used %d polls, want 2 (pending, then success)", log.count())
+	}
+}
+
+// TestDeviceWaitExpiresWithAdvertisedExpiry pins that a positive expires_in
+// keeps enforcing the client-side clock: with the token endpoint stuck on
+// authorization_pending, Wait ends with "device code expired" about one
+// second in — the pre-#185 behavior for well-formed responses.
+func TestDeviceWaitExpiresWithAdvertisedExpiry(t *testing.T) {
+	token, log := scriptedDeviceTokenServer([]string{"authorization_pending"})
+	defer token.Close()
+	authorize := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":1}`)
+	defer authorize.Close()
+
+	stop := captureStderr(t)
+	start, err := StartDevice(context.Background(), authorize.URL, token.URL, FirstPartyClientID)
+	if err != nil {
+		t.Fatalf("StartDevice: %v", err)
+	}
+	start.Interval = 20 * time.Millisecond
+
+	began := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := start.Wait(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "device code expired" {
+			t.Fatalf("Wait error = %v, want device code expired", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait still running after 5s (advertised 1s expiry not honored?)")
+	}
+	stop()
+	if elapsed := time.Since(began); elapsed < 900*time.Millisecond {
+		t.Errorf("Wait returned after %v, want ≥900ms (advertised 1s expiry honored)", elapsed)
+	}
+	if log.count() < 1 {
+		t.Errorf("flow made %d polls before expiry, want ≥1", log.count())
+	}
+}
+
+// TestDeviceWaitServerExpiredTokenWithoutClientExpiry pins that the token
+// endpoint's own expired_token answer still ends the flow promptly when the
+// client has no advertised expiry (server-side signal unaffected).
+func TestDeviceWaitServerExpiredTokenWithoutClientExpiry(t *testing.T) {
+	token, log := scriptedDeviceTokenServer([]string{"expired_token"})
+	defer token.Close()
+	authorize := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify"}`)
+	defer authorize.Close()
+
+	stop := captureStderr(t)
+	start, err := StartDevice(context.Background(), authorize.URL, token.URL, FirstPartyClientID)
+	if err != nil {
+		t.Fatalf("StartDevice: %v", err)
+	}
+	start.Interval = time.Millisecond
+
+	_, err = start.Wait(context.Background())
+	stop()
+	if err == nil || err.Error() != "device code expired" {
+		t.Fatalf("Wait error = %v, want device code expired", err)
+	}
+	if log.count() != 1 {
+		t.Errorf("terminal expired_token answered after %d polls, want exactly 1", log.count())
+	}
+}
+
+// TestDeviceWaitProgressLineStripsTerminalControls pins the issue #183
+// stderr contract: the "Waiting for authorization (code …)" progress line
+// echoes a server-supplied user code, so it must reach the terminal with
+// every terminal control stripped while the visible text survives.
+func TestDeviceWaitProgressLineStripsTerminalControls(t *testing.T) {
+	server, _ := scriptedDeviceTokenServer([]string{"authorization_pending"})
+	defer server.Close()
+
+	d := &DeviceStart{
+		deviceCode: "dc_test",
+		tokenURL:   server.URL,
+		clientID:   FirstPartyClientID,
+		UserCode:   "\x1b]8;;https://evil.example\x1b\\CODE\x1b]8;;\x1b\\\u009b31mred\u009b0m",
+		Interval:   5 * time.Millisecond,
+		ExpiresAt:  time.Now().Add(40 * time.Millisecond),
+	}
+
+	stop := captureStderr(t)
+	_, waitErr := d.Wait(context.Background())
+	stderr := stop()
+
+	if waitErr == nil || waitErr.Error() != "device code expired" {
+		t.Fatalf("Wait error = %v, want device code expired", waitErr)
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		for _, r := range line {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("stderr contains control rune %U:\n%q", r, stderr)
+				break
+			}
+		}
+	}
+	if !strings.Contains(stderr, "Waiting for authorization (code ]8;;https://evil.example\\CODE]8;;\\31mred0m)...") {
+		t.Errorf("stderr lost the visible code text:\n%q", stderr)
 	}
 }
