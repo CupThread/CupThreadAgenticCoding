@@ -109,8 +109,8 @@ run on the queue and actually create feature requests. Every import source
 requires Pro (402 tier_limit_import_pro). The subscription tier is only
 free or pro.
 
-Pass --options @file to send the raw ImportOptions JSON instead of the
-per-source flags.`,
+Pass --options (a file path, "@path", or "-" / "@" for stdin) to send the
+raw ImportOptions JSON instead of the per-source flags.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if source == "" {
@@ -216,7 +216,7 @@ per-source flags.`,
 	}
 	create.Flags().StringVar(&source, "source", "", "Import source (required)")
 	create.Flags().StringVar(&mode, "mode", "preview", "preview shows the diff, commit creates requests")
-	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON file (\"-\" for stdin; max 1 MB), sent verbatim (numbers keep full precision); overrides per-source flags")
+	create.Flags().StringVar(&optionsFile, "options", "", "Raw ImportOptions JSON: file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB), sent verbatim (numbers keep full precision); overrides per-source flags")
 	create.Flags().StringVar(&owner, "owner", "", "GitHub owner")
 	create.Flags().StringVar(&repo, "repo", "", "GitHub repository")
 	create.Flags().StringSliceVar(&labels, "labels", nil, "GitHub labels filter (comma-separated)")
