@@ -212,8 +212,16 @@ func newCommentsListCmd() *cobra.Command {
 	var appKey, userToken string
 	list := &cobra.Command{
 		Use:   "list <feature-request-id>",
-		Short: "List comments on a feature request",
-		Args:  cobra.ExactArgs(1),
+		Short: "List comments on a feature request (no login required)",
+		Long: `List the comments on a feature request's public board thread.
+
+The thread GET is a public endpoint (issue #182), so this works on a clean
+machine with no 'cupthread auth login' — the CLI never sends the console
+bearer here, since it cannot satisfy a sign-in-only board either. Pass
+--app-key/--user-token to identify an SDK-style caller. The route shares a
+60 requests/minute per-IP budget; boards with anonymous roadmap view
+disabled answer 401.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "/api/v1/feature-requests/" + args[0] + "/comments"
 			headers := map[string]string{}
@@ -229,7 +237,7 @@ func newCommentsListCmd() *cobra.Command {
 					q = url.Values{"cursor": {cursor}}
 				}
 				var page api.ListCommentsResponse
-				if err := A.client.DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
+				if err := A.unauthenticatedClient().DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
 					// PRIV-12: the public thread endpoint answers 404 both for a
 					// missing id and for an unapproved request (existence
 					// hiding), so the message must not imply the request never

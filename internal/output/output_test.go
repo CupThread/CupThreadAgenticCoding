@@ -253,3 +253,37 @@ func TestStructuredKeepsControlCharsEscaped(t *testing.T) {
 		t.Errorf("JSON output lost the escaped payload: %q", out)
 	}
 }
+
+// TestPrintfSafe pins the sanitized human-line path for call sites that
+// bypass Table with server-derived text: the strict StripTerminalControls
+// predicate applies to the formatted line (tab and newline included, so a
+// hostile value cannot forge extra output lines), one trailing newline is
+// appended, and clean input renders byte-identical to Printf.
+func TestPrintfSafe(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatTable)
+	w.PrintfSafe("Checkout URL: %s", "\x1b]8;;https://evil.example/verify\x1b\\CupThread Security\x1b]8;;\x1b\\ \x1b[31mACCOUNT COMPROMISED\x1b[0m\r✓ Backup done\x07\tsecret\nnext")
+	out := buf.String()
+	for _, r := range strings.TrimSuffix(out, "\n") {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("PrintfSafe output contains control rune %U: %q", r, out)
+			break
+		}
+	}
+	for _, want := range []string{
+		"Checkout URL: ]8;;https://evil.example/verify\\CupThread Security]8;;\\ [31mACCOUNT COMPROMISED[0m✓ Backup donesecretnext",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%q", want, out)
+		}
+	}
+	if !strings.HasSuffix(out, "\n") || strings.Count(out, "\n") != 1 {
+		t.Errorf("output = %q, want exactly one trailing newline (no forged lines)", out)
+	}
+
+	buf.Reset()
+	w.PrintfSafe("plain %s", "value")
+	if buf.String() != "plain value\n" {
+		t.Errorf("clean input = %q, want %q", buf.String(), "plain value\n")
+	}
+}

@@ -260,3 +260,63 @@ func TestUsersProfileNotFound(t *testing.T) {
 		t.Errorf("error = %v, want the server's 404 message", err)
 	}
 }
+
+// TestUsersProfileWorksLoggedOut covers issue #182: the profile GET is a
+// public endpoint, so with no stored credential and no $CUPTHREAD_TOKEN the
+// command must succeed — it previously aborted client-side with "not logged
+// in" before any request — and the request must carry no Authorization
+// header, matching the apps public-* commands.
+func TestUsersProfileWorksLoggedOut(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"profile": {
+				"clerkUserId": "user_legacy_1",
+				"displayName": "Ada Lovelace",
+				"avatarUrl": null,
+				"bio": null,
+				"websiteUrl": null,
+				"createdAt": "2026-01-15T10:00:00.000Z"
+			},
+			"publicApps": [],
+			"recentComments": []
+		}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "users", "profile", "user_legacy_1")
+	if err != nil {
+		t.Fatalf("users profile logged out: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization header = %q, want none on the public profile GET", gotAuth)
+	}
+	if !strings.Contains(out, "Ada Lovelace") {
+		t.Errorf("output missing display name:\n%s", out)
+	}
+}
+
+// TestUsersProfileNeverSendsBearerWhenLoggedIn is the issue #182 guard: the
+// public profile GET rides a client with no Token provider, so even a fully
+// logged-in invocation must not put the cpt_ bearer on the wire (it cannot
+// satisfy the server's Clerk-session check anyway). A refactor that
+// re-attaches the authenticated client sends the env token and fails here.
+func TestUsersProfileNeverSendsBearerWhenLoggedIn(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(scopedProfileFixture))
+	}))
+	defer server.Close()
+
+	if _, err := runModerationRoot(t, server.URL, "users", "profile",
+		"u_9f2ca1b3d4e5f60718293a4b5c6d7e8f", "--app-key", "key_live_1"); err != nil {
+		t.Fatalf("users profile with a credential: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization header = %q, want the public GET to stay bearer-free even when logged in", gotAuth)
+	}
+}

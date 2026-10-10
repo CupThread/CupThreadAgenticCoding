@@ -296,7 +296,7 @@ func newAppsCreateCmd() *cobra.Command {
 				return A.out.Structured(appRec)
 			}
 			A.out.Printf("✓ Created app %s (%s)", appRec.Name, appRec.AppID)
-			A.out.Printf("  App key: %s", appRec.AppKey)
+			A.out.PrintfSafe("  App key: %s", appRec.AppKey)
 			A.out.Printf("  Make it the default with: cupthread apps use %s", appRec.AppID)
 			return nil
 		},
@@ -524,7 +524,7 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 			}
 			A.out.Printf("✓ Updated app %s", updated.AppID)
 			if iconRec != nil {
-				A.out.Printf("  Icon: %s", deref(iconRec.IconURL))
+				A.out.PrintfSafe("  Icon: %s", deref(iconRec.IconURL))
 			}
 			return nil
 		},
