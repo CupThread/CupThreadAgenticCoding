@@ -396,7 +396,10 @@ func newFeaturesForwardCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"targetType": target, "labels": labels}
+			// labels must be omitted when unset: the server schema declares
+			// z.array(...).default([]), and a zod default only applies to an
+			// absent key — an explicit JSON null is rejected with 400.
+			body := map[string]any{"targetType": target}
 			if owner != "" {
 				body["owner"] = owner
 			}
@@ -405,6 +408,9 @@ func newFeaturesForwardCmd() *cobra.Command {
 			}
 			if categoryID != "" {
 				body["categoryId"] = categoryID
+			}
+			if len(labels) > 0 {
+				body["labels"] = labels
 			}
 			path := fmt.Sprintf("%s/apps/%s/features/%s/github/forward", wsPath(ws, ""), appID, r.ID)
 			var resp api.ForwardToGitHubResponse
