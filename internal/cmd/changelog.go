@@ -163,7 +163,7 @@ func newChangelogCreateCmd() *cobra.Command {
 	}
 	create.Flags().StringVar(&title, "title", "", "Entry title (required)")
 	create.Flags().StringVar(&bodyText, "body", "", "Markdown body")
-	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file (\"-\" for stdin; max 1 MB)")
+	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
 	create.Flags().StringVar(&versionLabel, "version-label", "", "Version label to show, e.g. 1.2.0")
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
 	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop")
@@ -239,7 +239,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 	}
 	update.Flags().StringVar(&title, "title", "", "New title")
 	update.Flags().StringVar(&bodyText, "body", "", "New markdown body")
-	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file (\"-\" for stdin; max 1 MB)")
+	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
 	update.Flags().StringVar(&versionLabel, "version-label", "", "Version label (\"\" clears it)")
 	update.Flags().StringVar(&versionID, "version-id", "", "Linked version ID (\"\" clears it)")
 	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link")

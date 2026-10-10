@@ -34,9 +34,9 @@ Path must start with "/" and is appended to the base URL, e.g.
 
 Authentication, the X-Workspace-Id header (when a workspace is resolved) and
 JSON output are handled the same as the high-level commands. Pass a JSON body
-with --input @file (or "-" for stdin); the body is sent byte-for-byte as
-given, so JSON numbers keep full precision (issue #75). This is the escape
-hatch for endpoints the CLI does not wrap yet.
+with --input (a file path, curl-style "@path", or "-" / "@" for stdin); the
+body is sent byte-for-byte as given, so JSON numbers keep full precision
+(issue #75). This is the escape hatch for endpoints the CLI does not wrap yet.
 
 The body is capped locally at the server's request-body limits (SEC-36):
 1 MB on console routes, 256 KB on /api/v1/public/ routes. Larger input fails
@@ -129,7 +129,7 @@ include that value in bug reports and support requests.`,
 			return nil
 		},
 	}
-	req.Flags().StringVar(&inputPath, "input", "", "JSON request body file (\"-\" or \"@\" for stdin; max 1 MB, 256 KB on /api/v1/public/ routes)")
+	req.Flags().StringVar(&inputPath, "input", "", "JSON request body: file path, \"@path\", or \"-\"/\"@\" for stdin; max 1 MB, 256 KB on /api/v1/public/ routes")
 	return req
 }
 
@@ -225,12 +225,12 @@ string (no trailing newline), keyed with the app's SDK signing secret
   <currency: valueAsSent|unset>
   <timestamp: epochSeconds>
 
-Pass the exact JSON body you plan to send via --input (a file path, or "-" or
-"@" for stdin; capped at the public route's 256 KB body limit). Absent fields
-sign as "unset" and explicit JSON null as
-"null"; values are signed as sent (currency before any server-side
-normalization). userToken comes from the body, falling back to --user-token
-(the X-User-Token header value).
+Pass the exact JSON body you plan to send via --input (a file path,
+"@path", or "-" / "@" for stdin; capped at the public route's 256 KB body
+limit). Absent fields sign as "unset" and explicit JSON null as "null";
+values are signed as sent (currency before any server-side normalization).
+userToken comes from the body, falling back to --user-token (the
+X-User-Token header value).
 
 The body is mirrored against the server's schema before anything is signed
 (issue #196): currency must be a 3-letter alphabetic code and may not be
@@ -338,7 +338,7 @@ to the body without changing the signed values.`,
 			return nil
 		},
 	}
-	sign.Flags().StringVar(&inputPath, "input", "", "exact JSON request body to sign (\"-\" or \"@\" for stdin; max 256 KB)")
+	sign.Flags().StringVar(&inputPath, "input", "", "exact JSON request body to sign: file path, \"@path\", or \"-\"/\"@\" for stdin; max 256 KB")
 	sign.Flags().StringVar(&appKey, "app-key", "", "appKey path segment of the target app")
 	sign.Flags().StringVar(&secretFlag, "secret", "", "SDK signing secret: value, or \"-\"/\"@\" for stdin; falls back to $"+signingEnvSecret)
 	sign.Flags().StringVar(&userToken, "user-token", "", "X-User-Token header value when the body carries no userToken")
