@@ -124,6 +124,101 @@ func TestLoginTokenFlagTrimsSurroundingSpace(t *testing.T) {
 	}
 }
 
+// runRootCfgWithStdin is runRootCfg with stdin replaced by content, covering
+// the piped-credential read (the "-" form of --token).
+func runRootCfgWithStdin(t *testing.T, cfgPath, serverURL, content string, args ...string) (string, error) {
+	t.Helper()
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "stdin"))
+	if err != nil {
+		t.Fatalf("create stdin file: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write stdin file: %v", err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatalf("rewind stdin file: %v", err)
+	}
+	old := os.Stdin
+	os.Stdin = f
+	defer func() {
+		os.Stdin = old
+		if err := f.Close(); err != nil {
+			t.Errorf("close stdin file: %v", err)
+		}
+	}()
+	return runRootCfg(t, cfgPath, serverURL, args...)
+}
+
+// TestLoginTokenStdinTrimsTrailingNewline covers the piped-credential path
+// (issue #189): a token piped with a trailing newline logs in exactly like
+// the inline flag form and stores the trimmed credential.
+func TestLoginTokenStdinTrimsTrailingNewline(t *testing.T) {
+	var gotAuth []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(meFixture))
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	for _, raw := range []string{"cpt_x\n", "cpt_x\r\n", " cpt_x \n"} {
+		gotAuth = nil
+		out, err := runRootCfgWithStdin(t, cfgPath, server.URL, raw, "auth", "login", "--token", "-")
+		if err != nil {
+			t.Fatalf("login with piped token %q: %v\n%s", raw, err, out)
+		}
+		if len(gotAuth) != 1 || gotAuth[0] != "Bearer cpt_x" {
+			t.Errorf("Authorization for %q = %v, want [Bearer cpt_x]", raw, gotAuth)
+		}
+		if !strings.Contains(out, "Logged in as dev@example.com") {
+			t.Errorf("output for %q missing login confirmation:\n%s", raw, out)
+		}
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if cfg.Auth == nil || cfg.Auth.AccessToken != "cpt_x" {
+		t.Errorf("stored auth = %+v, want the trimmed cpt_x token", cfg.Auth)
+	}
+}
+
+// TestLoginTokenStdinEmptyFails pins the edge case of the bounded stdin read:
+// a pipe that closes without carrying anything fails with the same "empty
+// token" error as an empty inline flag (readInputFile treats EOF as empty
+// input), with no request sent.
+func TestLoginTokenStdinEmptyFails(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(meFixture))
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	_, err := runRootCfgWithStdin(t, cfgPath, server.URL, "", "auth", "login", "--token", "-")
+	if err == nil {
+		t.Fatal("expected login to fail with an empty stdin")
+	}
+	if !strings.Contains(err.Error(), "empty token") {
+		t.Errorf("error = %q, want it to name the empty token", err)
+	}
+	if requests != 0 {
+		t.Errorf("server saw %d requests, want 0", requests)
+	}
+	if _, err := os.Stat(cfgPath); err == nil {
+		t.Error("config file written despite an empty token")
+	}
+}
+
 // TestEnvTokenCRAuthenticatesCleanly pins the env-path trim: a
 // $CUPTHREAD_TOKEN padded with CR/LF/spaces authenticates exactly like a
 // clean token (Authorization is byte-identical, "Bearer cpt_x").

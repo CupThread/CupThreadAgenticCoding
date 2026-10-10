@@ -360,3 +360,68 @@ func TestInputTooLargeYAMLIsOneDocument(t *testing.T) {
 		t.Errorf("document = %+v, want code input_too_large with limit %d", doc, maxConsoleBodyBytes)
 	}
 }
+
+// TestLoginTokenStdinOverSecretCapFailsBeforeSending covers the piped
+// credential contract for `auth login --token -` (issue #189): a newline-free
+// stream over the 64 KB secret cap — the exact shape that used to buffer
+// stdin without bound — fails locally with the structured input_too_large
+// document, and the /console/me probe observes zero requests.
+func TestLoginTokenStdinOverSecretCapFailsBeforeSending(t *testing.T) {
+	server, sent := countingServer(t)
+
+	oversized := strings.Repeat("x", int(maxSecretBytes)+1) // no newline anywhere
+	out, err := runRootWithStdin(t, server.URL, oversized, "auth", "login", "--token", "-", "--json")
+	if err == nil {
+		t.Fatal("auth login succeeded with an over-limit piped token, want a local failure")
+	}
+	if *sent != 0 {
+		t.Errorf("server observed %d requests, want 0 — the token read must precede the probe", *sent)
+	}
+	if !strings.Contains(err.Error(), "input exceeds the 64 KB request-body limit") {
+		t.Errorf("error = %q, want it to name the 64 KB cap", err.Error())
+	}
+	var payload struct {
+		Code  string `json:"code"`
+		Limit int64  `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("stdout %q is not one JSON document: %v", out, err)
+	}
+	if payload.Code != "input_too_large" || payload.Limit != maxSecretBytes {
+		t.Errorf("payload = %+v, want code input_too_large with limit %d", payload, maxSecretBytes)
+	}
+}
+
+// TestPipedCredentialFlagsShareSecretCap asserts the 64 KB cap uniformly
+// across every piped-credential flag: `auth login --token -`,
+// `api sign-user-attrs --secret -` and `integrations github connect --token
+// -` all fail locally before any request when stdin carries one byte over
+// the cap (issue #189's uniformity contract).
+func TestPipedCredentialFlagsShareSecretCap(t *testing.T) {
+	oversized := strings.Repeat("x", int(maxSecretBytes)+1)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"auth login --token -", []string{"auth", "login", "--token", "-"}},
+		{"api sign-user-attrs --secret -", []string{"api", "sign-user-attrs",
+			"--app-key", "app_1", "--input", writeInputFile(t, `{"userToken":"u1"}`), "--secret", "-"}},
+		{"integrations github connect --token -", []string{"integrations", "github", "connect", "--token", "-"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, sent := countingServer(t)
+
+			_, err := runRootWithStdin(t, server.URL, oversized, append(tc.args, "--json")...)
+			if err == nil {
+				t.Fatal("command succeeded with an over-limit piped secret, want a local failure")
+			}
+			if *sent != 0 {
+				t.Errorf("server observed %d requests, want 0", *sent)
+			}
+			var tooLarge *InputTooLargeError
+			if !asInputTooLarge(err, &tooLarge) || tooLarge.Limit != maxSecretBytes {
+				t.Errorf("err = %v, want InputTooLargeError with limit %d", err, maxSecretBytes)
+			}
+		})
+	}
+}
