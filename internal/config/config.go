@@ -3,7 +3,9 @@
 // The config lives at ~/.config/cupthread/config.json (overridable via
 // CUPTHREAD_CONFIG or XDG_CONFIG_HOME) and holds credentials plus the
 // default workspace/app context. The file is created with 0600 permissions
-// because it contains access tokens.
+// because it contains access tokens; UnsafePermissions and RepairPermissions
+// let the CLI re-check that hygiene at load time and repair a mode that was
+// loosened after the fact (issue #186).
 package config
 
 import (
@@ -67,6 +69,18 @@ type Config struct {
 	BaseURL          string                     `json:"baseUrl,omitempty"`
 	Workspaces       map[string]*WorkspacePrefs `json:"workspaces,omitempty"`
 	Auth             *Auth                      `json:"auth,omitempty"`
+}
+
+// StoresCredentials reports whether c holds an auth section with actual
+// tokens (access or refresh). An auth section without either — the shape a
+// hand-edited or partially cleared file can leave behind — counts as
+// credential-free, so a loosened file mode is not worth warning about when
+// there is nothing on disk to expose (issue #186).
+func (c *Config) StoresCredentials() bool {
+	if c == nil || c.Auth == nil {
+		return false
+	}
+	return c.Auth.AccessToken != "" || c.Auth.RefreshToken != ""
 }
 
 // Path returns the config file location. CUPTHREAD_CONFIG wins, then

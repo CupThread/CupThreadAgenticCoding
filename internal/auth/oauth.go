@@ -344,15 +344,25 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	return &DeviceStart{
+	start := &DeviceStart{
 		deviceCode:      parsed.DeviceCode,
 		tokenURL:        tokenURL,
 		clientID:        clientID,
 		UserCode:        parsed.UserCode,
 		VerificationURI: parsed.VerificationURI,
 		Interval:        interval,
-		ExpiresAt:       time.Now().Add(time.Duration(parsed.ExpiresIn) * time.Second),
-	}, nil
+	}
+	// expires_in is REQUIRED by RFC 8628 §3.2, but --base-url targets
+	// dev/staging/self-hosted endpoints that drop it: a missing or
+	// non-positive value means "no advertised expiry", so ExpiresAt stays
+	// zero and Wait keeps polling until the token endpoint answers — its
+	// own expired_token still terminates the flow (issue #185).
+	if parsed.ExpiresIn > 0 {
+		start.ExpiresAt = time.Now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: device authorization response omitted expires_in; waiting until the server expires the code\n")
+	}
+	return start, nil
 }
 
 // slowDownPenalty is added to the polling interval every time the token
@@ -367,11 +377,19 @@ var slowDownPenalty = 5 * time.Second
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
 	for {
+		// A zero ExpiresAt (server did not advertise expires_in) leaves the
+		// timer nil — receiving from a nil channel blocks forever — so the
+		// expiry case never fires and the poll loop ends only through the
+		// token endpoint's own signals or the context.
+		var expired <-chan time.Time
+		if !d.ExpiresAt.IsZero() {
+			expired = time.After(time.Until(d.ExpiresAt))
+		}
 		select {
 		case <-time.After(d.Interval):
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(time.Until(d.ExpiresAt)):
+		case <-expired:
 			return nil, errors.New("device code expired")
 		}
 

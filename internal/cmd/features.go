@@ -53,14 +53,24 @@ func newFeaturesListCmd() *cobra.Command {
 	var limit, offset int
 	var sort string
 	var payerOnly bool
+	var allApps bool
 	list := &cobra.Command{
-		Use:                   "list",
-		Short:                 "List feature requests",
+		Use:   "list",
+		Short: "List feature requests",
+		Long: `List feature requests.
+
+The listing is scoped to the resolved app (--app flag, else the saved
+default from 'apps use'), so every ID it shows resolves in the ID-taking
+commands (get/update/approve/delete/forward). Pass --all-apps for the
+workspace-wide cross-app view instead.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if allApps && flagApp != "" {
+				return errors.New("the --all-apps flag cannot be combined with --app")
 			}
 			// The server clamps the page size to 200 silently; clamp here
 			// too so --limit 500 does not imply it did anything more.
@@ -69,7 +79,12 @@ func newFeaturesListCmd() *cobra.Command {
 			} else if limit > featureRequestPageSize {
 				limit = featureRequestPageSize
 			}
-			appID := flagApp
+			appID := ""
+			if !allApps {
+				// Scope the listing to the resolved app like the ID-taking
+				// commands do, so list → get round-trips (issue #187).
+				appID = A.optionalAppID()
+			}
 			resp, err := listFeatureRequests(cmd.Context(), ws, appID, limit, offset, sort, payerOnly)
 			if err != nil {
 				return err
@@ -77,7 +92,7 @@ func newFeaturesListCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Table([]string{"ID", "Title", "Column", "Version", "Votes", "Approved", "Revenue", "Created"}, featureRows(resp.Requests))
+			A.out.Table([]string{"ID", "App", "Title", "Column", "Version", "Votes", "Approved", "Revenue", "Created"}, featureRows(resp.Requests))
 			A.out.Printf("(%d shown, %d total)", len(resp.Requests), resp.Total)
 			// Always printed (even at 0) so the line's presence is a stable
 			// part of the output shape; it is the Console triage backlog
@@ -90,6 +105,7 @@ func newFeaturesListCmd() *cobra.Command {
 	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
 	list.Flags().StringVar(&sort, "sort", "newest", "Sort order: newest or revenue (revenue is Pro-gated)")
 	list.Flags().BoolVar(&payerOnly, "payer-only", false, "Only requests from paying users (Pro-gated)")
+	list.Flags().BoolVar(&allApps, "all-apps", false, "List requests from every app in the workspace (ignore the resolved app)")
 	_ = list.RegisterFlagCompletionFunc("sort", cobra.FixedCompletions([]string{"newest", "revenue"}, cobra.ShellCompDirectiveNoFileComp))
 	return list
 }
@@ -107,6 +123,7 @@ func featureRows(reqs []api.AdminFeatureRequest) [][]string {
 		}
 		rows = append(rows, []string{
 			id,
+			orDash(r.AppID),
 			truncate(r.Title, 44),
 			orDash(deref(r.ColumnName)),
 			orDash(deref(r.VersionLabel)),
@@ -139,7 +156,9 @@ const maxFeatureRequestPages = 50
 //
 // The lookup is scoped to the resolved app (--app flag, else the saved
 // default from 'apps use') so ID resolution cannot cross into another app's
-// requests; with no app resolved it stays workspace-wide.
+// requests; with no app resolved it stays workspace-wide. The not-found
+// error names the app the scan actually covered and points at --app as the
+// escape hatch, so an ID copied from the wrong scope is diagnosable.
 func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureRequest, error) {
 	ws, err := workspaceClient(ctx)
 	if err != nil {
@@ -173,6 +192,14 @@ func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureR
 	}
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("ambiguous request prefix %q matches %d requests; use a longer prefix", ref, len(matches))
+	}
+	if appID != "" {
+		// The scan covered only the resolved app, so name that scope and the
+		// escape hatches instead of mislabeling it workspace-wide (issue #187).
+		if !exhausted {
+			return nil, fmt.Errorf("feature request %q not found in the first %d requests of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxFeatureRequestPages)
+		}
+		return nil, fmt.Errorf("feature request %q not found among the %d requests of app %s in workspace %s (resolution is scoped to the resolved app: pass --app <id> to search another app, or run 'cupthread apps use' to change the default)", ref, scanned, appID, ws)
 	}
 	if !exhausted {
 		return nil, fmt.Errorf("feature request %q not found in the first %d requests (resolution scans at most %d pages); narrow the search with --app", ref, scanned, maxFeatureRequestPages)
