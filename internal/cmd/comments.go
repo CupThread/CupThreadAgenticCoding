@@ -265,72 +265,42 @@ disabled answer 401.`,
 	return list
 }
 
+// commentsCreateUnavailableErr is the only outcome `comments create` can
+// ever have (issue #181): POST /api/v1/feature-requests/{id}/comments
+// authenticates the caller with verifyClerkToken — it parses the bearer as a
+// three-part Clerk end-user session JWT. Every CLI credential is a cpt_
+// token (personal access token or OAuth login), which fails that parse, so
+// the wire request could only ever answer 401 authentication_required. The
+// command fails locally, before any round-trip, instead of guaranteeing
+// that 401.
+const commentsCreateUnavailableErr = "posting comments requires a signed-in end-user session in the CupThread web portal; no CLI credential — a personal access token or an OAuth login — can perform it, so nothing was sent. Post the comment from the CupThread web portal while signed in"
+
 func newCommentsCreateCmd() *cobra.Command {
-	var body, replyTo, parentID, authorName, authorEmail, authorAvatarURL, replyToAuthorName, appKey, userToken string
+	var body, parentID, replyToAuthorName string
 	create := &cobra.Command{
 		Use:   "create <feature-request-id>",
-		Short: "Post a comment or @reply on a feature request",
-		Args:  cobra.ExactArgs(1),
+		Short: "Post a comment or @reply on a feature request (always fails: needs a web-portal sign-in)",
+		Long: `Post a comment or @reply on a feature request.
+
+This command cannot succeed with any CLI credential: the comment endpoint
+requires a signed-in end-user session, and every CLI credential — a personal
+access token or an OAuth login — is a cpt_ bearer the endpoint cannot
+accept. It therefore fails locally, before sending anything, instead of
+burning a guaranteed 401 round-trip. Post the comment from the CupThread web
+portal while signed in.
+
+The command and its --body/--parent-id flags stay declared for a future
+credential that can sign in. The former --author-name/--author-email/
+--author-avatar-url/--reply-to flags and the --app-key/--user-token headers
+are gone: the server schema strips author and reply identity (PRIV-04,
+SEC-50) and the route reads neither header.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if body == "" {
-				return fmt.Errorf("--body is required")
-			}
-			path := "/api/v1/feature-requests/" + args[0] + "/comments"
-			reqBody := map[string]any{"body": body}
-			if authorName != "" {
-				reqBody["authorName"] = authorName
-			}
-			if authorEmail != "" {
-				reqBody["authorEmail"] = authorEmail
-			}
-			if authorAvatarURL != "" {
-				reqBody["authorAvatarUrl"] = authorAvatarURL
-			}
-			if parentID != "" {
-				reqBody["parentId"] = parentID
-			}
-			if replyTo != "" {
-				reqBody["replyToClerkId"] = replyTo
-			}
-			if replyToAuthorName != "" {
-				reqBody["replyToAuthorName"] = replyToAuthorName
-			}
-
-			headers := map[string]string{}
-			if appKey != "" {
-				headers["X-App-Key"] = appKey
-			}
-			if userToken != "" {
-				headers["X-User-Token"] = userToken
-			}
-
-			var resp api.FeatureRequestComment
-			if err := A.client.DoWithHeaders(cmd.Context(), "POST", path, nil, headers, reqBody, &resp); err != nil {
-				// SEC-50: the API rejects a parentId that is not a visible
-				// comment on the request in the URL (cross-request, missing,
-				// hidden, or deleted) with 400 invalid_parent and stores
-				// nothing. State the rule instead of surfacing a bare 400.
-				var apiErr *api.APIError
-				if errors.As(err, &apiErr) && apiErr.Code == "invalid_parent" {
-					return fmt.Errorf("cannot reply: the comment you are replying to is no longer available — --parent-id must reference a visible comment on feature request %q (it may have been hidden or deleted, or belong to a different request): %w", args[0], err)
-				}
-				return err
-			}
-			if A.structured() {
-				return A.out.Structured(resp)
-			}
-			A.out.Printf("✓ Comment %s created", resp.ID)
-			return nil
+			return errors.New(commentsCreateUnavailableErr)
 		},
 	}
-	create.Flags().StringVar(&body, "body", "", "Comment text (required)")
-	create.Flags().StringVar(&replyTo, "reply-to", "", "Clerk user ID to @reply")
+	create.Flags().StringVar(&body, "body", "", "Comment text (kept for a future credential that can sign in)")
 	create.Flags().StringVar(&parentID, "parent-id", "", "Parent comment ID for threading (must be a visible comment on the same feature request; anything else is rejected with 400 invalid_parent)")
-	create.Flags().StringVar(&authorName, "author-name", "", "Display name for the comment author")
-	create.Flags().StringVar(&authorEmail, "author-email", "", "Email for the comment author")
-	create.Flags().StringVar(&authorAvatarURL, "author-avatar-url", "", "Avatar image URL for the comment author")
 	create.Flags().StringVar(&replyToAuthorName, "reply-to-author-name", "", "Display name of the author being replied to (ignored by the API; it is resolved from the parent comment)")
-	create.Flags().StringVar(&appKey, "app-key", "", "Client App Key header (X-App-Key)")
-	create.Flags().StringVar(&userToken, "user-token", "", "User device token header (X-User-Token)")
 	return create
 }

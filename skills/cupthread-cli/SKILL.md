@@ -353,19 +353,28 @@ interactive login or the Console web UI.
 ### Comments & @Replies
 ```sh
 cupthread comments list <featureRequestId> # List comments on a feature request (no login required)
-cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
 ```
 
 `comments list` needs no credential: it reads the public thread GET through a
 credential-free client and never sends the console bearer, so a clean machine
 (or a logged-out CI script) can read public board threads (issue #182).
 
-`comments create --parent-id` must reference a visible comment on the same
-feature request (not hidden or deleted). The API rejects anything else with
-`400 invalid_parent` — "The comment you are replying to was not found on this
-feature request" — and stores nothing; the CLI surfaces that as an explicit
-error. Take `--parent-id` from `comments list` on the same request, and don't
-bother crafting `--reply-to-author-name`: the server always resolves the
+`comments create` cannot succeed with any CLI credential and fails locally
+before sending anything: the comment POST requires a signed-in end-user
+session (the route authenticates a Clerk session JWT, and every CLI
+credential — personal access token or OAuth login — is a `cpt_` bearer the
+route cannot accept). Post the comment from the CupThread web portal while
+signed in instead. The command stays declared, with `--body` and
+`--parent-id`, for a future credential that can sign in; its former
+`--author-name`, `--author-email`, `--author-avatar-url`, and `--reply-to`
+flags and its `--app-key`/`--user-token` headers are gone — the server
+schema strips author and reply identity (PRIV-04, SEC-50) and the route
+reads neither header. Under any future credential, `--parent-id` must
+reference a visible comment on the same feature request (not hidden or
+deleted); the API rejects anything else with `400 invalid_parent` — "The
+comment you are replying to was not found on this feature request" — and
+stores nothing; take `--parent-id` from `comments list` on the same request.
+`--reply-to-author-name` stays ignored: the server always resolves the
 replied-to author from the parent comment itself.
 
 Both list commands walk the thread's keyset pagination (PROD-31: 200
