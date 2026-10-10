@@ -612,6 +612,57 @@ func TestIssue134SignUserAttrsCommandHelp(t *testing.T) {
 	}
 }
 
+// TestSkillDocsIssue196SchemaMirror pins the issue-#196 sync: sign-user-attrs
+// mirrors the server's EndUserAttributesInputSchema before signing (currency
+// 3-letter and non-null, mrr <= 1000000, plan 1-64 code points, non-null
+// isPaying, RFC 4122 UUID userToken), and both skills teach that a body the
+// schema rejects can never be signed into a sendable request.
+func TestSkillDocsIssue196SchemaMirror(t *testing.T) {
+	t.Run("command help", func(t *testing.T) {
+		sign := newAPISignUserAttrsCmd()
+		for _, marker := range []string{
+			"mirrored against the server's schema before anything is signed",
+			"currency must be a 3-letter alphabetic code",
+			"mrr at most 1000000",
+			"plan 1-64 characters",
+			"userToken an RFC 4122 UUID",
+		} {
+			if !strings.Contains(sign.Long, marker) {
+				t.Errorf("sign-user-attrs Long missing issue-#196 marker %q:\n%s", marker, sign.Long)
+			}
+		}
+	})
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"mirrored against the server's `EndUserAttributesInputSchema` before anything is signed (issue #196)",
+			"`mrr` at most `1000000`",
+			"`plan` 1–64 characters (counted in Unicode code points)",
+			"`userToken` an RFC 4122 UUID (in the body, or in `--user-token` when the body omits it)",
+			"no round trip is ever burned on a guaranteed 400",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#196 marker %q", marker)
+			}
+		}
+	})
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			"### Request-body field constraints run before the signature gate",
+			"a signature computed over any other shape is dead on arrival",
+			"`plan` a 1–64-character string (counted in Unicode code points) or `null`",
+			"`mrr` a number between 0 and `1000000` or `null`",
+			"`currency` a 3-letter alphabetic code (`[A-Za-z]{3}`)",
+			"refuses to sign bodies that cannot pass (issue #196)",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#196 marker %q", marker)
+			}
+		}
+	})
+}
+
 // TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
 // only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
 // every public payload serves avatar fields as null or a managed https URL.
