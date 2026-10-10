@@ -300,6 +300,78 @@ func TestFeaturesForwardPathUsesResolvedApp(t *testing.T) {
 	}
 }
 
+// TestFeaturesForwardBodyContract pins the forward request-body contract
+// (issue #197): the server schema declares labels: z.array(...).default([]),
+// and a zod default only substitutes for an absent key — an explicit null is
+// rejected with 400 "Invalid forward input". So an unset --labels must omit
+// the key entirely (like the neighboring owner/repo/categoryId), and a set
+// --labels must marshal as a real string array.
+func TestFeaturesForwardBodyContract(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var forwardBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/github/forward") {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read forward body: %v", err)
+			}
+			if err := json.Unmarshal(raw, &forwardBody); err != nil {
+				t.Errorf("decode forward body %q: %v", raw, err)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"targetType":"discussion","url":"https://github.com/acme/ios/discussions/9"}`))
+			return
+		}
+		_, _ = w.Write(filteredFixture(t, r.URL.Query().Get("appId")))
+	}))
+	t.Cleanup(server.Close)
+
+	cases := []struct {
+		name    string
+		args    []string
+		want    map[string]any
+		wantKey []string
+	}{
+		{
+			name:    "default invocation omits labels",
+			args:    []string{"features", "forward", "fr_a_1"},
+			want:    map[string]any{"targetType": "discussion"},
+			wantKey: []string{"labels", "owner", "repo", "categoryId"},
+		},
+		{
+			name:    "labels marshal as an array",
+			args:    []string{"features", "forward", "fr_a_1", "--labels", "a,b"},
+			want:    map[string]any{"targetType": "discussion", "labels": []any{"a", "b"}},
+			wantKey: []string{"owner", "repo", "categoryId"},
+		},
+		{
+			name:    "target and repository hints pass through",
+			args:    []string{"features", "forward", "fr_a_1", "--target", "issue", "--owner", "acme", "--repo", "ios"},
+			want:    map[string]any{"targetType": "issue", "owner": "acme", "repo": "ios"},
+			wantKey: []string{"labels", "categoryId"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			forwardBody = nil
+			if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, tc.args...); err != nil {
+				t.Fatalf("%v: %v", tc.args, err)
+			}
+			for _, k := range tc.wantKey {
+				if got, ok := forwardBody[k]; ok {
+					t.Errorf("body[%q] = %#v, want the key absent", k, got)
+				}
+			}
+			for k, want := range tc.want {
+				if got := forwardBody[k]; !reflect.DeepEqual(got, want) {
+					t.Errorf("body[%q] = %#v, want %#v", k, got, want)
+				}
+			}
+		})
+	}
+}
+
 // pagedRequests builds a synthetic workspace listing of n requests with IDs
 // req_0000…, all under app_a so the saved-default-app scoping matches.
 func pagedRequests(n int) []api.AdminFeatureRequest {
