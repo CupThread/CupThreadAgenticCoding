@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -346,5 +348,55 @@ func TestDeviceWaitReturnsTokenSet(t *testing.T) {
 	}
 	if log.count() != 2 {
 		t.Errorf("flow used %d polls, want 2 (pending, then success)", log.count())
+	}
+}
+
+// TestDeviceWaitProgressLineStripsTerminalControls pins the issue #183
+// stderr contract: the "Waiting for authorization (code …)" progress line
+// echoes a server-supplied user code, so it must reach the terminal with
+// every terminal control stripped while the visible text survives.
+func TestDeviceWaitProgressLineStripsTerminalControls(t *testing.T) {
+	server, _ := scriptedDeviceTokenServer([]string{"authorization_pending"})
+	defer server.Close()
+
+	d := &DeviceStart{
+		deviceCode: "dc_test",
+		tokenURL:   server.URL,
+		clientID:   FirstPartyClientID,
+		UserCode:   "\x1b]8;;https://evil.example\x1b\\CODE\x1b]8;;\x1b\\\u009b31mred\u009b0m",
+		Interval:   5 * time.Millisecond,
+		ExpiresAt:  time.Now().Add(40 * time.Millisecond),
+	}
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	_, waitErr := d.Wait(context.Background())
+	os.Stderr = old
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	stderr := string(out)
+
+	if waitErr == nil || waitErr.Error() != "device code expired" {
+		t.Fatalf("Wait error = %v, want device code expired", waitErr)
+	}
+	for _, line := range strings.Split(stderr, "\n") {
+		for _, r := range line {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("stderr contains control rune %U:\n%q", r, stderr)
+				break
+			}
+		}
+	}
+	if !strings.Contains(stderr, "Waiting for authorization (code ]8;;https://evil.example\\CODE]8;;\\31mred0m)...") {
+		t.Errorf("stderr lost the visible code text:\n%q", stderr)
 	}
 }

@@ -125,7 +125,10 @@ include that value in bug reports and support requests.`,
 				return nil
 			}
 			A.out.Printf("✓ %s %s (request-id %s)", method, path, requestID)
-			A.out.Printf("%s", raw)
+			// The body is server-derived: display it through the sanitized
+			// human-line path so raw control bytes cannot reach the terminal
+			// (--json/-o yaml above stay byte-faithful).
+			A.out.PrintfSafe("%s", raw)
 			return nil
 		},
 	}
