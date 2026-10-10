@@ -352,9 +352,13 @@ interactive login or the Console web UI.
 
 ### Comments & @Replies
 ```sh
-cupthread comments list <featureRequestId> # List comments on a feature request
+cupthread comments list <featureRequestId> # List comments on a feature request (no login required)
 cupthread comments create <featureRequestId> --body "Great idea!" [--reply-to <clerkId>] [--parent-id <commentId>]
 ```
+
+`comments list` needs no credential: it reads the public thread GET through a
+credential-free client and never sends the console bearer, so a clean machine
+(or a logged-out CI script) can read public board threads (issue #182).
 
 `comments create --parent-id` must reference a visible comment on the same
 feature request (not hidden or deleted). The API rejects anything else with
@@ -390,9 +394,12 @@ workspace role whose capabilities include it.
 
 ### User Profiles
 ```sh
-cupthread users profile <userId>           # Look up a public developer profile, apps, and comments
+cupthread users profile <userId>           # Look up a public developer profile, apps, and comments (no login required)
 cupthread users profile u_9f2c… --app-key key_live_…  # App-scoped u_* ids from board/comment payloads need --app-key
 ```
+`users profile` needs no credential either: like `comments list` it reads a
+public endpoint through a credential-free client and never sends the console
+bearer (issue #182).
 User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it. Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19) — the CLI prints `—` for `null`; when consuming the `--json` output, render a placeholder rather than assuming the value's host.
 
 ### Changelog & Releases
