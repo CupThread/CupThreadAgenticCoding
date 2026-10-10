@@ -143,8 +143,12 @@ cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPE
                                            # requires workspace admin/owner). A declared type that does not
                                            # match the file content fails with 415 "unsupported image type".
                                            # Size cap (SEC-36): files over 10 MB are rejected client-side
-                                           # (nothing is sent); the server answers larger payloads with
-                                           # 413 payload_too_large.
+                                           # (nothing is sent); the read itself is bounded, so a file swapped
+                                           # or grown past the cap after the initial check still fails with
+                                           # input_too_large before any request. Special files (FIFOs,
+                                           # devices, sockets) fail with "not a regular file" instead of
+                                           # hanging or buffering until memory runs out; the server answers
+                                           # larger payloads with 413 payload_too_large.
                                            # Update order: metadata flags are PUT first, icon uploaded last;
                                            # name/slug/URL/platform values are validated locally first and a
                                            # failed icon upload after an applied PUT reports

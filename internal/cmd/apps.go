@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -411,12 +410,15 @@ func newAppsUpdateCmd() *cobra.Command {
 Field flags (--name, --slug, --store-url, --app-store-url, --google-play-url,
 --public, --platforms) are validated locally against the server's rules and
 applied with one PUT before the icon is uploaded, so a rejected field update
-commits nothing. The icon file itself is checked before any request is sent:
-a missing path or a file over the 10 MB server-side image cap fails the
-command up front instead of after the metadata PUT has applied. If the
-metadata PUT succeeds but the icon upload still fails, the command reports
-"partially applied" — in --json/--yaml mode the error payload carries
-"applied" and "failed" lists so scripts can tell what went live.
+commits nothing. The icon file itself is read — bounded, from a verified
+regular file — before any request is sent: a missing path, a special file (a
+FIFO would hang the command, a device like /dev/zero would buffer until
+memory runs out), or a file over the 10 MB server-side image cap fails the
+command up front, an oversized read reporting input_too_large in
+--json/--yaml mode. If the metadata PUT succeeds but the icon upload still
+fails, the command reports "partially applied" — in --json/--yaml mode the
+error payload carries "applied" and "failed" lists so scripts can tell what
+went live.
 Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -424,7 +426,27 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 			// flag values fail before any request — the app lookup
 			// included — can commit anything.
 			if err := validateAppsUpdateFlags(cmd, name, slug, storeURL, appStoreURL, googlePlayURL, platforms, iconPath); err != nil {
+				if perr := A.reportInputTooLarge(err); perr != nil {
+					return perr
+				}
 				return err
+			}
+			iconUpload := cmd.Flags().Changed("icon") && iconPath != ""
+			// Issue #192: the icon bytes are read — bounded, from a
+			// verified regular file — before any HTTP request, the
+			// metadata PUT included, so a file grown or swapped past the
+			// cap after validateAppsUpdateFlags's advisory Stat still
+			// fails locally with input_too_large instead of mid-update.
+			var iconData []byte
+			if iconUpload {
+				var rerr error
+				iconData, rerr = readIconFile(iconPath)
+				if rerr != nil {
+					if perr := A.reportInputTooLarge(rerr); perr != nil {
+						return perr
+					}
+					return rerr
+				}
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -435,7 +457,6 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 				return err
 			}
 
-			iconUpload := cmd.Flags().Changed("icon") && iconPath != ""
 			body := map[string]any{}
 			if cmd.Flags().Changed("name") {
 				body["name"] = name
@@ -484,7 +505,9 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 			if iconUpload {
 				// The console icon endpoint validates the image and updates
 				// the app record in the same request, so no iconUrl PUT here.
-				iconRec, err = uploadIcon(cmd.Context(), ws, appRec.AppID, iconPath)
+				// The bytes were read and capped before any request went out
+				// (issue #192); only the network round trip remains here.
+				iconRec, err = A.client.UploadAppIcon(cmd.Context(), ws, appRec.AppID, fileName(iconPath), iconData)
 				if err != nil {
 					if updated != nil {
 						return A.reportPartialUpdate(applied, "icon", err)
@@ -511,7 +534,7 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 	update.Flags().StringVar(&storeURL, "store-url", "", "Legacy store URL (\"\" clears it)")
 	update.Flags().StringVar(&appStoreURL, "app-store-url", "", "App Store URL (\"\" clears it)")
 	update.Flags().StringVar(&googlePlayURL, "google-play-url", "", "Google Play URL (\"\" clears it)")
-	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon (PNG, JPEG, WebP, GIF, or screened SVG; a declared type that does not match the file content fails with 415; files over 10 MB are rejected before upload)")
+	update.Flags().StringVar(&iconPath, "icon", "", "Path to an image file to upload as the app icon (PNG, JPEG, WebP, GIF, or screened SVG; a declared type that does not match the file content fails with 415; special files are rejected as \"not a regular file\"; files over 10 MB fail with input_too_large before any request)")
 	update.Flags().BoolVar(&public, "public", false, "Show the app on the public showcase (Pro feature)")
 	update.Flags().StringSliceVar(&platforms, "platforms", nil, "Allowed platforms: ios,macos,android,universal")
 	return update
@@ -573,11 +596,55 @@ func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreU
 		if info.IsDir() {
 			return fmt.Errorf("invalid --icon %q: is a directory", iconPath)
 		}
+		// Advisory fast-fails only: readIconFile re-checks both against the
+		// opened descriptor at read time — the enforcement point, since a
+		// file can be swapped or grown between here and the read (issue
+		// #192). Stat does not block on special files, so this still saves
+		// the obvious cases a full open would wait on.
+		if info.Mode()&os.ModeType != 0 {
+			return fmt.Errorf("invalid --icon %q: not a regular file", iconPath)
+		}
 		if info.Size() > maxIconBytes {
-			return fmt.Errorf("invalid --icon %q: is %d bytes; the app-icon limit is %d MB (the server rejects larger uploads with 413 payload_too_large)", iconPath, info.Size(), maxIconBytes>>20)
+			return &oversizedIconError{path: iconPath, size: info.Size(), cause: &InputTooLargeError{Limit: maxIconBytes}}
 		}
 	}
 	return nil
+}
+
+// oversizedIconError is validateAppsUpdateFlags's advisory Stat fast-fail for
+// a regular file already over maxIconBytes. It keeps the richer human detail
+// (the file's actual size, the server's 413 backstop) while unwrapping to the
+// InputTooLargeError, so --json/--yaml mode renders the same input_too_large
+// document a read-time overflow produces (issue #192).
+type oversizedIconError struct {
+	path  string
+	size  int64
+	cause *InputTooLargeError
+}
+
+func (e *oversizedIconError) Error() string {
+	return fmt.Sprintf("invalid --icon %q: is %d bytes; the app-icon limit is %d MB (the server rejects larger uploads with 413 payload_too_large)",
+		e.path, e.size, e.cause.Limit>>20)
+}
+
+func (e *oversizedIconError) Unwrap() error { return e.cause }
+
+// readIconFile reads the --icon payload through the shared bounded-read
+// discipline (issue #192): open once, reject non-regular files — a writer-less
+// FIFO would hang the open and a device like /dev/zero would buffer until
+// memory runs out — and cap the read at maxIconBytes so a file grown or
+// swapped after validateAppsUpdateFlags's advisory Stat still fails locally
+// with input_too_large, before any HTTP request.
+func readIconFile(path string) ([]byte, error) {
+	data, err := readRegularFile(path, maxIconBytes)
+	if err != nil {
+		var nrf *NotRegularFileError
+		if errors.As(err, &nrf) {
+			return nil, fmt.Errorf("invalid --icon %w", nrf)
+		}
+		return nil, fmt.Errorf("read icon file: %w", err)
+	}
+	return data, nil
 }
 
 // validAbsoluteURL reports whether v parses as an absolute URL with a host,
@@ -623,14 +690,6 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
-}
-
-func uploadIcon(ctx context.Context, wsID, appID, path string) (*api.AppRecord, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read icon file: %w", err)
-	}
-	return A.client.UploadAppIcon(ctx, wsID, appID, fileName(path), data)
 }
 
 func fileName(path string) string {
