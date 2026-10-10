@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -119,11 +118,18 @@ func (a *app) reportLogin(res loginResult) error {
 
 func loginWithToken(ctx context.Context, token string) error {
 	if token == "-" {
-		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil && line == "" {
-			return fmt.Errorf("read token from stdin: %w", err)
+		// The piped credential goes through the shared bounded reader like
+		// every other piped secret (--secret -, integration --token -): a
+		// newline-free runaway pipe fails with input_too_large at the 64 KB
+		// cap instead of buffering stdin without bound (issue #189).
+		data, err := readInputFile(token, maxSecretBytes)
+		if err != nil {
+			if perr := A.reportInputTooLarge(err); perr != nil {
+				return perr
+			}
+			return err
 		}
-		token = strings.TrimSpace(line)
+		token = strings.TrimSpace(string(data))
 	} else {
 		token = strings.TrimSpace(token)
 	}
