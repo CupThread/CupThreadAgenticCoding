@@ -27,8 +27,8 @@ these actions in the Console web UI (Console → Billing).`,
 
 func newBillingShowCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "show",
-		Short: "Show subscription tier, limits, and current usage",
+		Use:                   "show",
+		Short:                 "Show subscription tier, limits, and current usage",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -60,8 +60,8 @@ func newBillingCheckoutCmd() *cobra.Command {
 	var extraApps, extraMembers int
 	var open bool
 	checkout := &cobra.Command{
-		Use:   "checkout",
-		Short: "Create a Pro upgrade checkout and print its URL",
+		Use:                   "checkout",
+		Short:                 "Create a Pro upgrade checkout and print its URL",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -101,8 +101,8 @@ func newBillingCheckoutCmd() *cobra.Command {
 func newBillingPortalCmd() *cobra.Command {
 	var open bool
 	portal := &cobra.Command{
-		Use:   "portal",
-		Short: "Print the Polar billing portal URL",
+		Use:                   "portal",
+		Short:                 "Print the Polar billing portal URL",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -139,8 +139,8 @@ func newBillingPortalCmd() *cobra.Command {
 func newBillingAddonsCmd() *cobra.Command {
 	var extraApps, extraMembers int
 	addons := &cobra.Command{
-		Use:   "addons",
-		Short: "Update the workspace's extra app/member add-ons",
+		Use:                   "addons",
+		Short:                 "Update the workspace's extra app/member add-ons",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())

@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -22,8 +25,8 @@ var columnKinds = []string{"pending_review", "normal", "done"}
 
 func newColumnsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List roadmap columns of the app",
+		Use:                   "list",
+		Short:                 "List roadmap columns of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -67,8 +70,8 @@ func newColumnsCreateCmd() *cobra.Command {
 	var name, slug, kind, color string
 	var visible bool
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a roadmap column",
+		Use:                   "create",
+		Short:                 "Create a roadmap column",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
@@ -197,8 +200,8 @@ func newVersionsCmd() *cobra.Command {
 
 func newVersionsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List versions of the app",
+		Use:                   "list",
+		Short:                 "List versions of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -229,8 +232,8 @@ func newVersionsCreateCmd() *cobra.Command {
 	var label, description, releasedAt string
 	var released bool
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a version",
+		Use:                   "create",
+		Short:                 "Create a version",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if label == "" {
@@ -316,6 +319,7 @@ func newVersionsUpdateCmd() *cobra.Command {
 }
 
 func newVersionsDeleteCmd() *cobra.Command {
+	var confirmLabel, reassignTo string
 	cmd := &cobra.Command{
 		Use:     "delete <version-id>",
 		Aliases: []string{"rm"},
@@ -324,7 +328,15 @@ func newVersionsDeleteCmd() *cobra.Command {
 
 The server hard-deletes the version and it cannot be restored. On an
 interactive terminal you are asked to confirm before anything is sent;
-non-interactive callers must pass --yes.`,
+non-interactive callers must pass --yes.
+
+When feature requests are still linked to the version (shipped-in set),
+the server refuses with 409 version_has_feature_requests until the
+deletion is acknowledged: pass --confirm-label with the version's
+current label (cupthread versions list) to delete it and unlink the
+linked requests, or pass --reassign-to <version-id> to move them to a
+sibling version of the same app first (the target must not be the
+version being deleted).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete version %q", args[0])); err != nil {
@@ -334,7 +346,31 @@ non-interactive callers must pass --yes.`,
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/versions/"+args[0]), nil, nil, nil); err != nil {
+			var body any
+			if confirmLabel != "" || reassignTo != "" {
+				fields := map[string]any{}
+				if confirmLabel != "" {
+					fields["confirmLabel"] = confirmLabel
+				}
+				if reassignTo != "" {
+					fields["reassignToVersionId"] = reassignTo
+				}
+				body = fields
+			}
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/versions/"+args[0]), nil, body, nil); err != nil {
+				var apiErr *api.APIError
+				if errors.As(err, &apiErr) {
+					if versionHasFeatureRequests(apiErr) {
+						// The guard fires whenever requests are still
+						// linked and the label was not confirmed; state
+						// both escapes instead of a bare 409 (issue #199).
+						count := linkedRequestCount(apiErr)
+						return fmt.Errorf("version %s still has %s linked feature request(s) — re-run with --confirm-label <current label> (cupthread versions list) to delete it and unlink them, or with --reassign-to <sibling-version-id> to move them to another version of the same app first: %w", args[0], count, err)
+					}
+					if apiErr.Code == "reassign_target_not_in_app" {
+						return fmt.Errorf("cannot reassign: --reassign-to must name a version of the same app (not the version being deleted) — pick a target from cupthread versions list: %w", err)
+					}
+				}
 				return err
 			}
 			if A.structured() {
@@ -345,5 +381,28 @@ non-interactive callers must pass --yes.`,
 		},
 	}
 	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	cmd.Flags().StringVar(&confirmLabel, "confirm-label", "", "Current label of the version (versions list); required by the server when feature requests are still linked — deletes the version and unlinks them")
+	cmd.Flags().StringVar(&reassignTo, "reassign-to", "", "Version ID to move the linked feature requests to instead of unlinking them (must be a version of the same app, not the version being deleted)")
 	return cmd
+}
+
+// versionHasFeatureRequests reports whether err is the server's 409
+// linked-requests guard. The guard body carries `error` but no `code`, so
+// the identifier lands in APIError.Message.
+func versionHasFeatureRequests(apiErr *api.APIError) bool {
+	return apiErr.Status == http.StatusConflict &&
+		(apiErr.Message == "version_has_feature_requests" || apiErr.Code == "version_has_feature_requests")
+}
+
+// linkedRequestCount extracts the linked-request count the 409 guard body
+// carries ("count"); "an unknown number" when the body is missing or
+// undecodable, so the remediation line never quotes a fabricated 0.
+func linkedRequestCount(apiErr *api.APIError) string {
+	var parsed struct {
+		Count int `json:"count"`
+	}
+	if json.Unmarshal(apiErr.Body, &parsed) != nil || parsed.Count <= 0 {
+		return "an unknown number of"
+	}
+	return strconv.Itoa(parsed.Count)
 }

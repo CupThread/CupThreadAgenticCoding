@@ -54,8 +54,8 @@ func newFeaturesListCmd() *cobra.Command {
 	var sort string
 	var payerOnly bool
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List feature requests",
+		Use:                   "list",
+		Short:                 "List feature requests",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -219,8 +219,8 @@ func newFeaturesGetCmd() *cobra.Command {
 func newFeaturesCreateCmd() *cobra.Command {
 	var title, description, columnSlug, versionID string
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a feature request on behalf of a user",
+		Use:                   "create",
+		Short:                 "Create a feature request on behalf of a user",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if title == "" || description == "" {
@@ -399,7 +399,10 @@ func newFeaturesForwardCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"targetType": target, "labels": labels}
+			// labels must be omitted when unset: the server schema declares
+			// z.array(...).default([]), and a zod default only applies to an
+			// absent key — an explicit JSON null is rejected with 400.
+			body := map[string]any{"targetType": target}
 			if owner != "" {
 				body["owner"] = owner
 			}
@@ -408,6 +411,9 @@ func newFeaturesForwardCmd() *cobra.Command {
 			}
 			if categoryID != "" {
 				body["categoryId"] = categoryID
+			}
+			if len(labels) > 0 {
+				body["labels"] = labels
 			}
 			path := fmt.Sprintf("%s/apps/%s/features/%s/github/forward", wsPath(ws, ""), appID, r.ID)
 			var resp api.ForwardToGitHubResponse

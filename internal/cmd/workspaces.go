@@ -28,8 +28,8 @@ func newWorkspacesCmd() *cobra.Command {
 
 func newWorkspacesListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List the workspaces you belong to",
+		Use:                   "list",
+		Short:                 "List the workspaces you belong to",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var me api.MeResponse
@@ -62,8 +62,8 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 func newWorkspacesCreateCmd() *cobra.Command {
 	var name, slug string
 	create := &cobra.Command{
-		Use:   "create",
-		Short: "Create a new workspace",
+		Use:                   "create",
+		Short:                 "Create a new workspace",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
@@ -183,8 +183,8 @@ capability_required.`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "list",
-			Short: "List workspace members",
+			Use:                   "list",
+			Short:                 "List workspace members",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())
@@ -219,8 +219,8 @@ var memberRoles = []string{"admin", "member"}
 func newMembersInviteCmd() *cobra.Command {
 	var email, role, displayName string
 	invite := &cobra.Command{
-		Use:   "invite",
-		Short: "Invite a member by email",
+		Use:                   "invite",
+		Short:                 "Invite a member by email",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if email == "" {
@@ -259,8 +259,8 @@ func newMembersInviteCmd() *cobra.Command {
 func newMembersAddCmd() *cobra.Command {
 	var clerkUserID, role string
 	add := &cobra.Command{
-		Use:   "add",
-		Short: "Add an existing CupThread user by Clerk user ID",
+		Use:                   "add",
+		Short:                 "Add an existing CupThread user by Clerk user ID",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if clerkUserID == "" {
@@ -367,8 +367,8 @@ the Console web UI (Workspace → Members).`,
 	}
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "list",
-			Short: "List pending invitations",
+			Use:                   "list",
+			Short:                 "List pending invitations",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())

@@ -5,16 +5,23 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
 )
 
+// notificationTypes mirrors the server's NotificationTypeSchema enum
+// (SaaS packages/shared/src/schemas/notifications.ts) in enum order. It feeds
+// --all-events, so a missing type silently suppresses that notification for
+// the whole channel — keep it in sync with the enum listed in
+// skills/cupthread-cli/SKILL.md (guarded by TestNotificationTypeEnumDrift).
 var notificationTypes = []string{
 	"feedback.received",
 	"feature_request.submitted",
 	"feature_request.approved",
 	"feature_request.shipped",
+	"comment.received",
 	"vote.milestone",
 	"changelog.published",
 	"weekly.digest",
@@ -44,14 +51,17 @@ func newNotificationsCmd() *cobra.Command {
 func newNotificationsListCmd() *cobra.Command {
 	var limit, offset int
 	list := &cobra.Command{
-		Use:   "list",
-		Short: "List notifications (newest first)",
+		Use:                   "list",
+		Short:                 "List notifications (newest first)",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
 			}
+			// The server clamps the page size to 200 silently; clamp here
+			// too so an offset walk steps by the served size (issue #201).
+			limit = A.clampListLimit(limit, notificationPageSize)
 			q := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
 			var resp api.ListNotificationsResponse
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/notifications"), q, nil, &resp); err != nil {
@@ -75,10 +85,14 @@ func newNotificationsListCmd() *cobra.Command {
 			return nil
 		},
 	}
-	list.Flags().IntVar(&limit, "limit", 50, "Maximum notifications to list")
+	list.Flags().IntVar(&limit, "limit", 50, "Maximum notifications to list (1-200, server page cap 200)")
 	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
 	return list
 }
+
+// notificationPageSize is the notifications listing's server page cap (the
+// route's parseListPagination maxLimit); the list command clamps --limit to it.
+const notificationPageSize = 200
 
 func newNotificationsReadCmd() *cobra.Command {
 	return &cobra.Command{
@@ -104,8 +118,8 @@ func newNotificationsReadCmd() *cobra.Command {
 
 func newNotificationsReadAllCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "read-all",
-		Short: "Mark every notification as read",
+		Use:                   "read-all",
+		Short:                 "Mark every notification as read",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -128,8 +142,8 @@ func newNotificationPrefsCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "prefs", Short: "Per-channel notification preferences"}
 	cmd.AddCommand(
 		&cobra.Command{
-			Use:   "show",
-			Short: "Show notification preferences",
+			Use:                   "show",
+			Short:                 "Show notification preferences",
 			DisableFlagsInUseLine: true,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())
@@ -173,6 +187,17 @@ switch the channel on or off.`,
 			if channel != "inbox" && channel != "email" {
 				return fmt.Errorf("invalid --channel %q: use inbox or email", channel)
 			}
+			if cmd.Flags().Changed("events") {
+				known := make(map[string]bool, len(notificationTypes))
+				for _, t := range notificationTypes {
+					known[t] = true
+				}
+				for _, e := range events {
+					if !known[e] {
+						return fmt.Errorf("invalid --events %q: not one of the notification types (%s)", e, strings.Join(notificationTypes, ", "))
+					}
+				}
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -207,7 +232,7 @@ switch the channel on or off.`,
 		},
 	}
 	set.Flags().StringVar(&channel, "channel", "", "Channel to update: inbox or email (required)")
-	set.Flags().StringSliceVar(&events, "events", nil, "Comma-separated event types")
+	set.Flags().StringSliceVar(&events, "events", nil, "Comma-separated event types (validated locally against the notification enum)")
 	set.Flags().BoolVar(&allEvents, "all-events", false, "Enable every event type on this channel")
 	set.Flags().BoolVar(&enabled, "enable", false, "Enable the channel")
 	set.Flags().BoolVar(&disabled, "disable", false, "Disable the channel")

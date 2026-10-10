@@ -46,8 +46,8 @@ func printImportJobs(jobs []api.ImportJob) {
 
 func newImportsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list",
-		Short: "List import jobs of the app",
+		Use:                   "list",
+		Short:                 "List import jobs of the app",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -70,8 +70,8 @@ func newImportsListCmd() *cobra.Command {
 
 func newImportsHistoryCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "history",
-		Short: "List all import jobs in the workspace",
+		Use:                   "history",
+		Short:                 "List all import jobs in the workspace",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
