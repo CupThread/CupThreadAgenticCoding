@@ -208,9 +208,14 @@ cupthread notifications prefs show         # Show per-channel (inbox/email) noti
 cupthread notifications prefs set --channel inbox --all-events  # Enable every event type on a channel
 cupthread notifications prefs set --channel email --events "delivery.failed,import.failed" --enable  # Fine-grained event mask
 ```
-The whole `notifications` group is `[token-safe]` (workspace.read). Event
-types accepted by `--events` are the ones shown by `prefs show`
-(`feedback.received`, `feature_request.approved`, `delivery.failed`, …).
+The whole `notifications` group is `[token-safe]` (workspace.read). The server's
+full notification event enum (14 types, in server enum order — mirror of
+`NotificationTypeSchema`) is:
+`feedback.received`, `feature_request.submitted`, `feature_request.approved`, `feature_request.shipped`, `comment.received`, `vote.milestone`, `changelog.published`, `weekly.digest`, `delivery.success`, `delivery.failed`, `import.completed`, `import.failed`, `subscription.updated`, `system`.
+`prefs set --all-events` writes exactly that list as the channel's `eventMask` —
+a type missing from it silently suppresses that notification for the whole
+channel. `--events` values are validated against this enum locally with a
+self-diagnosing error before anything is sent.
 
 ### Feature Requests & Roadmap
 ```sh
