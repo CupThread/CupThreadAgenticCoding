@@ -231,6 +231,110 @@ func TestAPISignUserAttrsErrors(t *testing.T) {
 	}
 }
 
+// TestAPISignUserAttrsSchemaMirrorValidation pins issue #196: a body the
+// server's EndUserAttributesInputSchema always rejects must exit non-zero
+// with the offending field and the accepted form named, and no signature or
+// canonical string may reach the output — the guaranteed-400 round trip the
+// CLI exists to pre-empt.
+func TestAPISignUserAttrsSchemaMirrorValidation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	cases := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{"currency null", `{"currency":null}`, "explicit null is not accepted server-side"},
+		{"currency not a code", `{"currency":"dollars"}`, "must be a 3-letter alphabetic code"},
+		{"currency short", `{"currency":"us"}`, "must be a 3-letter alphabetic code"},
+		{"mrr just over the cap", `{"mrr":1000001}`, "must be at most 1000000"},
+		{"mrr far over the cap", `{"mrr":2000000}`, "must be at most 1000000"},
+		{"empty plan", `{"plan":""}`, "must be 1-64 characters, got 0"},
+		{"plan over 64 chars", `{"plan":"` + strings.Repeat("x", 65) + `"}`, "must be 1-64 characters, got 65"},
+		{"body userToken not a uuid", `{"userToken":"not-a-uuid"}`, "must be an RFC 4122 UUID"},
+		{"body userToken empty", `{"userToken":""}`, "must be an RFC 4122 UUID"},
+		{"body userToken null", `{"userToken":null}`, "explicit null is not accepted server-side"},
+		{"isPaying null", `{"isPaying":null}`, "explicit null is not accepted server-side"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, out, err := runSign(t, tc.body, "--user-token", signTestToken, "--json")
+			if err == nil {
+				t.Fatalf("sign-user-attrs: want error, got payload %+v", payload)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+			if payload.Signature != "" || payload.Canonical != "" {
+				t.Errorf("structured payload = %+v, want no signature or canonical emitted", payload)
+			}
+			if strings.Contains(out, "✓ signed") {
+				t.Errorf("output %q prints a success line", out)
+			}
+		})
+	}
+
+	// Validation precedes token resolution: a null body userToken is a
+	// schema error even when a valid --user-token fallback exists (the
+	// server's zod parse rejects the body before the header is consulted).
+	t.Run("body userToken null beats the header fallback", func(t *testing.T) {
+		_, _, err := runSign(t, `{"userToken":null}`, "--user-token", signTestToken, "--json")
+		if err == nil {
+			t.Fatal("want error for a null body userToken")
+		}
+		if !strings.Contains(err.Error(), "explicit null is not accepted server-side") {
+			t.Errorf("error = %q, want the schema-mirror message", err.Error())
+		}
+	})
+
+	// The --user-token fallback fills the resolved token server-side and is
+	// gated there by UUID_RE, so a non-UUID header value cannot produce a
+	// verifiable signature either.
+	t.Run("non-uuid --user-token fallback", func(t *testing.T) {
+		_, _, err := runSign(t, `{"isPaying":true}`, "--user-token", "local-user", "--json")
+		if err == nil {
+			t.Fatal("want error for a non-UUID --user-token")
+		}
+		if !strings.Contains(err.Error(), "must be an RFC 4122 UUID") {
+			t.Errorf("error = %q, want the resolved-token UUID guidance", err.Error())
+		}
+	})
+}
+
+// TestAPISignUserAttrsSchemaMirrorAcceptsValidBodies guards the mirror's
+// other edge: bodies the server accepts (boundary values, nullable
+// plan/mrr, reserved UUID forms) must still sign.
+func TestAPISignUserAttrsSchemaMirrorAcceptsValidBodies(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	cases := []struct {
+		name string
+		body string
+		user string
+	}{
+		{name: "mrr exactly at the cap", body: `{"isPaying":true,"mrr":1000000,"currency":"usd"}`, user: signTestToken},
+		{name: "plan at 64 chars", body: `{"plan":"` + strings.Repeat("p", 64) + `"}`, user: signTestToken},
+		{name: "nullable plan and mrr", body: `{"plan":null,"mrr":null}`, user: signTestToken},
+		{name: "uppercase currency", body: `{"currency":"JPY"}`, user: signTestToken},
+		{name: "reserved nil uuid body token", body: `{"userToken":"00000000-0000-0000-0000-000000000000"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := []string{"--json"}
+			if tc.user != "" {
+				extra = append(extra, "--user-token", tc.user)
+			}
+			payload, _, err := runSign(t, tc.body, extra...)
+			if err != nil {
+				t.Fatalf("sign-user-attrs: %v", err)
+			}
+			if len(payload.Signature) != 64 {
+				t.Errorf("signature = %q, want 64 hex chars", payload.Signature)
+			}
+		})
+	}
+}
+
 // withSignStdin replaces os.Stdin with a file carrying content for the
 // duration of the test, so the --secret -/@ stdin path is hermetic.
 func withSignStdin(t *testing.T, content string) {

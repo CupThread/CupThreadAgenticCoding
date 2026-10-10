@@ -473,6 +473,10 @@ cpt-user-attrs-v1
 - `userToken` is the resolved token — the body `userToken` when present, else the `X-User-Token` header value; sign whichever identifies the user in this request.
 - Sign immediately before sending: a `timestamp` older or newer than ±300 s from server time fails with `stale_signature`.
 
+### Request-body field constraints run before the signature gate
+
+Signature verification only ever sees bodies that first passed `EndUserAttributesInputSchema`, so a signature computed over any other shape is dead on arrival (HTTP 400 `Validation failed` — the signature is never checked). The constraints: `userToken` an RFC 4122 UUID when present (and the resolved body/header token must be an 8-4-4-4-12 hex UUID), `isPaying` a boolean with **no** explicit `null`, `plan` a 1–64-character string (counted in Unicode code points) or `null`, `mrr` a number between 0 and `1000000` or `null`, and `currency` a 3-letter alphabetic code (`[A-Za-z]{3}`) with **no** explicit `null` — omit the key instead. Unknown keys are stripped. `cupthread api sign-user-attrs` mirrors these constraints locally and refuses to sign bodies that cannot pass (issue #196), so a reference signature always corresponds to a sendable body.
+
 Coding agents can generate reference signatures to cross-check platform implementations with `cupthread api sign-user-attrs` (see the `cupthread-cli` skill).
 
 ---
