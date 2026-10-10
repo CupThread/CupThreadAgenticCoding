@@ -26,13 +26,17 @@ func newUsersProfileCmd() *cobra.Command {
 	var appKey string
 	cmd := &cobra.Command{
 		Use:   "profile <user-id>",
-		Short: "Show a public user profile, apps, and recent comments",
+		Short: "Show a public user profile, apps, and recent comments (no login required)",
 		Long: "Show a public user profile, apps, and recent comments.\n" +
 			"\n" +
 			"USER-ID is either a legacy user id (user_*) or an app-scoped\n" +
 			"pseudonym (u_<32 hex>) taken from a public board or comment\n" +
 			"payload. App-scoped ids resolve only within their app, so they\n" +
-			"require --app-key.",
+			"require --app-key.\n" +
+			"\n" +
+			"The profile GET is a public endpoint (issue #182), so this works\n" +
+			"logged out; the CLI never sends the console bearer here. The route\n" +
+			"is rate limited per client IP.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			userID := args[0]
@@ -45,7 +49,7 @@ func newUsersProfileCmd() *cobra.Command {
 				q = url.Values{"appKey": {appKey}}
 			}
 			var resp api.PublicUserProfileResponse
-			if err := A.client.Do(cmd.Context(), "GET", path, q, nil, &resp); err != nil {
+			if err := A.unauthenticatedClient().Do(cmd.Context(), "GET", path, q, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
