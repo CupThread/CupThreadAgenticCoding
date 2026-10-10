@@ -102,6 +102,26 @@ func (a *app) reportInputTooLarge(err error) error {
 	})
 }
 
+// mutationResult is the minimal machine-readable record of a completed
+// mutation, emitted on stdout in --json/-o yaml mode by every mutating
+// command the server answers without a body (issue #194). id carries the
+// RESOLVED resource ID — for prefix-taking commands that is the full ID the
+// lookup picked, which would otherwise be disclosed only by the human echo —
+// and is omitted for whole-context actions (notifications read-all,
+// integration disconnects name their provider instead).
+type mutationResult struct {
+	Action  string `json:"action"`
+	ID      string `json:"id,omitempty"`
+	Success bool   `json:"success"`
+}
+
+// emitMutationResult prints the mutation record in structured mode; human
+// mode callers keep their existing ✓ echo, so table output stays
+// byte-identical.
+func (a *app) emitMutationResult(action, id string) error {
+	return a.out.Structured(mutationResult{Action: action, ID: id, Success: true})
+}
+
 // warnf reports a non-fatal warning. In structured mode it goes to stderr so
 // stdout stays a single machine-parseable document.
 func (a *app) warnf(format string, args ...any) {
@@ -110,6 +130,28 @@ func (a *app) warnf(format string, args ...any) {
 		return
 	}
 	a.out.Printf(format, args...)
+}
+
+// clampListLimit normalizes a console listing's --limit the way the server's
+// parseListPagination silently does: below 1 becomes 1 (the server would
+// degrade 0 to the route default, a different page size than requested) and
+// above the route's maxLimit becomes the cap. features list has clamped
+// locally since #178; the other console listings share this helper so an
+// offset-stepping walk advances by the page size the server actually serves
+// instead of silently skipping rows (issue #201). The rewrite is announced
+// through warnf, so structured stdout stays a single document.
+func (a *app) clampListLimit(requested, maxLimit int) int {
+	effective := requested
+	switch {
+	case requested < 1:
+		effective = 1
+	case requested > maxLimit:
+		effective = maxLimit
+	}
+	if effective != requested {
+		a.warnf("⚠ --limit %d is outside the server's 1-%d page range; requesting %d instead", requested, maxLimit, effective)
+	}
+	return effective
 }
 
 // decodeStrictRawJSON validates that data holds exactly one JSON value and

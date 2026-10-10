@@ -7,8 +7,8 @@ import (
 
 func newMeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "me",
-		Short: "Show your identity, workspaces, and roles",
+		Use:                   "me",
+		Short:                 "Show your identity, workspaces, and roles",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var me api.MeResponse
