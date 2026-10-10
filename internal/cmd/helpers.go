@@ -85,6 +85,43 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 	return data, nil
 }
 
+// NotRegularFileError reports a request-body path that opened to something
+// other than a regular file — a FIFO, character device, socket, or similar.
+// Such a source is unbounded or not yet written, so reading it could hang the
+// command forever (a writer-less FIFO) or buffer until memory is exhausted
+// (/dev/zero); it is rejected before the first read instead (issue #192).
+type NotRegularFileError struct {
+	Path string
+	Mode os.FileMode
+}
+
+func (e *NotRegularFileError) Error() string {
+	return fmt.Sprintf("%q: not a regular file", e.Path)
+}
+
+// readRegularFile is the file-backed half of the bounded-input discipline:
+// open path once, verify the descriptor itself is a regular file, then read
+// at most max bytes through readBounded. Checking the opened descriptor
+// (fstat, not Stat-before-open) closes the check-then-read gap: a file swapped
+// for a FIFO or grown past the cap after an earlier advisory Stat still fails
+// here, before any HTTP request (issue #192). The open goes through
+// openInputFile so a FIFO cannot even park the open(2) call.
+func readRegularFile(path string, max int64) ([]byte, error) {
+	f, err := openInputFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, &NotRegularFileError{Path: path, Mode: fi.Mode()}
+	}
+	return readBounded(f, max)
+}
+
 // reportInputTooLarge renders an InputTooLargeError as the command's single
 // structured stdout document in --json/-o yaml mode. It returns the rendering
 // error only: callers keep returning the original error so the process still
@@ -102,6 +139,26 @@ func (a *app) reportInputTooLarge(err error) error {
 	})
 }
 
+// mutationResult is the minimal machine-readable record of a completed
+// mutation, emitted on stdout in --json/-o yaml mode by every mutating
+// command the server answers without a body (issue #194). id carries the
+// RESOLVED resource ID — for prefix-taking commands that is the full ID the
+// lookup picked, which would otherwise be disclosed only by the human echo —
+// and is omitted for whole-context actions (notifications read-all,
+// integration disconnects name their provider instead).
+type mutationResult struct {
+	Action  string `json:"action"`
+	ID      string `json:"id,omitempty"`
+	Success bool   `json:"success"`
+}
+
+// emitMutationResult prints the mutation record in structured mode; human
+// mode callers keep their existing ✓ echo, so table output stays
+// byte-identical.
+func (a *app) emitMutationResult(action, id string) error {
+	return a.out.Structured(mutationResult{Action: action, ID: id, Success: true})
+}
+
 // warnf reports a non-fatal warning. In structured mode it goes to stderr so
 // stdout stays a single machine-parseable document.
 func (a *app) warnf(format string, args ...any) {
@@ -110,6 +167,28 @@ func (a *app) warnf(format string, args ...any) {
 		return
 	}
 	a.out.Printf(format, args...)
+}
+
+// clampListLimit normalizes a console listing's --limit the way the server's
+// parseListPagination silently does: below 1 becomes 1 (the server would
+// degrade 0 to the route default, a different page size than requested) and
+// above the route's maxLimit becomes the cap. features list has clamped
+// locally since #178; the other console listings share this helper so an
+// offset-stepping walk advances by the page size the server actually serves
+// instead of silently skipping rows (issue #201). The rewrite is announced
+// through warnf, so structured stdout stays a single document.
+func (a *app) clampListLimit(requested, maxLimit int) int {
+	effective := requested
+	switch {
+	case requested < 1:
+		effective = 1
+	case requested > maxLimit:
+		effective = maxLimit
+	}
+	if effective != requested {
+		a.warnf("⚠ --limit %d is outside the server's 1-%d page range; requesting %d instead", requested, maxLimit, effective)
+	}
+	return effective
 }
 
 // decodeStrictRawJSON validates that data holds exactly one JSON value and

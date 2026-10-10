@@ -232,6 +232,14 @@ sign as "unset" and explicit JSON null as
 normalization). userToken comes from the body, falling back to --user-token
 (the X-User-Token header value).
 
+The body is mirrored against the server's schema before anything is signed
+(issue #196): currency must be a 3-letter alphabetic code and may not be
+explicit null, mrr at most 1000000, plan 1-64 characters, isPaying a
+non-null boolean, and userToken an RFC 4122 UUID (in the body, or in
+--user-token when the body omits it). A body the API would always reject
+fails here with the offending field named, so no dead-on-arrival signature
+is ever produced; plan and mrr stay nullable and sign as "null".
+
 The signing secret is a credential: pass it as --secret - (or @) to read it
 from stdin, or export $CUPTHREAD_SDK_SIGNING_SECRET and omit --secret
 entirely. Trailing whitespace is trimmed from the stdin and env forms. An
@@ -270,8 +278,18 @@ to the body without changing the signed values.`,
 			if err != nil {
 				return err
 			}
+			// Issue #196: mirror the server's EndUserAttributesInputSchema
+			// before signing, so a body the API can never accept fails here
+			// with the offending field named instead of producing a
+			// signature that is guaranteed to be answered by a 400.
+			if err := api.ValidateSDKAttributeBody(raw); err != nil {
+				return err
+			}
 			token, err := api.ResolveSDKUserToken(raw, userToken)
 			if err != nil {
+				return err
+			}
+			if err := api.ValidateResolvedSDKToken(token); err != nil {
 				return err
 			}
 			stamp := timestamp

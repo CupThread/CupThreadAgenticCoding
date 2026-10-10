@@ -99,6 +99,21 @@ not be verified (`cupthread auth status` confirms the session once the API is re
 
 - `--json`: Shorthand for `-o json` (emits indented machine-readable JSON). **Recommended for AI agents.**
 - `-o, --output <table|json|yaml>`: Select output formatting (default `table`).
+
+**Mutation commands always print exactly one structured document on stdout** in `--json`/`-o yaml` mode —
+never an empty stream. When the server answers the write with a record, that record is the document
+(`features create`, `changelog create/update/publish`, `imports create/rerun`, `comments moderation …`,
+`inbox priority/triage/assign/bulk-triage/retry`, member invite/add, `apps create/update/settings set`,
+`billing checkout/addons`, `integrations … connect`, `github sync`, `notifications prefs set`). When the
+server answers without a body, the CLI prints the minimal mutation result
+`{"action": "<verb>", "id": "<resource>", "success": true}` — e.g.
+`features delete <prefix> --json --yes` resolves the prefix and emits
+`{"action":"deleted","id":"<full-request-id>","success":true}`, so an agent can log exactly which of the
+prefix matches was destroyed. Action verbs are stable past-tense strings: `updated`, `deleted`,
+`approved`, `unpublished`, `role_set`, `removed`, `revoked`, `read`, `read_all`, `canceled`,
+`disconnected` (`id` names the provider, e.g. `github`), `config_updated` (`id` is the resolved app ID).
+Whole-context actions with no resource id (e.g. `read_all`) omit the `id` key. Treat empty stdout after a
+successful (exit 0) mutation as a bug and report it.
 - `-w, --workspace <id>`: Target workspace ID (overrides default).
 - `-a, --app <id>`: Target app ID (overrides default).
 - `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`; a non-default login is
@@ -143,6 +158,15 @@ BEFORE any id resolution or HTTP request, so a wrong id costs nothing. On an int
 prints `About to … Continue? [yN]` on stderr instead (an answer other than `y`/`yes` aborts with nothing sent).
 Scripts and agents must pass `--yes` explicitly (see Agent Best Practices #7).
 
+**`versions delete` has a second server-side guard on linked feature requests**: when requests are still
+shipped-in under the version, the server answers `409 version_has_feature_requests` (with the linked `count`)
+until the deletion is acknowledged. The CLI renders that 409 as an actionable line naming both escapes:
+`--confirm-label <current label>` (the version's label as shown by `versions list` — deletes the version and
+unlinks the linked requests, clearing their shipped-in version) or `--reassign-to <version-id>` (moves the
+linked requests to a sibling version of the same app instead of unlinking them; the target must not be the
+version being deleted, and anything else fails with `400 reassign_target_not_in_app`, which the CLI maps to
+the same-app rule). A version with no linked requests needs neither flag.
+
 ### Apps Management
 ```sh
 cupthread apps list                        # List apps in current workspace
@@ -153,8 +177,12 @@ cupthread apps update <app-id> --icon ./icon.png   # Upload an app icon (PNG/JPE
                                            # requires workspace admin/owner). A declared type that does not
                                            # match the file content fails with 415 "unsupported image type".
                                            # Size cap (SEC-36): files over 10 MB are rejected client-side
-                                           # (nothing is sent); the server answers larger payloads with
-                                           # 413 payload_too_large.
+                                           # (nothing is sent); the read itself is bounded, so a file swapped
+                                           # or grown past the cap after the initial check still fails with
+                                           # input_too_large before any request. Special files (FIFOs,
+                                           # devices, sockets) fail with "not a regular file" instead of
+                                           # hanging or buffering until memory runs out; the server answers
+                                           # larger payloads with 413 payload_too_large.
                                            # Update order: metadata flags are PUT first, icon uploaded last;
                                            # name/slug/URL/platform values are validated locally first and a
                                            # failed icon upload after an applied PUT reports
@@ -209,6 +237,12 @@ The whole `inbox` group is `[token-safe]` (workspace.read / content.manage).
 > the platform and is separate from the triage lifecycle — use `inbox triage`
 > (never a `--status` flag) to change triage state.
 
+`inbox list` is offset/limit-paginated with a server page cap of **200**:
+the CLI clamps `--limit` into 1–200 locally (a value outside the range is
+rewritten, with a `⚠` notice), so step `--offset` by the served page size —
+the `(N shown, N total)` trailer — never by a larger requested limit, or the
+walk silently skips rows.
+
 ### Notifications
 ```sh
 cupthread notifications list               # List notifications, newest first (table ends with the unread count)
@@ -218,9 +252,19 @@ cupthread notifications prefs show         # Show per-channel (inbox/email) noti
 cupthread notifications prefs set --channel inbox --all-events  # Enable every event type on a channel
 cupthread notifications prefs set --channel email --events "delivery.failed,import.failed" --enable  # Fine-grained event mask
 ```
-The whole `notifications` group is `[token-safe]` (workspace.read). Event
-types accepted by `--events` are the ones shown by `prefs show`
-(`feedback.received`, `feature_request.approved`, `delivery.failed`, …).
+The whole `notifications` group is `[token-safe]` (workspace.read). The server's
+full notification event enum (14 types, in server enum order — mirror of
+`NotificationTypeSchema`) is:
+`feedback.received`, `feature_request.submitted`, `feature_request.approved`, `feature_request.shipped`, `comment.received`, `vote.milestone`, `changelog.published`, `weekly.digest`, `delivery.success`, `delivery.failed`, `import.completed`, `import.failed`, `subscription.updated`, `system`.
+`prefs set --all-events` writes exactly that list as the channel's `eventMask` —
+a type missing from it silently suppresses that notification for the whole
+channel. `--events` values are validated against this enum locally with a
+self-diagnosing error before anything is sent.
+`notifications list` is offset/limit-paginated with a server page cap of
+**200** (`--limit` is clamped into 1–200 locally, with a `⚠` notice when a
+value is rewritten) and, unlike `changelog list`, prints no more-pages hint —
+walk it by the served page size (`--offset 0, 200, 400, …`), not by a larger
+requested limit.
 
 ### Feature Requests & Roadmap
 ```sh
@@ -342,7 +386,7 @@ User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`);
 ### Changelog & Releases
 ```sh
 cupthread changelog list                   # List published and draft changelogs
-cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (server default: 100/page)
+cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (--limit clamps to the 100/page server cap)
 cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --publish-now
 cupthread changelog update <entry-id> --title "v1.2.0"   # Edit a draft (also --body-file, --version-id,
                                            # --version-label, --link-request-ids, --schedule-at)
@@ -353,6 +397,9 @@ Draft editing, `unpublish`, and `delete` are `[token-safe]` (content.manage;
 clearing a schedule with `--schedule-at ""` stays token-safe too).
 `changelog list` (console) is offset/limit-paginated and reports `total` +
 `hasMore`; the table view prints the next `--offset` when more pages remain.
+The page size caps at **100** (`--limit` is clamped into 1–100 locally, with
+a `⚠` notice when a value is rewritten), so step `--offset` by the served
+page size.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
 Drafts (create/edit/delete without publishing) work for every workspace role
@@ -411,6 +458,8 @@ printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12
 ```
 
 `--secret` takes the SDK signing secret inline, as `-`/`@` (read from stdin, trailing whitespace trimmed), or falls back to `$CUPTHREAD_SDK_SIGNING_SECRET` (also trimmed) when omitted; precedence is flag > env, and the no-source error names all three forms. Prefer stdin/env — inline values land in shell history and are visible via `ps`. `--secret` and `--input` cannot both read stdin in one invocation. `--input` takes the **exact JSON body you plan to send** (`"-"` or `"@"` reads stdin); `--user-token` is the `X-User-Token` header value used only when the body carries no `userToken`. Output: the canonical string, the lowercase-hex signature, and the epoch timestamp (pin with `--timestamp <epoch>` for reproducible vectors; `--json` emits `{appKey, userToken, timestamp, canonical, signature}`). Add the returned `signature` and `timestamp` fields to the body without changing the signed values, and send within ±300 seconds of the timestamp. A body with no payment attributes prints a note that it may be sent unsigned.
+
+The body is mirrored against the server's `EndUserAttributesInputSchema` before anything is signed (issue #196): `currency` must be a 3-letter alphabetic code and may not be explicit `null` (the field is not nullable server-side — omit the key instead), `mrr` at most `1000000`, `plan` 1–64 characters (counted in Unicode code points), `isPaying` a non-null boolean, and `userToken` an RFC 4122 UUID (in the body, or in `--user-token` when the body omits it). A body the API would always reject fails locally with the offending field named and no signature is emitted, so no round trip is ever burned on a guaranteed 400; `plan` and `mrr` stay nullable and still sign as `null`.
 
 ---
 
