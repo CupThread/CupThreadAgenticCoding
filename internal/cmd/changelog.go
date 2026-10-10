@@ -269,9 +269,10 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Deleted changelog entry %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("deleted", args[0])
 			}
+			A.out.Printf("✓ Deleted changelog entry %s", args[0])
 			return nil
 		},
 	}
@@ -315,9 +316,10 @@ func newChangelogUnpublishCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/unpublish"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Unpublished %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("unpublished", args[0])
 			}
+			A.out.Printf("✓ Unpublished %s", args[0])
 			return nil
 		},
 	}

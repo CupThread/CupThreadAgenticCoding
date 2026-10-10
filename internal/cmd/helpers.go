@@ -102,6 +102,26 @@ func (a *app) reportInputTooLarge(err error) error {
 	})
 }
 
+// mutationResult is the minimal machine-readable record of a completed
+// mutation, emitted on stdout in --json/-o yaml mode by every mutating
+// command the server answers without a body (issue #194). id carries the
+// RESOLVED resource ID — for prefix-taking commands that is the full ID the
+// lookup picked, which would otherwise be disclosed only by the human echo —
+// and is omitted for whole-context actions (notifications read-all,
+// integration disconnects name their provider instead).
+type mutationResult struct {
+	Action  string `json:"action"`
+	ID      string `json:"id,omitempty"`
+	Success bool   `json:"success"`
+}
+
+// emitMutationResult prints the mutation record in structured mode; human
+// mode callers keep their existing ✓ echo, so table output stays
+// byte-identical.
+func (a *app) emitMutationResult(action, id string) error {
+	return a.out.Structured(mutationResult{Action: action, ID: id, Success: true})
+}
+
 // warnf reports a non-fatal warning. In structured mode it goes to stderr so
 // stdout stays a single machine-parseable document.
 func (a *app) warnf(format string, args ...any) {

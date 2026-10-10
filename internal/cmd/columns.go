@@ -140,9 +140,10 @@ func newColumnsUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/columns/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Updated column %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("updated", args[0])
 			}
+			A.out.Printf("✓ Updated column %s", args[0])
 			return nil
 		},
 	}
@@ -176,9 +177,10 @@ asked to confirm before anything is sent; non-interactive callers must pass
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/columns/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Deleted column %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("deleted", args[0])
 			}
+			A.out.Printf("✓ Deleted column %s", args[0])
 			return nil
 		},
 	}
@@ -301,9 +303,10 @@ func newVersionsUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/versions/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Updated version %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("updated", args[0])
 			}
+			A.out.Printf("✓ Updated version %s", args[0])
 			return nil
 		},
 	}
@@ -370,9 +373,10 @@ version being deleted).`,
 				}
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Deleted version %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("deleted", args[0])
 			}
+			A.out.Printf("✓ Deleted version %s", args[0])
 			return nil
 		},
 	}
