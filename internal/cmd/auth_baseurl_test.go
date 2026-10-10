@@ -99,6 +99,9 @@ func TestLoginTokenPersistsNonDefaultBaseURL(t *testing.T) {
 	if cfg.Auth == nil || cfg.Auth.AccessToken != "cpt_persist_tok_01" {
 		t.Errorf("stored auth = %+v, want token cpt_persist_tok_01", cfg.Auth)
 	}
+	if cfg.Auth != nil && cfg.Auth.IssuedBaseURL != server.URL {
+		t.Errorf("stored issuedBaseUrl = %q, want %q (the credential's issuer must be pinned at login)", cfg.Auth.IssuedBaseURL, server.URL)
+	}
 
 	// A bare invocation (no flag, no env) must reach the stored endpoint.
 	out, err = runRootWithCfgPath(t, cfgPath, "auth", "status")
@@ -122,8 +125,9 @@ func TestLoginTokenPersistsNonDefaultBaseURL(t *testing.T) {
 }
 
 // TestRememberLoginBaseURLOmitsDefault verifies the default URL is never
-// written to the config (keeping it self-healing) and a trailing slash on an
-// override is trimmed.
+// written to the config (keeping it self-healing), a trailing slash on an
+// override is trimmed, and the credential's pinned issuer moves together
+// with the remembered endpoint (issue #191).
 func TestRememberLoginBaseURLOmitsDefault(t *testing.T) {
 	t.Setenv("CUPTHREAD_BASE_URL", "")
 
@@ -132,27 +136,31 @@ func TestRememberLoginBaseURLOmitsDefault(t *testing.T) {
 
 	// No flag/env and nothing stored: effective URL is the default, so the
 	// config stays empty and keeps following config.DefaultBaseURL.
-	a := &app{cfg: &config.Config{}}
+	a := &app{cfg: &config.Config{Auth: &config.Auth{Method: "oauth"}}}
 	flagBaseURL = ""
 	a.rememberLoginBaseURL()
-	if a.cfg.BaseURL != "" {
-		t.Errorf("default login stored baseUrl = %q, want empty", a.cfg.BaseURL)
+	if a.cfg.BaseURL != "" || a.cfg.Auth.IssuedBaseURL != "" {
+		t.Errorf("default login stored baseUrl=%q issuedBaseUrl=%q, want both empty", a.cfg.BaseURL, a.cfg.Auth.IssuedBaseURL)
 	}
 
 	// Logging in against the default endpoint explicitly (flag equals the
 	// default) drops any previously stored non-default value.
-	a = &app{cfg: &config.Config{BaseURL: "https://stale.example.com"}}
+	a = &app{cfg: &config.Config{
+		BaseURL: "https://stale.example.com",
+		Auth:    &config.Auth{Method: "oauth", IssuedBaseURL: "https://stale.example.com"},
+	}}
 	flagBaseURL = config.DefaultBaseURL
 	a.rememberLoginBaseURL()
-	if a.cfg.BaseURL != "" {
-		t.Errorf("default-flag login stored baseUrl = %q, want empty", a.cfg.BaseURL)
+	if a.cfg.BaseURL != "" || a.cfg.Auth.IssuedBaseURL != "" {
+		t.Errorf("default-flag login stored baseUrl=%q issuedBaseUrl=%q, want both empty", a.cfg.BaseURL, a.cfg.Auth.IssuedBaseURL)
 	}
 
-	// Non-default flag: stored, trailing slash trimmed.
+	// Non-default flag: stored on the config and stamped on the credential,
+	// trailing slash trimmed.
 	flagBaseURL = "http://127.0.0.1:8081/"
 	a.rememberLoginBaseURL()
-	if want := "http://127.0.0.1:8081"; a.cfg.BaseURL != want {
-		t.Errorf("stored baseUrl = %q, want %q", a.cfg.BaseURL, want)
+	if want := "http://127.0.0.1:8081"; a.cfg.BaseURL != want || a.cfg.Auth.IssuedBaseURL != want {
+		t.Errorf("stored baseUrl=%q issuedBaseUrl=%q, want both %q", a.cfg.BaseURL, a.cfg.Auth.IssuedBaseURL, want)
 	}
 }
 
@@ -289,12 +297,17 @@ func TestOAuthLoginPersistsBaseURL(t *testing.T) {
 	if cfg.Auth == nil || cfg.Auth.Method != "oauth" || cfg.Auth.RefreshToken != "cpt_oauth_refresh_tok" {
 		t.Errorf("stored auth = %+v, want oauth pair with refresh token", cfg.Auth)
 	}
+	if cfg.Auth != nil && cfg.Auth.IssuedBaseURL != server.URL {
+		t.Errorf("stored issuedBaseUrl = %q, want %q (the OAuth issuer must be pinned at login)", cfg.Auth.IssuedBaseURL, server.URL)
+	}
 }
 
 // TestRefreshUsesStoredBaseURL verifies the transparent token refresh inside
 // every authenticated command targets the stored endpoint when no flag/env
 // override is present — the misroute that sent staging refresh tokens to
-// production before the fix.
+// production before the fix. The fixture carries no issuedBaseUrl, so this
+// also pins the pre-field fallback chain (remembered config base URL, then
+// the production default) from issue #191.
 func TestRefreshUsesStoredBaseURL(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "")
 	t.Setenv("CUPTHREAD_BASE_URL", "")

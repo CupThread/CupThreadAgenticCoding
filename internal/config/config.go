@@ -31,6 +31,29 @@ type Auth struct {
 	TokenPrefix string `json:"tokenPrefix,omitempty"`
 	// ClientID identifies the OAuth application that issued the tokens.
 	ClientID string `json:"clientId,omitempty"`
+	// IssuedBaseURL is the API origin whose OAuth endpoints issued this
+	// credential and alone can refresh or revoke it. It is pinned at login
+	// and deliberately not re-stamped by later invocations, so a --base-url /
+	// $CUPTHREAD_BASE_URL override can never divert the refresh token to
+	// another host (issue #191). Empty means the production default, so
+	// configs written before the field existed keep working unchanged.
+	IssuedBaseURL string `json:"issuedBaseUrl,omitempty"`
+}
+
+// IssuerBaseURL resolves the API origin that issued this credential and must
+// serve the credential protocol (token refresh, revocation): the stored
+// IssuedBaseURL wins, the remembered config-level base URL is the fallback
+// for credentials written before the field existed, and empty everywhere
+// means the production default — exactly the resolution chain pre-field
+// configs got without an override. authState may be nil.
+func (authState *Auth) IssuerBaseURL(rememberedBaseURL string) string {
+	if authState != nil && authState.IssuedBaseURL != "" {
+		return strings.TrimRight(authState.IssuedBaseURL, "/")
+	}
+	if rememberedBaseURL != "" {
+		return strings.TrimRight(rememberedBaseURL, "/")
+	}
+	return DefaultBaseURL
 }
 
 // WorkspacePrefs carries per-workspace CLI defaults.

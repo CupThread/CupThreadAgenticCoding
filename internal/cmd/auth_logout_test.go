@@ -17,8 +17,13 @@ import (
 )
 
 // oauthLogoutFixture mirrors a real post-login config: an OAuth token pair
-// plus saved workspace context and a remembered (stale) base URL.
-const oauthLogoutFixture = `{"auth":{"method":"oauth","accessToken":"cpt_test_access","refreshToken":"cpr_test_refresh","clientId":"cupthread-cli","expiresAt":"2030-01-01T00:00:00Z","tokenPrefix":"cpt_test_acce"},"defaultWorkspace":"ws_123","workspaces":{"ws_123":{"defaultApp":"app_1"}},"baseUrl":"https://stale.example.com"}`
+// plus saved workspace context and a remembered (stale) base URL. The
+// credential is pinned to issuerURL as its issuing server — the origin
+// `logout --revoke` must hit regardless of the --base-url override the tests
+// pass and of the stale remembered endpoint (issue #191).
+func oauthLogoutFixture(issuerURL string) string {
+	return `{"auth":{"method":"oauth","accessToken":"cpt_test_access","refreshToken":"cpr_test_refresh","clientId":"cupthread-cli","expiresAt":"2030-01-01T00:00:00Z","tokenPrefix":"cpt_test_acce","issuedBaseUrl":"` + issuerURL + `"},"defaultWorkspace":"ws_123","workspaces":{"ws_123":{"defaultApp":"app_1"}},"baseUrl":"https://stale.example.com"}`
+}
 
 func writeLogoutConfig(t *testing.T, contents string) string {
 	t.Helper()
@@ -75,7 +80,7 @@ func TestLogoutRevokeOAuthPostsRefreshToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+	cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 	out, err := runRootCfg(t, cfgPath, server.URL, "auth", "logout", "--revoke")
 	if err != nil {
 		t.Fatalf("logout --revoke: %v\n%s", err, out)
@@ -111,7 +116,7 @@ func TestLogoutRevokeBestEffort(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 		out, err := runRootCfg(t, cfgPath, server.URL, "auth", "logout", "--revoke")
 		if err != nil {
 			t.Fatalf("logout --revoke must succeed even when revocation fails: %v\n%s", err, out)
@@ -129,7 +134,7 @@ func TestLogoutRevokeBestEffort(t *testing.T) {
 		url := server.URL
 		server.Close() // nothing listens there anymore
 
-		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 		out, err := runRootCfg(t, cfgPath, url, "auth", "logout", "--revoke")
 		if err != nil {
 			t.Fatalf("logout --revoke must succeed against a dead server: %v\n%s", err, out)
@@ -180,7 +185,7 @@ func TestLogoutPlainUnchanged(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+	cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 	out, err := runRootCfg(t, cfgPath, server.URL, "auth", "logout")
 	if err != nil {
 		t.Fatalf("plain logout: %v\n%s", err, out)
@@ -284,7 +289,7 @@ func TestLogoutRevokeStructuredStdoutSingleDocument(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
 		if err != nil {
 			t.Fatalf("logout --revoke --json: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
@@ -315,7 +320,7 @@ func TestLogoutRevokeStructuredStdoutSingleDocument(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
 		if err != nil {
 			t.Fatalf("logout --revoke --json must succeed even when revocation fails: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
@@ -385,7 +390,7 @@ func TestLogoutRevokeStructuredStdoutSingleDocument(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cfgPath := writeLogoutConfig(t, oauthLogoutFixture)
+		cfgPath := writeLogoutConfig(t, oauthLogoutFixture(server.URL))
 		stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--output", "yaml")
 		if err != nil {
 			t.Fatalf("logout --revoke --output yaml: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
@@ -403,4 +408,56 @@ func TestLogoutRevokeStructuredStdoutSingleDocument(t *testing.T) {
 		}
 		assertLoggedOut(t, cfgPath)
 	})
+}
+
+// TestLogoutRevokePinnedToIssuingServer pins the issuer pinning of issue
+// #191 on the revocation path: with the credential issued by server A and
+// --base-url pointing at server B, the refresh token must be POSTed to A's
+// RFC 7009 endpoint, B must receive nothing at all, the confirmation names
+// the issuing server, and local state is still cleared.
+func TestLogoutRevokePinnedToIssuingServer(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "") // keep the test hermetic
+
+	var issuerRevokes []map[string]string
+	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == auth.RevokePath {
+			if err := r.ParseForm(); err != nil {
+				t.Errorf("parse revoke form: %v", err)
+				return
+			}
+			issuerRevokes = append(issuerRevokes, map[string]string{
+				"token":     r.Form.Get("token"),
+				"client_id": r.Form.Get("client_id"),
+			})
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		t.Errorf("issuer saw unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer issuer.Close()
+
+	var overrideRequests int
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		overrideRequests++
+	}))
+	defer override.Close()
+
+	cfgPath := writeLogoutConfig(t, oauthLogoutFixture(issuer.URL))
+	stdout, stderr, err := runRootCapture(t, cfgPath, override.URL, "auth", "logout", "--revoke")
+	if err != nil {
+		t.Fatalf("logout --revoke with override: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if len(issuerRevokes) != 1 {
+		t.Fatalf("issuer saw %d revoke requests, want 1", len(issuerRevokes))
+	}
+	if issuerRevokes[0]["token"] != "cpr_test_refresh" {
+		t.Errorf("revoke token = %q, want the stored refresh token cpr_test_refresh", issuerRevokes[0]["token"])
+	}
+	if overrideRequests != 0 {
+		t.Errorf("override host saw %d requests, want 0 (the refresh token must never travel there)", overrideRequests)
+	}
+	if !strings.Contains(stdout, "Revoked the server-side token pair at "+issuer.URL) {
+		t.Errorf("output missing issuer-named revocation confirmation:\n%s", stdout)
+	}
+	assertLoggedOut(t, cfgPath)
 }

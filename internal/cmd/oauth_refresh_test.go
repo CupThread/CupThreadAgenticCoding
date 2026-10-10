@@ -42,7 +42,10 @@ func TestTokenProviderRefreshIsBounded(t *testing.T) {
 
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	expiresAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	cfg := `{"auth":{"method":"oauth","accessToken":"cpt_expired","refreshToken":"cpr_stale","clientId":"cupthread-cli","expiresAt":"` + expiresAt + `"}}`
+	// The credential is pinned to the test server as its issuer (what a real
+	// login persists), so the transparent refresh targets the stalled test
+	// endpoint instead of production.
+	cfg := `{"auth":{"method":"oauth","accessToken":"cpt_expired","refreshToken":"cpr_stale","clientId":"cupthread-cli","expiresAt":"` + expiresAt + `","issuedBaseUrl":"` + server.URL + `"}}`
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
