@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
@@ -784,14 +785,46 @@ func mimeTypeForFilename(filename string) string {
 	}
 }
 
+// maxMultipartFilenameBytes caps the rendered Content-Disposition filename so
+// the part header keeps a bounded length regardless of the on-disk name (the
+// multipart writer imposes no limit of its own); 255 is the classic
+// filename-component limit.
+const maxMultipartFilenameBytes = 255
+
+// escapeQuotes renders a filename for a multipart Content-Disposition part
+// header. `"` and `\` are backslash-escaped as before, and every C0/DEL
+// control character (including \r and \n) is replaced with `_`: mime/multipart
+// writes header values verbatim, so a POSIX-legal on-disk name containing a
+// newline would otherwise inject attacker-controlled MIME part headers into
+// the request body (issue #180, CWE-93). The filename is display metadata
+// only — the server keys on the uploaded content — so rewriting control bytes
+// keeps weird-but-innocent names working instead of failing the upload with an
+// opaque server-side 400. The rendered value is truncated to
+// maxMultipartFilenameBytes, always on a rune boundary and never in the middle
+// of a backslash escape; clean names render byte-identically to the old
+// escaping-only behavior.
 func escapeQuotes(s string) string {
 	var b strings.Builder
+	budget := maxMultipartFilenameBytes
 	for _, r := range s {
-		switch r {
-		case '\\', '"':
-			b.WriteRune('\\')
+		if r < 0x20 || r == 0x7f {
+			r = '_'
+		}
+		// w is the rendered size: the rune plus the backslash the `"`/`\`
+		// escaping prepends.
+		w := utf8.RuneLen(r)
+		escaped := r == '"' || r == '\\'
+		if escaped {
+			w++
+		}
+		if w > budget {
+			break
+		}
+		if escaped {
+			b.WriteByte('\\')
 		}
 		b.WriteRune(r)
+		budget -= w
 	}
 	return b.String()
 }
