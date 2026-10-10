@@ -298,9 +298,10 @@ func newFeaturesUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/feature-requests/"+r.ID), nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Updated feature request %s", r.ID)
+			if A.structured() {
+				return A.emitMutationResult("updated", r.ID)
 			}
+			A.out.Printf("✓ Updated feature request %s", r.ID)
 			return nil
 		},
 	}
@@ -329,9 +330,10 @@ func newFeaturesApproveCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/feature-requests/"+r.ID+"/approve"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Approved %s", r.ID)
+			if A.structured() {
+				return A.emitMutationResult("approved", r.ID)
 			}
+			A.out.Printf("✓ Approved %s", r.ID)
 			return nil
 		},
 	}
@@ -363,9 +365,10 @@ non-interactive callers (scripts, agents) must pass --yes.`,
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/feature-requests/"+r.ID), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Deleted %s", r.ID)
+			if A.structured() {
+				return A.emitMutationResult("deleted", r.ID)
 			}
+			A.out.Printf("✓ Deleted %s", r.ID)
 			return nil
 		},
 	}

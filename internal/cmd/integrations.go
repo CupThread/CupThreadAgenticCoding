@@ -164,9 +164,10 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/github"), nil, nil, nil); err != nil {
 					return err
 				}
-				if !A.structured() {
-					A.out.Printf("✓ Disconnected GitHub")
+				if A.structured() {
+					return A.emitMutationResult("disconnected", "github")
 				}
+				A.out.Printf("✓ Disconnected GitHub")
 				return nil
 			},
 		},
@@ -336,9 +337,10 @@ func newGitHubConfigCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PATCH", path, nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
+			if A.structured() {
+				return A.emitMutationResult("config_updated", appRec.AppID)
 			}
+			A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
 			return nil
 		},
 	}
@@ -425,9 +427,10 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/integrations/"+prov), nil, nil, nil); err != nil {
 					return err
 				}
-				if !A.structured() {
-					A.out.Printf("✓ Disconnected %s", prov)
+				if A.structured() {
+					return A.emitMutationResult("disconnected", prov)
 				}
+				A.out.Printf("✓ Disconnected %s", prov)
 				return nil
 			},
 		},

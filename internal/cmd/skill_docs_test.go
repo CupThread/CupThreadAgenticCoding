@@ -701,6 +701,32 @@ func TestAPISkillIssue132(t *testing.T) {
 	}
 }
 
+// TestCLISkillMutationResultDocs pins the issue #194 mutation-output contract
+// in the CLI skill: mutating commands always print exactly one structured
+// document on stdout in --json/-o yaml mode, the minimal shape is
+// {"action", "id", "success"} with id carrying the RESOLVED resource ID
+// (the prefix→full-ID disclosure for features delete), and empty stdout after
+// a successful mutation is a bug. Without these markers a future edit could
+// re-teach agents to parse nothing after a delete.
+func TestCLISkillMutationResultDocs(t *testing.T) {
+	doc := readSkill(t, "cupthread-cli")
+	for _, marker := range []string{
+		"Mutation commands always print exactly one structured document on stdout",
+		"never an empty stream",
+		`{"action": "<verb>", "id": "<resource>", "success": true}`,
+		"resolves the prefix and emits",
+		"prefix matches was destroyed",
+		"Whole-context actions with no resource id",
+		"omit the `id` key",
+		"Treat empty stdout after a",
+		"mutation as a bug",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-cli/SKILL.md is missing required mutation-result marker %q", marker)
+		}
+	}
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))

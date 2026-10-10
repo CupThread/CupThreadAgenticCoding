@@ -91,6 +91,21 @@ not be verified (`cupthread auth status` confirms the session once the API is re
 
 - `--json`: Shorthand for `-o json` (emits indented machine-readable JSON). **Recommended for AI agents.**
 - `-o, --output <table|json|yaml>`: Select output formatting (default `table`).
+
+**Mutation commands always print exactly one structured document on stdout** in `--json`/`-o yaml` mode —
+never an empty stream. When the server answers the write with a record, that record is the document
+(`features create`, `changelog create/update/publish`, `imports create/rerun`, `comments moderation …`,
+`inbox priority/triage/assign/bulk-triage/retry`, member invite/add, `apps create/update/settings set`,
+`billing checkout/addons`, `integrations … connect`, `github sync`, `notifications prefs set`). When the
+server answers without a body, the CLI prints the minimal mutation result
+`{"action": "<verb>", "id": "<resource>", "success": true}` — e.g.
+`features delete <prefix> --json --yes` resolves the prefix and emits
+`{"action":"deleted","id":"<full-request-id>","success":true}`, so an agent can log exactly which of the
+prefix matches was destroyed. Action verbs are stable past-tense strings: `updated`, `deleted`,
+`approved`, `unpublished`, `role_set`, `removed`, `revoked`, `read`, `read_all`, `canceled`,
+`disconnected` (`id` names the provider, e.g. `github`), `config_updated` (`id` is the resolved app ID).
+Whole-context actions with no resource id (e.g. `read_all`) omit the `id` key. Treat empty stdout after a
+successful (exit 0) mutation as a bug and report it.
 - `-w, --workspace <id>`: Target workspace ID (overrides default).
 - `-a, --app <id>`: Target app ID (overrides default).
 - `--base-url <url>`: API endpoint override (default `https://api.cupthread.com`; a non-default login is
