@@ -114,14 +114,14 @@ func TestPrintf(t *testing.T) {
 }
 
 // assertNoControlBytes fails when s contains any C0 control other than tab
-// and newline, or DEL — the byte classes that let content act as terminal
-// commands (ESC sequences, CR line rewrites, BEL).
+// and newline, DEL, or a C1 control (U+0080–U+009F) — the code points that
+// let content act as terminal commands (ESC sequences and their 8-bit
+// CSI/OSC/DCS forms, CR line rewrites, BEL).
 func assertNoControlBytes(t *testing.T, s string) {
 	t.Helper()
-	for i := 0; i < len(s); i++ {
-		b := s[i]
-		if (b < 0x20 && b != '\t' && b != '\n') || b == 0x7f {
-			t.Errorf("output contains control byte 0x%02x: %q", b, s)
+	for _, r := range s {
+		if (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("output contains control rune %U: %q", r, s)
 			return
 		}
 	}
@@ -136,6 +136,10 @@ func TestSanitize(t *testing.T) {
 		{name: "clean ascii byte-identical", in: "Ada <ada@example.com> (2019)", want: "Ada <ada@example.com> (2019)"},
 		{name: "strips ESC and SGR payload boundary", in: "\x1b[31mred\x1b[0m", want: "[31mred[0m"},
 		{name: "strips OSC 8 open and close", in: "\x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\", want: "]8;;https://evil.example\\link]8;;\\"},
+		{name: "strips C1 CSI", in: "ok\u009b31mred\u009b0m", want: "ok31mred0m"},
+		{name: "strips C1 OSC 8 open and close", in: "\u009b]8;;https://evil.example\u009d\\link\u009b]8;;\u009d\\", want: "]8;;https://evil.example\\link]8;;\\"},
+		{name: "strips C1 device-control mix", in: "a\u0090b\u0097c", want: "abc"},
+		{name: "keeps Latin-1 punctuation above C1", in: " \u00a9\u00b1\u00d8\u00a7", want: " \u00a9\u00b1\u00d8\u00a7"},
 		{name: "strips carriage return", in: "line one\rline two", want: "line oneline two"},
 		{name: "strips bel", in: "alert\x07", want: "alert"},
 		{name: "strips DEL", in: "del\x7fete", want: "delete"},
@@ -165,17 +169,34 @@ func TestSanitizeStripsEveryForbiddenByte(t *testing.T) {
 	if got := sanitize("x\x7fy"); got != "xy" {
 		t.Errorf("sanitize(DEL) = %q, want %q", got, "xy")
 	}
+	for r := rune(0x80); r <= 0x9f; r++ {
+		in := "x" + string(r) + "y"
+		if got := sanitize(in); got != "xy" {
+			t.Errorf("sanitize(U+%04X) = %q, want %q", r, got, "xy")
+		}
+	}
+	// The first printable code points above the C1 range must survive
+	// byte-identical: NBSP, ©, ±, Ø, and §.
+	for _, keep := range []rune{0xa0, 0xa9, 0xb1, 0xd8, 0xa7} {
+		in := "x" + string(keep) + "y"
+		if got := sanitize(in); got != in {
+			t.Errorf("sanitize(U+%04X) = %q, want it unchanged", keep, got)
+		}
+	}
 }
 
 // TestTableSanitizesCells pins the output-boundary defense: a row carrying
 // the OSC 8 / SGR / CR injection payload renders with zero control bytes
-// while the visible text survives for humans to read.
+// while the visible text survives for humans to read. The cmt_3 row repeats
+// the OSC 8 attack with C1 code points (U+009B CSI / U+009D OSC) instead of
+// ESC — the 8-bit form xterm-class emulators also honor in UTF-8 mode.
 func TestTableSanitizesCells(t *testing.T) {
 	var buf bytes.Buffer
 	w := New(&buf, FormatTable)
 	w.Table([]string{"ID", "Author"}, [][]string{
 		{"cmt_1", "\x1b]8;;https://evil.example/verify\x1b\\CupThread Security\x1b]8;;\x1b\\"},
 		{"cmt_2", "\x1b[31mACCOUNT COMPROMISED\x1b[0m\r✓ Backup exported to ~/backup.tar.gz\x07"},
+		{"cmt_3", "\u009b]8;;https://evil.example/verify\u009d\\CupThread Security\u009b]8;;\u009d\\"},
 	})
 	out := buf.String()
 	assertNoControlBytes(t, out)
@@ -183,6 +204,20 @@ func TestTableSanitizesCells(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing visible text %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestStripTerminalControls pins the strict exported form shared with
+// internal/api: unlike the table-cell sanitize it also removes tab and
+// newline, and it drops the C1 range while keeping the first printable
+// Latin-1 code points.
+func TestStripTerminalControls(t *testing.T) {
+	got := StripTerminalControls("a\x1b\u009b\tb\rc\n\x7f y")
+	if got != "abc y" {
+		t.Errorf("StripTerminalControls = %q, want %q", got, "abc y")
+	}
+	if got := StripTerminalControls("plain text"); got != "plain text" {
+		t.Errorf("StripTerminalControls = %q, want it unchanged", got)
 	}
 }
 

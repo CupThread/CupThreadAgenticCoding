@@ -1056,6 +1056,17 @@ func TestSanitizeErrorText(t *testing.T) {
 	if got := sanitizeErrorText("plain text"); got != "plain text" {
 		t.Errorf("sanitizeErrorText = %q, want it unchanged", got)
 	}
+	// The C1 range (U+0080–U+009F) is the ESC-free 8-bit form of the same
+	// threat (U+009B is CSI, U+009D is OSC) and must be stripped like C0,
+	// while the first printable Latin-1 code points above it survive.
+	for r := rune(0x80); r <= 0x9f; r++ {
+		if got := sanitizeErrorText("x" + string(r) + "y"); got != "xy" {
+			t.Errorf("sanitizeErrorText(U+%04X) = %q, want %q", r, got, "xy")
+		}
+	}
+	if got := sanitizeErrorText("x\u00a0y"); got != "x\u00a0y" {
+		t.Errorf("sanitizeErrorText(NBSP) = %q, want it unchanged", got)
+	}
 }
 
 // TestUploadAppIconCapturesValidationDetails covers the multipart error path

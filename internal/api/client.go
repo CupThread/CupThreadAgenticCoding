@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
 
 // Transient-failure retry defaults: a body-less GET/HEAD that answers
@@ -202,14 +204,10 @@ func (e *APIError) detailsSuffix() string {
 // sanitizeErrorText strips terminal control characters (C0, DEL, and the C1
 // range) from server-supplied text before it is inlined into an error
 // string, so a hostile response cannot forge output lines or emit OSC/SGR
-// escape sequences through validation messages.
+// escape sequences through validation messages. It shares the predicate with
+// output's table-cell sanitizer so the two surfaces cannot diverge.
 func sanitizeErrorText(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
-			return -1
-		}
-		return r
-	}, s)
+	return output.StripTerminalControls(s)
 }
 
 // truncateRunes shortens s to max runes, marking the cut with an ellipsis.
