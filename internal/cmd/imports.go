@@ -292,9 +292,10 @@ sent; non-interactive callers must pass --yes.`,
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+args[0]+"/cancel"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Canceled import %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("canceled", args[0])
 			}
+			A.out.Printf("✓ Canceled import %s", args[0])
 			return nil
 		},
 	}

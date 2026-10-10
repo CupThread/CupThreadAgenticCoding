@@ -307,9 +307,10 @@ func newMembersSetRoleCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/members/"+args[0]), nil, body, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Role of %s set to %s", args[0], role)
+			if A.structured() {
+				return A.emitMutationResult("role_set", args[0])
 			}
+			A.out.Printf("✓ Role of %s set to %s", args[0], role)
 			return nil
 		},
 	}
@@ -341,9 +342,10 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/members/"+args[0]), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Removed member %s", args[0])
+			if A.structured() {
+				return A.emitMutationResult("removed", args[0])
 			}
+			A.out.Printf("✓ Removed member %s", args[0])
 			return nil
 		},
 	}
@@ -401,9 +403,10 @@ the Console web UI (Workspace → Members).`,
 				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/invitations/"+args[0]), nil, nil, nil); err != nil {
 					return err
 				}
-				if !A.structured() {
-					A.out.Printf("✓ Revoked invitation %s", args[0])
+				if A.structured() {
+					return A.emitMutationResult("revoked", args[0])
 				}
+				A.out.Printf("✓ Revoked invitation %s", args[0])
 				return nil
 			},
 		},

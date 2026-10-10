@@ -93,9 +93,10 @@ func newNotificationsReadCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/"+args[0]+"/read"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Marked %s as read", args[0])
+			if A.structured() {
+				return A.emitMutationResult("read", args[0])
 			}
+			A.out.Printf("✓ Marked %s as read", args[0])
 			return nil
 		},
 	}
@@ -114,9 +115,10 @@ func newNotificationsReadAllCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/read-all"), nil, nil, nil); err != nil {
 				return err
 			}
-			if !A.structured() {
-				A.out.Printf("✓ Marked all notifications as read")
+			if A.structured() {
+				return A.emitMutationResult("read_all", "")
 			}
+			A.out.Printf("✓ Marked all notifications as read")
 			return nil
 		},
 	}
