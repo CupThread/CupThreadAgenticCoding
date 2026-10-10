@@ -140,6 +140,12 @@ type APIError struct {
 	// programmatic consumers. Error() renders a capped, sanitized human
 	// summary; it is nil whenever the server sent no details.
 	Details json.RawMessage
+	// Body is the undecoded error response body, kept verbatim for callers
+	// that need contract-specific fields beyond Code/Details (e.g. the
+	// linked-request count on the 409 version_has_feature_requests guard).
+	// It is size-capped like every response body and nil for non-JSON
+	// bodies. Never print it raw: render only fields parsed out of it.
+	Body json.RawMessage
 }
 
 // Limits for rendering APIError.Details so a large schema error cannot flood
@@ -667,6 +673,7 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 			Status:   resp.StatusCode,
 			Message:  strings.TrimSpace(http.StatusText(resp.StatusCode)),
 			Attempts: attempts,
+			Body:     data,
 		}
 		var parsed struct {
 			Error   string          `json:"error"`
@@ -824,6 +831,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 		apiErr := &APIError{
 			Status:  resp.StatusCode,
 			Message: strings.TrimSpace(string(body)),
+			Body:    body,
 		}
 		var parsed struct {
 			Error   string          `json:"error"`
