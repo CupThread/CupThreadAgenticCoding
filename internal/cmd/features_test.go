@@ -148,10 +148,18 @@ func TestFeaturesGetScopesToSavedDefaultApp(t *testing.T) {
 		t.Errorf("output missing request title:\n%s", out)
 	}
 
-	// A request from app B is invisible under the saved default app.
+	// A request from app B is invisible under the saved default app, and the
+	// not-found error names the app the scan actually covered plus the --app
+	// escape hatch (issue #187's error contract) instead of mislabeling the
+	// scan workspace-wide.
 	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_b_1")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("features get fr_b_1 error = %v, want not-found under app_a", err)
+	}
+	for _, want := range []string{"app app_a", "workspace ws_1", "--app"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("not-found error missing %q:\n%v", want, err)
+		}
 	}
 }
 
@@ -510,9 +518,10 @@ func TestFeaturesAmbiguousPrefixAcrossPages(t *testing.T) {
 	}
 }
 
-// TestFeaturesNotFoundReportsScannedScope pins the truthful not-found
-// error: it names the scanned request count and workspace instead of
-// blaming --app.
+// TestFeaturesNotFoundReportsScannedScope pins the truthful not-found error
+// (issue #187's error contract): under a resolved app it names the app the
+// scan actually covered and the --app escape hatch instead of mislabeling the
+// scan workspace-wide; with no app resolved it keeps the workspace wording.
 func TestFeaturesNotFoundReportsScannedScope(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 
@@ -520,8 +529,27 @@ func TestFeaturesNotFoundReportsScannedScope(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "req_9999")
-	if err == nil || !strings.Contains(err.Error(), "scanned 450 requests in workspace ws_1") {
-		t.Fatalf("features get req_9999 error = %v, want scanned-scope message", err)
+	if err == nil {
+		t.Fatal("features get req_9999 under app_a, want not-found error")
+	}
+	for _, want := range []string{
+		"not found among the 450 requests of app app_a in workspace ws_1",
+		"--app",
+		"apps use",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("app-scoped not-found error missing %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "scanned 450 requests in workspace") {
+		t.Errorf("app-scoped error still mislabels the scan workspace-wide:\n%v", err)
+	}
+
+	// No app resolved: the scan really was workspace-wide and the wording
+	// says so.
+	_, err = runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "get", "req_9999")
+	if err == nil || !strings.Contains(err.Error(), "not found (scanned 450 requests in workspace ws_1)") {
+		t.Fatalf("workspace-wide features get req_9999 error = %v, want scanned-workspace message", err)
 	}
 }
 
