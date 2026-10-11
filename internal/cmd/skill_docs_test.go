@@ -1052,6 +1052,68 @@ func TestAPISkillIssue204WidthHints(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue231SingleFeatureRequestRead pins the issue #231 sync of
+// the new public single-request read, GET /api/v1/feature-requests/{id}
+// (SaaS #713): the 200 body is {request} in the board-listing record shape,
+// an X-User-Token (or Clerk session) personalizes hasVoted/isOwnRequest, and
+// the gate chain mirrors the board listing and comment thread — public-read
+// rate limit first, then existence hiding (missing / unapproved / private /
+// deactivated all answer the same uniform 404, and the unapproved owner's own
+// token does not un-hide it), then the PRIV-12 gate ahead of the approved
+// check. It also pins the shared-cache split (only an anonymous 200 caches;
+// token- and session-bearing callers skip the cache in both directions, 404s
+// never cache), the 60/min PUBLIC_READ_RATE_LIMITER membership, and the
+// PRIV-12 matrix rows, and rejects the stale "four public board reads"
+// enumerations the sync replaced.
+func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// Endpoint row: purpose, record shape, and personalization.
+		"| `/api/v1/feature-requests/:id` | `GET` |",
+		"the deep-link read behind the web portal's shareable `/{workspaceSlug}/{appSlug}/requests/{requestId}` URLs",
+		"The `200` body is `{request}` holding the **same record shape the board listing serves per item**",
+		"`voteCount` (live votes plus imported historical total)",
+		"`hasVoted` reflects that token's ballot and `isOwnRequest` marks the caller's own request",
+		"a malformed token personalizes nothing (silently treated as absent, no error)",
+		// Gate chain: limiter, existence hiding, PRIV-12.
+		"the spend is the first statement, before any lookup",
+		"the same uniform `404 {\"error\": \"Feature request not found\"}`",
+		"the unapproved requester's own token does **not** un-hide it",
+		"checked before the approved check",
+		// Cache split.
+		"a token- or session-bearing caller skips the cache in both directions",
+		// Rate-limit and cache sections.
+		"Five public GETs document `429` and a short shared cache.",
+		"| `GET /api/v1/feature-requests/{id}` | Only an **anonymous** `200` is cached",
+		"skips the cache in **both** directions (SEC-15: the Cache API keys by URL and ignores `Vary`",
+		"404s are never cached",
+		"a deep link adds one detail read",
+		// PRIV-12 matrix rows and the ordering note.
+		"| `GET /api/v1/feature-requests/:id` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |",
+		"| `GET /api/v1/feature-requests/:id` | request exists but is **unapproved** |",
+		"the comments-thread and single-request-detail `401` checks run **after** existence hiding",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#231 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// The pre-sync enumerations of the public-read family: the detail
+		// read is a member now, so every "four" count is wrong.
+		"the four public board reads",
+		"For the four public board reads",
+		"Four public GETs document",
+		"The four routes share",
+		"those four may come from a 30-second shared cache",
+		// The pre-sync ordering note, which named only the comments thread.
+		"the comments-thread `401` check runs **after** existence hiding",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
+		}
+	}
+}
+
 // TestAPISkillIssue230RevalidatableImageCache pins the issue #230 sync of the
 // public image-delivery cache policy on GET /api/v1/files/:key: the one-day
 // hit response drops the `immutable` directive — `Cache-Control: public,
