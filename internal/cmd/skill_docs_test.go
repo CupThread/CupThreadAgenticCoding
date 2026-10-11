@@ -1012,7 +1012,7 @@ func TestBoundedInputDocs(t *testing.T) {
 // image-delivery contract on GET /api/v1/files/:key: the optional integer
 // width hint accepts only the fixed 16–160 size set, width-hint responses
 // (WebP thumbnail or original fallback) cache for five minutes while hintless
-// requests keep the immutable one-day policy, clients must decode by the
+// requests keep the one-day policy, clients must decode by the
 // response content type rather than the URL extension, and public image URLs
 // are handled as opaque URLs. It also rejects the stale max-age=60 cache
 // policy the row carried before SaaS #649 moved the canonical originals to a
@@ -1020,7 +1020,7 @@ func TestBoundedInputDocs(t *testing.T) {
 func TestAPISkillIssue204WidthHints(t *testing.T) {
 	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
-		"`Cache-Control: public, max-age=86400, immutable`",
+		"`Cache-Control: public, max-age=86400`",
 		"a missing key 404s with `Cache-Control: public, max-age=15`",
 		"`16, 32, 36, 56, 64, 72, 80, 112, 128, 160`",
 		`400 {"error": "Unsupported image width"}`,
@@ -1111,5 +1111,34 @@ func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
 		if strings.Contains(doc, stale) {
 			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
 		}
+	}
+}
+
+// TestAPISkillIssue230RevalidatableImageCache pins the issue #230 sync of the
+// public image-delivery cache policy on GET /api/v1/files/:key: the one-day
+// hit response drops the `immutable` directive — `Cache-Control: public,
+// max-age=86400` — so an explicit reload revalidates and can discover a
+// deleted object before the edge TTL lapses (SaaS PR #775, issue #715), while
+// the 15-second negative cache and the five-minute width-hint policy are
+// unchanged.
+func TestAPISkillIssue230RevalidatableImageCache(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"`Cache-Control: public, max-age=86400`",
+		"the response is not `immutable`, so an explicit reload revalidates",
+		"an explicit reload revalidates and can discover a deleted object",
+		"before the edge TTL lapses",
+		"a missing key 404s with `Cache-Control: public, max-age=15`",
+		"`Cache-Control: public, max-age=300` (five minutes)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#230 marker %q", marker)
+		}
+	}
+	// ", immutable`" is the dropped directive as it appeared in the old
+	// `Cache-Control` header value; the only remaining "immutable" mentions
+	// are the "not `immutable`" reload-revalidation explanations.
+	if strings.Contains(doc, ", immutable`") {
+		t.Errorf("cupthread-api/SKILL.md still promises an immutable public image cache")
 	}
 }
