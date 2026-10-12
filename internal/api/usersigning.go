@@ -309,9 +309,10 @@ var (
 // nowhere, so they stay accepted; plan and mrr may be explicitly null
 // (nullable server-side) and sign as "null"; isPaying, currency, and
 // userToken are not nullable and are rejected before a dead-on-arrival
-// signature is produced. Type errors are re-checked here (with the same
-// messages the canonicalizer produces) so rejection happens before any
-// signing work.
+// signature is produced. Plan strings exactly equal to the reserved
+// "unset"/"null" sentinels are rejected too (issue #235). Type errors are
+// re-checked here (with the same messages the canonicalizer produces) so
+// rejection happens before any signing work.
 func ValidateSDKAttributeBody(raw map[string]json.RawMessage) error {
 	if v, ok := raw["isPaying"]; ok {
 		switch fieldState(v) {
@@ -334,6 +335,16 @@ func ValidateSDKAttributeBody(raw map[string]json.RawMessage) error {
 		// not byte length — mirrors it.
 		if n := utf8.RuneCountInString(s); n < 1 || n > 64 {
 			return fmt.Errorf("invalid plan: must be 1-64 characters, got %d", n)
+		}
+		// The canonical string reserves "unset" (absent field) and "null"
+		// (explicit JSON null) as sentinel renderings, so a plan equal to
+		// either exact string is byte-indistinguishable from "leave
+		// unchanged" / "clear" inside the signed payload; the server rejects
+		// it at zod parse with 400 fieldErrors.plan ["plan_reserved_sentinel"]
+		// (issue #235). The comparison is byte-exact: "UNSET", "unsettled",
+		// and "nullify" stay legal plan names.
+		if s == "unset" || s == "null" {
+			return fmt.Errorf("invalid plan %q: the exact string is a reserved signature sentinel (an absent plan signs as \"unset\" and an explicit null as \"null\"), so the server rejects it with 400 plan_reserved_sentinel; send JSON null to clear the stored plan or omit the key to keep it", s)
 		}
 	}
 	if v, ok := raw["mrr"]; ok && fieldState(v) == "value" {
