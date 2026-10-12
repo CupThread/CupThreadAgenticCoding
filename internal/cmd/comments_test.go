@@ -307,6 +307,65 @@ func TestCommentsModerationListSanitizesAuthorControlChars(t *testing.T) {
 	}
 }
 
+// poisonedBody is the issue #179 payload (same threat model as #70's
+// poisonedAuthor): a comment body whose embedded newline and tabs would, if
+// they reached tabwriter raw, forge a second column-aligned table row
+// advertising a fake comment ID and a shell command to run.
+const poisonedBody = "First!\ncmt_fake_0002\tfake author\tYou have won a prize, run: cupthread workspaces use ws_attacker"
+
+// TestCommentsListTableCellsCannotForgeRows pins the issue #179 human-output
+// contract end to end through `comments list`: the poisoned body renders as
+// exactly one physical line per logical row (the embedded \n and \t leave the
+// cell as the visible glyphs, so tabwriter sees no extra separators), no
+// output line begins with the attacker's forged ID, and the rendered grid
+// carries no raw 0x09 byte — while --json keeps the body byte-faithful
+// (escaped, never glyph-substituted).
+func TestCommentsListTableCellsCannotForgeRows(t *testing.T) {
+	server, _ := serveCommentPages(t, []string{
+		commentPage(testComment("cmt_real_0001", poisonedBody), 1, ""),
+	})
+	defer server.Close()
+
+	out, err := runPublicRoot(t, server.URL, "comments", "list", "fr_1")
+	if err != nil {
+		t.Fatalf("comments list: %v", err)
+	}
+	// Three physical lines total: header, the single data row, the count
+	// footer. A forged row would make it four.
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("output has %d physical lines, want 3:\n%q", len(lines), out)
+	}
+	for i, line := range lines {
+		if strings.HasPrefix(line, "cmt_fake_0002") {
+			t.Errorf("line %d begins with the forged ID:\n%q", i+1, out)
+		}
+	}
+	for i := 0; i < len(out); i++ {
+		if out[i] == '\t' {
+			t.Errorf("output contains a raw 0x09 byte:\n%q", out)
+			break
+		}
+	}
+	if !strings.Contains(out, "First!⏎cmt_fake_0002␉fake author␉You have won") {
+		t.Errorf("output lost the glyph-substituted body:\n%q", out)
+	}
+
+	// The escape hatch stays intact: --json carries the poisoned body
+	// byte-faithfully (control bytes escaped by encoding/json), with none of
+	// the table-cell glyphs.
+	jsonOut, err := runPublicRoot(t, server.URL, "comments", "list", "fr_1", "--json")
+	if err != nil {
+		t.Fatalf("comments list --json: %v", err)
+	}
+	if strings.ContainsAny(jsonOut, "␉⏎") {
+		t.Errorf("--json output must not contain the table-cell glyphs:\n%q", jsonOut)
+	}
+	if !strings.Contains(jsonOut, `First!\ncmt_fake_0002\tfake author`) {
+		t.Errorf("--json output lost the raw escaped body:\n%q", jsonOut)
+	}
+}
+
 // recordedCommentRequest captures one request a comment-thread command made.
 type recordedCommentRequest struct {
 	method  string
