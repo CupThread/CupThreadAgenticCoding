@@ -1142,3 +1142,54 @@ func TestAPISkillIssue230RevalidatableImageCache(t *testing.T) {
 		t.Errorf("cupthread-api/SKILL.md still promises an immutable public image cache")
 	}
 }
+
+// TestSkillDocsConsoleOffsetCap guards the console-listing offset-cap notes
+// synced with the server's shared CONSOLE_LIST_MAX_OFFSET clamp (issue #178):
+// every offset-paginated console listing degrades an offset above 10,000 to
+// the cap and still answers 200, so the cupthread-cli skill must tell agents
+// paging the four list commands that --offset stops there (the CLI rewrites
+// an out-of-range value with a warning notice, and a page starting at the
+// cap repeats forever), and the cupthread-api skill must document the
+// server-side behavior on the console routes.
+func TestSkillDocsConsoleOffsetCap(t *testing.T) {
+	cases := []struct {
+		skill string
+		want  []string
+	}{
+		{
+			skill: "cupthread-cli",
+			want: []string{
+				// inbox list
+				"stops at the server's shared console",
+				// notifications list
+				"it caps `--offset` at the",
+				// features list
+				"capped at the server's shared console cap",
+				// changelog list
+				"itself caps at the server's shared console cap",
+				"once a page starts at the cap, the printed next offset re-serves",
+				// the changelog one-liner example
+				"--offset caps at 10000",
+			},
+		},
+		{
+			skill: "cupthread-api",
+			want: []string{
+				"Console listing offsets are capped at 10,000",
+				"CONSOLE_LIST_MAX_OFFSET",
+				"degrades to 10,000 and still returns `200`",
+				"degrades to `0`",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.skill, func(t *testing.T) {
+			doc := readSkill(t, tc.skill)
+			for _, marker := range tc.want {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required offset-cap marker %q", tc.skill, marker)
+				}
+			}
+		})
+	}
+}

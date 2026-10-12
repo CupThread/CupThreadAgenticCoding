@@ -317,3 +317,57 @@ func TestNotificationsListClampsLimit(t *testing.T) {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }
+
+// TestNotificationsListClampsOffset pins the local --offset clamp on the
+// notifications listing (issue #178): the server silently degrades an offset
+// above the shared console cap of 10,000 to the cap (still answering 200)
+// and a negative one to 0, and this command prints no more-pages marker at
+// all, so a walk past the cap re-reads the same final page undetectably. The
+// CLI clamps first and announces the rewrite through warnf: table mode keeps
+// it on stdout, --json mode moves it to stderr so stdout stays a single
+// document. The 10,000 boundary passes through verbatim with no warning.
+func TestNotificationsListClampsOffset(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server, gotQuery := notificationsServer(t, notificationsListFixture)
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"15000", "10000"},
+		{"10001", "10000"},
+		{"-5", "0"},
+	} {
+		out, err := runRoot(t, server.URL, "notifications", "list", "--workspace", "ws_1", "--offset", tc.requested)
+		if err != nil {
+			t.Fatalf("notifications list --offset %s: %v", tc.requested, err)
+		}
+		if got := gotQuery.Get("offset"); got != tc.sent {
+			t.Errorf("--offset %s sent offset = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --offset "+tc.requested+" is outside the server's 0-10000 page range") {
+			t.Errorf("--offset %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "notifications", "list", "--workspace", "ws_1", "--offset", "10000")
+	if err != nil {
+		t.Fatalf("notifications list --offset 10000: %v", err)
+	}
+	if got := gotQuery.Get("offset"); got != "10000" {
+		t.Errorf("boundary --offset 10000 sent offset = %q, want 10000", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --offset 10000 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"notifications", "list", "--workspace", "ws_1", "--offset", "15000", "--json")
+	if err != nil {
+		t.Fatalf("notifications list --json --offset 15000: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --offset 15000 is outside the server's 0-10000 page range; requesting 10000 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}

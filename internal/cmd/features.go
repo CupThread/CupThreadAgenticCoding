@@ -79,6 +79,10 @@ workspace-wide cross-app view instead.`,
 			} else if limit > featureRequestPageSize {
 				limit = featureRequestPageSize
 			}
+			// The console listing clamps the offset at 10,000 and still
+			// answers 200; announce the rewrite so a deep walk notices it is
+			// re-reading the final page (issue #178).
+			offset = A.clampListOffset(offset)
 			appID := ""
 			if !allApps {
 				// Scope the listing to the resolved app like the ID-taking
@@ -102,7 +106,7 @@ workspace-wide cross-app view instead.`,
 		},
 	}
 	list.Flags().IntVar(&limit, "limit", 50, "Maximum requests to list (1-200, server page cap 200)")
-	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
+	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination (values above 10000 are clamped to 10000 by the server)")
 	list.Flags().StringVar(&sort, "sort", "newest", "Sort order: newest or revenue (revenue is Pro-gated)")
 	list.Flags().BoolVar(&payerOnly, "payer-only", false, "Only requests from paying users (Pro-gated)")
 	list.Flags().BoolVar(&allApps, "all-apps", false, "List requests from every app in the workspace (ignore the resolved app)")
