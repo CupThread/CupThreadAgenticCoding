@@ -60,6 +60,10 @@ func newChangelogListCmd() *cobra.Command {
 			// The server clamps the page size to 100 silently; clamp here
 			// too so an offset walk steps by the served size (issue #201).
 			limit = A.clampListLimit(limit, changelogPageSize)
+			// The console listing clamps the offset at 10,000 and still
+			// answers 200; announce the rewrite so a deep walk notices it is
+			// re-reading the final page (issue #178).
+			offset = A.clampListOffset(offset)
 			var resp api.ListChangelogResponse
 			q := query(map[string]string{
 				"appId":  appID,
@@ -95,7 +99,7 @@ func newChangelogListCmd() *cobra.Command {
 		},
 	}
 	list.Flags().IntVar(&limit, "limit", 100, "Entries per page (1-100, server page cap 100)")
-	list.Flags().IntVar(&offset, "offset", 0, "Entries to skip for paging")
+	list.Flags().IntVar(&offset, "offset", 0, "Entries to skip for paging (values above 10000 are clamped to 10000 by the server)")
 	return list
 }
 

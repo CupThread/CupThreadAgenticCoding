@@ -479,3 +479,58 @@ func TestChangelogListClampsLimit(t *testing.T) {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }
+
+// TestChangelogListClampsOffset pins the local --offset clamp on the
+// changelog listing (issue #178): the server's parseListPagination silently
+// degrades an offset above the shared console cap of 10,000 to the cap
+// (still answering 200) and a negative one to 0, so a walk past the cap
+// re-serves the same final page with no hint anything changed. The CLI
+// clamps first and announces the rewrite: stdout in table mode, stderr in
+// --json mode, and nothing at all on the verbatim 10,000 boundary.
+func TestChangelogListClampsOffset(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server, _, gotQuery := changelogServer(t, changelogListFixture)
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"15000", "10000"},
+		{"10001", "10000"},
+		{"-5", "0"},
+	} {
+		out, err := runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+			"--offset", tc.requested)
+		if err != nil {
+			t.Fatalf("changelog list --offset %s: %v", tc.requested, err)
+		}
+		if got := gotQuery.Get("offset"); got != tc.sent {
+			t.Errorf("--offset %s sent offset = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --offset "+tc.requested+" is outside the server's 0-10000 page range") {
+			t.Errorf("--offset %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+		"--offset", "10000")
+	if err != nil {
+		t.Fatalf("changelog list --offset 10000: %v", err)
+	}
+	if got := gotQuery.Get("offset"); got != "10000" {
+		t.Errorf("boundary --offset 10000 sent offset = %q, want 10000", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --offset 10000 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"changelog", "list", "--workspace", "ws_1", "--app", "app_1", "--offset", "15000", "--json")
+	if err != nil {
+		t.Fatalf("changelog list --json --offset 15000: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --offset 15000 is outside the server's 0-10000 page range; requesting 10000 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}
