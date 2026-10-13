@@ -663,6 +663,56 @@ func TestSkillDocsIssue196SchemaMirror(t *testing.T) {
 	})
 }
 
+// TestSkillDocsIssue235PlanReservedSentinels pins the issue-#235 sync: the
+// plan strings "unset" and "null" are reserved signature sentinels (an
+// absent plan signs as "unset", an explicit null as "null", so a literal
+// equal to either is byte-indistinguishable from leave-unchanged/clear) and
+// the server rejects them with 400 plan_reserved_sentinel before the
+// signature check. The command help and both skills must teach the
+// reservation, its byte-exactness, and the null/omit remediation.
+func TestSkillDocsIssue235PlanReservedSentinels(t *testing.T) {
+	t.Run("command help", func(t *testing.T) {
+		sign := newAPISignUserAttrsCmd()
+		for _, marker := range []string{
+			`The plan strings "unset" and "null" are reserved signature sentinels`,
+			"plan_reserved_sentinel",
+			"clear the stored plan or omit the key to keep it",
+			`"UNSET", "Unset", "unsettled", "nullify" remain valid`,
+		} {
+			if !strings.Contains(sign.Long, marker) {
+				t.Errorf("sign-user-attrs Long missing issue-#235 marker %q:\n%s", marker, sign.Long)
+			}
+		}
+	})
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"The plan strings `\"unset\"` and `\"null\"` are reserved signature sentinels (issue #235)",
+			"`400 plan_reserved_sentinel` server-side",
+			"Send JSON `null` to clear the stored plan or omit the key to keep it",
+			"`\"UNSET\"`, `\"Unset\"`, `\"unsettled\"`, `\"nullify\"` remain valid",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#235 marker %q", marker)
+			}
+		}
+	})
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			"**reserved signature sentinels**",
+			`{"plan": ["plan_reserved_sentinel"]}`,
+			"treat that as a normal validation error, do not retry",
+			"never send those two literals as plan values",
+			"One `plan` value rule sits in the same parse (issue #235)",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#235 marker %q", marker)
+			}
+		}
+	})
+}
+
 // TestAPISkillIssue132 pins the PRIV-19 avatar policy sync: profile writes
 // only accept managed image URLs (400 avatar_url_not_allowed otherwise) and
 // every public payload serves avatar fields as null or a managed https URL.

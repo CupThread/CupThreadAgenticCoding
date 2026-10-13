@@ -268,6 +268,8 @@ func TestValidateSDKAttributeBodySchemaMirror(t *testing.T) {
 		{name: "plan empty", body: `{"plan":""}`, wantErr: "must be 1-64 characters, got 0"},
 		{name: "plan 65 chars", body: `{"plan":"` + strings.Repeat("a", 65) + `"}`, wantErr: "must be 1-64 characters, got 65"},
 		{name: "plan wrong type", body: `{"plan":7}`, wantErr: "plan must be a string or null"},
+		{name: "plan literal unset sentinel", body: `{"plan":"unset"}`, wantErr: "plan_reserved_sentinel"},
+		{name: "plan literal null sentinel", body: `{"plan":"null"}`, wantErr: "plan_reserved_sentinel"},
 		{name: "isPaying explicit null", body: `{"isPaying":null}`, wantErr: "explicit null is not accepted server-side"},
 		{name: "isPaying wrong type", body: `{"isPaying":"yes"}`, wantErr: "isPaying must be a boolean"},
 		{name: "userToken not a uuid", body: `{"userToken":"not-a-uuid"}`, wantErr: "must be an RFC 4122 UUID"},
@@ -295,6 +297,26 @@ func TestValidateSDKAttributeBodySchemaMirror(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateSDKAttributeBodyPlanSentinelByteExact pins the reservation's
+// byte-exactness (issue #235): only the exact lowercase strings "unset" and
+// "null" collide with the canonical string's sentinel renderings; case
+// variants and superstrings stay legal plan names the server accepts.
+func TestValidateSDKAttributeBodyPlanSentinelByteExact(t *testing.T) {
+	for _, plan := range []string{"UNSET", "Unset", "uNset", "unsettled", " unset", "unset ", "NULL", "Null", "nullify", " null", "null\n"} {
+		body, err := json.Marshal(map[string]string{"plan": plan})
+		if err != nil {
+			t.Fatalf("marshal plan %q: %v", plan, err)
+		}
+		raw, err := DecodeSDKAttributeBody(body)
+		if err != nil {
+			t.Fatalf("decode plan %q: %v", plan, err)
+		}
+		if err := ValidateSDKAttributeBody(raw); err != nil {
+			t.Errorf("plan %q: %v, want accepted (reservation is byte-exact)", plan, err)
+		}
 	}
 }
 
