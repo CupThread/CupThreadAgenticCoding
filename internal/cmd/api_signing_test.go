@@ -251,6 +251,8 @@ func TestAPISignUserAttrsSchemaMirrorValidation(t *testing.T) {
 		{"mrr far over the cap", `{"mrr":2000000}`, "must be at most 1000000"},
 		{"empty plan", `{"plan":""}`, "must be 1-64 characters, got 0"},
 		{"plan over 64 chars", `{"plan":"` + strings.Repeat("x", 65) + `"}`, "must be 1-64 characters, got 65"},
+		{"plan literal unset sentinel", `{"plan":"unset"}`, "plan_reserved_sentinel"},
+		{"plan literal null sentinel", `{"plan":"null"}`, "plan_reserved_sentinel"},
 		{"body userToken not a uuid", `{"userToken":"not-a-uuid"}`, "must be an RFC 4122 UUID"},
 		{"body userToken empty", `{"userToken":""}`, "must be an RFC 4122 UUID"},
 		{"body userToken null", `{"userToken":null}`, "explicit null is not accepted server-side"},
@@ -317,6 +319,8 @@ func TestAPISignUserAttrsSchemaMirrorAcceptsValidBodies(t *testing.T) {
 		{name: "nullable plan and mrr", body: `{"plan":null,"mrr":null}`, user: signTestToken},
 		{name: "uppercase currency", body: `{"currency":"JPY"}`, user: signTestToken},
 		{name: "reserved nil uuid body token", body: `{"userToken":"00000000-0000-0000-0000-000000000000"}`},
+		{name: "plan UNSET near-miss stays valid", body: `{"plan":"UNSET"}`, user: signTestToken},
+		{name: "plan unsettled superstring stays valid", body: `{"plan":"unsettled"}`, user: signTestToken},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

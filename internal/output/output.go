@@ -119,7 +119,9 @@ func convertNumbers(v any) any {
 // Table prints a header row plus data rows with aligned columns.
 // In JSON/YAML mode callers are expected to print structured output instead.
 // Cells hold user-generated content, so every field passes through sanitize
-// before rendering.
+// before rendering: hostile content can neither emit terminal commands nor
+// forge aligned grid rows (a cell-internal tab or newline would otherwise be
+// a tabwriter column/row separator, not "layout of the cell").
 func (w *Writer) Table(headers []string, rows [][]string) {
 	tw := tabwriter.NewWriter(w.w, 2, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, joinTabs(sanitizeCells(headers)))
@@ -159,15 +161,37 @@ func StripTerminalControls(s string) string {
 	}, s)
 }
 
-// sanitize strips control characters that turn user-generated content into
-// terminal commands: ESC drives CSI/SGR/OSC sequences (including OSC 8
-// hyperlinks), the remaining C0 controls plus DEL forge or rewrite output
-// lines (CR, BEL), and the C1 range U+0080–U+009F repeats all of it without
-// an ESC byte. Tab and newline are layout, not terminal commands, and
-// stay. Structured JSON/YAML output bypasses this and remains byte-faithful.
+// Cell-layout substitutes. Inside a table cell a raw tab starts a new
+// tabwriter column and a raw newline starts a new tabwriter row, so either
+// byte lets attacker-controlled content forge grid output indistinguishable
+// from real rows. Each maps to a visible one-rune glyph that preserves the
+// information that a tab or newline was there without granting it layout
+// power.
+const (
+	cellTabGlyph     = '␉' // U+2409 SYMBOL FOR TAB
+	cellNewlineGlyph = '⏎' // U+21B5 DOWNWARDS ARROW WITH CORNER LEFTWARDS
+)
+
+// sanitize renders user-generated content safe for a table cell: it strips
+// the control characters that turn content into terminal commands — ESC
+// drives CSI/SGR/OSC sequences (including OSC 8 hyperlinks), the remaining
+// C0 controls plus DEL forge or rewrite output lines (CR, BEL), and the C1
+// range U+0080–U+009F repeats all of it without an ESC byte — and it maps
+// tab and newline to the visible cell glyphs above, because joined into one
+// shared tabwriter stream they are grid row/column separators, not layout of
+// the cell. Structured JSON/YAML output bypasses this and remains
+// byte-faithful. Table cells are the sanitized boundary for server-derived
+// text: a future call site that interpolates such text into a human line
+// outside a table must go through PrintfSafe, not Printf.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		if isTerminalControl(r) && r != '\t' && r != '\n' {
+		switch r {
+		case '\t':
+			return cellTabGlyph
+		case '\n':
+			return cellNewlineGlyph
+		}
+		if isTerminalControl(r) {
 			return -1
 		}
 		return r

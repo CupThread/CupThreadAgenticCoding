@@ -243,6 +243,13 @@ non-null boolean, and userToken an RFC 4122 UUID (in the body, or in
 fails here with the offending field named, so no dead-on-arrival signature
 is ever produced; plan and mrr stay nullable and sign as "null".
 
+The plan strings "unset" and "null" are reserved signature sentinels: an
+absent plan signs as "unset" and an explicit null as "null", so a plan
+equal to either exact string is rejected here (issue #235) and the API
+answers 400 fieldErrors.plan ["plan_reserved_sentinel"]. Send JSON null to
+clear the stored plan or omit the key to keep it; the reservation is
+byte-exact, so "UNSET", "Unset", "unsettled", "nullify" remain valid.
+
 The signing secret is a credential: pass it as --secret - (or @) to read it
 from stdin, or export $CUPTHREAD_SDK_SIGNING_SECRET and omit --secret
 entirely. Trailing whitespace is trimmed from the stdin and env forms. An
