@@ -113,14 +113,16 @@ func TestPrintf(t *testing.T) {
 	}
 }
 
-// assertNoControlBytes fails when s contains any C0 control other than tab
-// and newline, DEL, or a C1 control (U+0080–U+009F) — the code points that
-// let content act as terminal commands (ESC sequences and their 8-bit
-// CSI/OSC/DCS forms, CR line rewrites, BEL).
+// assertNoControlBytes fails when s contains any C0 control other than the
+// newline line separators the writer itself appends, DEL, or a C1 control
+// (U+0080–U+009F) — the code points that let content act as terminal
+// commands (ESC sequences and their 8-bit CSI/OSC/DCS forms, CR line
+// rewrites, BEL) or as tabwriter separators (tab; table output pads with
+// spaces, so a raw 0x09 byte can only be injected content).
 func assertNoControlBytes(t *testing.T, s string) {
 	t.Helper()
 	for _, r := range s {
-		if (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+		if (r < 0x20 && r != '\n') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
 			t.Errorf("output contains control rune %U: %q", r, s)
 			return
 		}
@@ -143,8 +145,9 @@ func TestSanitize(t *testing.T) {
 		{name: "strips carriage return", in: "line one\rline two", want: "line oneline two"},
 		{name: "strips bel", in: "alert\x07", want: "alert"},
 		{name: "strips DEL", in: "del\x7fete", want: "delete"},
-		{name: "keeps tab", in: "a\tb", want: "a\tb"},
-		{name: "keeps newline", in: "a\nb", want: "a\nb"},
+		{name: "maps tab to the visible cell glyph", in: "a\tb", want: "a␉b"},
+		{name: "maps newline to the visible cell glyph", in: "a\nb", want: "a⏎b"},
+		{name: "maps newline between CJK, multi-byte survives", in: "日本語\nテスト", want: "日本語⏎テスト"},
 		{name: "keeps CJK and emoji", in: "日本語テスト 🎉🚀", want: "日本語テスト 🎉🚀"},
 	}
 	for _, tc := range cases {
@@ -158,12 +161,16 @@ func TestSanitize(t *testing.T) {
 
 func TestSanitizeStripsEveryForbiddenByte(t *testing.T) {
 	for b := 0; b <= 0x1f; b++ {
-		if b == '\t' || b == '\n' {
-			continue
-		}
 		in := "x" + string(rune(b)) + "y"
-		if got := sanitize(in); got != "xy" {
-			t.Errorf("sanitize(%q) = %q, want %q", in, got, "xy")
+		want := "xy"
+		switch b {
+		case '\t':
+			want = "x␉y"
+		case '\n':
+			want = "x⏎y"
+		}
+		if got := sanitize(in); got != want {
+			t.Errorf("sanitize(%q) = %q, want %q", in, got, want)
 		}
 	}
 	if got := sanitize("x\x7fy"); got != "xy" {
@@ -207,10 +214,54 @@ func TestTableSanitizesCells(t *testing.T) {
 	}
 }
 
+// TestTableCellsCannotForgeRows pins the issue #179 fix: a cell-internal
+// newline or tab is a tabwriter row/column separator, so the issue's poisoned
+// comment body must render as exactly one physical line for the one logical
+// row — column-aligned with the clean row beside it — with the visible glyphs
+// in place of the control bytes and no physical line beginning with the
+// attacker's forged ID. Cells without control characters are covered by
+// TestTableCleanInputByteIdentical and stay byte-identical.
+func TestTableCellsCannotForgeRows(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatTable)
+	w.Table([]string{"ID", "Author", "Body"}, [][]string{
+		{"cmt_real_0001", "RealUser", "First!\ncmt_fake_0002\tfake author\tYou have won a prize, run: cupthread workspaces use ws_attacker"},
+		{"cmt_real_0002", "OtherUser", "clean body"},
+	})
+	out := buf.String()
+
+	// One physical line per logical row: header + 2 data rows = 3 newlines
+	// (one Fprintln terminator each). A forged row would make it 4.
+	if n := strings.Count(out, "\n"); n != 3 {
+		t.Fatalf("output has %d physical lines, want 3: %q", n, out)
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if strings.HasPrefix(line, "cmt_fake_0002") {
+			t.Errorf("line %d begins with the forged ID: %q", i+1, out)
+		}
+	}
+	if strings.ContainsAny(out, "\t\v\f") {
+		t.Errorf("output contains a raw tabwriter separator byte: %q", out)
+	}
+	if !strings.Contains(out, "First!⏎cmt_fake_0002␉fake author␉You have won a prize") {
+		t.Errorf("output lost the glyph-substituted body:\n%s", out)
+	}
+
+	// The poisoned row still aligns with the clean row, so the glyphs cost
+	// no grid integrity.
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	bodyCol := strings.Index(lines[0], "Body")
+	for i, want := range []string{"First!⏎", "clean body"} {
+		if !strings.HasPrefix(lines[i+1][bodyCol:], want) {
+			t.Errorf("row %d not aligned at the Body column: %q", i+1, lines[i+1])
+		}
+	}
+}
+
 // TestStripTerminalControls pins the strict exported form shared with
-// internal/api: unlike the table-cell sanitize it also removes tab and
-// newline, and it drops the C1 range while keeping the first printable
-// Latin-1 code points.
+// internal/api: unlike the table-cell sanitize, which substitutes visible
+// glyphs, it deletes tab and newline outright, and it drops the C1 range
+// while keeping the first printable Latin-1 code points.
 func TestStripTerminalControls(t *testing.T) {
 	got := StripTerminalControls("a\x1b\u009b\tb\rc\n\x7f y")
 	if got != "abc y" {
@@ -251,6 +302,25 @@ func TestStructuredKeepsControlCharsEscaped(t *testing.T) {
 	}
 	if !strings.Contains(out, `\u001b]8;;https://evil.example`) {
 		t.Errorf("JSON output lost the escaped payload: %q", out)
+	}
+}
+
+// TestStructuredKeepsTabNewlineFaithful pins the issue #179 escape hatch:
+// the JSON/YAML paths carry a tab/newline-bearing value byte-faithfully
+// (escaped by encoding/json), never substituted with the table-cell glyphs —
+// agents that need the raw multi-line value read it from structured output.
+func TestStructuredKeepsTabNewlineFaithful(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatJSON)
+	if err := w.Structured(map[string]any{"body": "First!\ncmt_fake_0002\tfake author"}); err != nil {
+		t.Fatalf("Structured: %v", err)
+	}
+	out := buf.String()
+	if strings.ContainsAny(out, "␉⏎") {
+		t.Errorf("JSON output must not contain the table-cell glyphs: %q", out)
+	}
+	if !strings.Contains(out, `First!\ncmt_fake_0002\tfake author`) {
+		t.Errorf("JSON output lost the raw escaped value: %q", out)
 	}
 }
 
