@@ -624,3 +624,49 @@ func TestFeaturesListClampsLimitToServerPageCap(t *testing.T) {
 		}
 	}
 }
+
+// TestFeaturesListClampsOffsetToConsoleCap pins the client-side clamp of
+// 'features list --offset' (issue #178): the console listing's server-side
+// parseListPagination silently degrades an offset above the shared console
+// cap of 10,000 to the cap (still answering 200) and a negative one to 0, so
+// a walk past the cap re-serves the same final page with no hint anything
+// changed. The CLI clamps first and announces the rewrite, and the 10,000
+// boundary passes through verbatim with no warning.
+func TestFeaturesListClampsOffsetToConsoleCap(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("offset")
+		_, _ = w.Write(filteredFixture(t, ""))
+	}))
+	t.Cleanup(server.Close)
+
+	for _, tc := range []struct{ requested, want string }{
+		{"15000", "10000"},
+		{"10001", "10000"},
+		{"-5", "0"},
+	} {
+		out, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "list", "--offset", tc.requested)
+		if err != nil {
+			t.Fatalf("features list --offset %s: %v", tc.requested, err)
+		}
+		if got != tc.want {
+			t.Errorf("--offset %s sent offset=%q, want %q", tc.requested, got, tc.want)
+		}
+		if !strings.Contains(out, "⚠ --offset "+tc.requested+" is outside the server's 0-10000 page range") {
+			t.Errorf("--offset %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "list", "--offset", "10000")
+	if err != nil {
+		t.Fatalf("features list --offset 10000: %v", err)
+	}
+	if got != "10000" {
+		t.Errorf("boundary --offset 10000 sent offset=%q, want 10000", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --offset 10000 produced a warning:\n%s", out)
+	}
+}

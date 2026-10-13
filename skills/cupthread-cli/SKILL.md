@@ -248,7 +248,11 @@ The whole `inbox` group is `[token-safe]` (workspace.read / content.manage).
 the CLI clamps `--limit` into 1–200 locally (a value outside the range is
 rewritten, with a `⚠` notice), so step `--offset` by the served page size —
 the `(N shown, N total)` trailer — never by a larger requested limit, or the
-walk silently skips rows.
+walk silently skips rows. `--offset` stops at the server's shared console
+cap of **10,000**: the route clamps anything above it to 10,000 and still
+answers 200, and the CLI rewrites an out-of-range `--offset` locally with a
+`⚠` notice, so an offset walk past the cap re-reads the final page instead
+of advancing — there is nothing deeper to page to.
 
 ### Notifications
 ```sh
@@ -271,7 +275,10 @@ self-diagnosing error before anything is sent.
 **200** (`--limit` is clamped into 1–200 locally, with a `⚠` notice when a
 value is rewritten) and, unlike `changelog list`, prints no more-pages hint —
 walk it by the served page size (`--offset 0, 200, 400, …`), not by a larger
-requested limit.
+requested limit. Like the other console listings it caps `--offset` at the
+server's shared **10,000** (above it the route clamps and still returns 200;
+the CLI rewrites the value with a `⚠` notice), so a walk reaching the cap
+repeats the final page — stop there.
 
 ### Feature Requests & Roadmap
 ```sh
@@ -300,7 +307,11 @@ seconds stale.
 ID-taking commands to the **resolved app** — the `--app` flag, else the saved
 default from `apps use` — so every ID it shows resolves in
 `features get/update/approve/delete/forward`; pass `--all-apps` for the
-workspace-wide cross-app view (mutually exclusive with `--app`). The ID-taking
+workspace-wide cross-app view (mutually exclusive with `--app`). Its
+`--offset` is capped at the server's shared console cap of **10,000** (the
+route clamps above it and still answers 200; the CLI rewrites an out-of-range
+value with a `⚠` notice), so an offset walk past the cap re-reads the final
+page. The ID-taking
 commands resolve
 `<request-id>` within the **resolved app** — so an ID from another app in the
 same workspace fails with "not found" (the error names the app the scan
@@ -414,7 +425,7 @@ User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`);
 ### Changelog & Releases
 ```sh
 cupthread changelog list                   # List published and draft changelogs
-cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (--limit clamps to the 100/page server cap)
+cupthread changelog list --limit 50 --offset 100   # Page through large changelogs (--limit clamps to the 100/page server cap; --offset caps at 10000)
 cupthread changelog create --title "v1.2.0" --body-file ./release-notes.md --publish-now
 cupthread changelog update <entry-id> --title "v1.2.0"   # Edit a draft (also --body-file, --version-id,
                                            # --version-label, --link-request-ids, --schedule-at)
@@ -427,7 +438,12 @@ clearing a schedule with `--schedule-at ""` stays token-safe too).
 `hasMore`; the table view prints the next `--offset` when more pages remain.
 The page size caps at **100** (`--limit` is clamped into 1–100 locally, with
 a `⚠` notice when a value is rewritten), so step `--offset` by the served
-page size.
+page size. `--offset` itself caps at the server's shared console cap of
+**10,000**: the route clamps anything above it to 10,000 and still answers
+200, and the CLI rewrites an out-of-range `--offset` locally with a `⚠`
+notice — once a page starts at the cap, the printed next offset re-serves
+the same final page, so treat that as the end of the listing rather than
+walking it forever.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
 
 Drafts (create/edit/delete without publishing) work for every workspace role

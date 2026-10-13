@@ -199,6 +199,32 @@ func (a *app) clampListLimit(requested, maxLimit int) int {
 	return effective
 }
 
+// consoleListMaxOffset mirrors the server's shared CONSOLE_LIST_MAX_OFFSET
+// (SaaS apps/api/src/lib/pagination.ts): every offset-paginated console and
+// platform listing clamps ?offset= at 10,000 and still answers 200.
+const consoleListMaxOffset = 10000
+
+// clampListOffset normalizes a console listing's --offset the way the
+// server's parseListPagination silently does: below 0 becomes 0 and above
+// the shared 10,000 console cap becomes the cap (which still answers 200).
+// Past the cap the server keeps serving the offset-10,000 page, so without
+// the local rewrite a walk re-reads the same final page forever with no
+// hint that anything changed (issue #178). The rewrite is announced through
+// warnf, so structured stdout stays a single document.
+func (a *app) clampListOffset(requested int) int {
+	effective := requested
+	switch {
+	case requested < 0:
+		effective = 0
+	case requested > consoleListMaxOffset:
+		effective = consoleListMaxOffset
+	}
+	if effective != requested {
+		a.warnf("⚠ --offset %d is outside the server's 0-10000 page range; requesting %d instead", requested, effective)
+	}
+	return effective
+}
+
 // decodeStrictRawJSON validates that data holds exactly one JSON value and
 // returns it verbatim as json.RawMessage (only trailing whitespace is
 // allowed). Decoding into any instead would rebuild every number through

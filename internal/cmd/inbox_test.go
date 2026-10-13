@@ -511,3 +511,59 @@ func TestInboxListClampsLimit(t *testing.T) {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }
+
+// TestInboxListClampsOffset pins the local --offset clamp on the submissions
+// listing (issue #178): the server silently degrades an offset above the
+// shared console cap of 10,000 to the cap (still answering 200) and a
+// negative one to 0, so a walk past the cap re-serves the same final page
+// with no hint anything changed. The CLI clamps first and announces the
+// rewrite through warnf: table mode keeps it on stdout, --json mode moves it
+// to stderr so stdout stays a single document. The 10,000 boundary passes
+// through verbatim with no warning.
+func TestInboxListClampsOffset(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var captured capturedRequest
+	server := inboxServer(t, http.StatusOK, `{"submissions": [], "total": 0}`, &captured)
+	defer server.Close()
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"15000", "10000"},
+		{"10001", "10000"},
+		{"-5", "0"},
+	} {
+		out, err := runRoot(t, server.URL, "inbox", "list", "--workspace", "ws_1", "--offset", tc.requested)
+		if err != nil {
+			t.Fatalf("inbox list --offset %s: %v", tc.requested, err)
+		}
+		if got := captured.Query.Get("offset"); got != tc.sent {
+			t.Errorf("--offset %s sent offset = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --offset "+tc.requested+" is outside the server's 0-10000 page range") {
+			t.Errorf("--offset %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "inbox", "list", "--workspace", "ws_1", "--offset", "10000")
+	if err != nil {
+		t.Fatalf("inbox list --offset 10000: %v", err)
+	}
+	if got := captured.Query.Get("offset"); got != "10000" {
+		t.Errorf("boundary --offset 10000 sent offset = %q, want 10000", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --offset 10000 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"inbox", "list", "--workspace", "ws_1", "--offset", "15000", "--json")
+	if err != nil {
+		t.Fatalf("inbox list --json --offset 15000: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --offset 15000 is outside the server's 0-10000 page range; requesting 10000 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}

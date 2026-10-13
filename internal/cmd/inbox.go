@@ -75,6 +75,10 @@ open/in_progress/resolved/archived.`,
 			// The server clamps the page size to 200 silently; clamp here
 			// too so an offset walk steps by the served size (issue #201).
 			limit = A.clampListLimit(limit, inboxPageSize)
+			// The console listing clamps the offset at 10,000 and still
+			// answers 200; announce the rewrite so a deep walk notices it is
+			// re-reading the final page (issue #178).
+			offset = A.clampListOffset(offset)
 			qv := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
 			if triageStatus != "" {
 				qv.Set("triage_status", triageStatus)
@@ -122,7 +126,7 @@ open/in_progress/resolved/archived.`,
 		},
 	}
 	list.Flags().IntVar(&limit, "limit", 50, "Maximum submissions to list (1-200, server page cap 200)")
-	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination")
+	list.Flags().IntVar(&offset, "offset", 0, "Offset for pagination (values above 10000 are clamped to 10000 by the server)")
 	list.Flags().StringVar(&triageStatus, "triage-status", "", "Filter by triage status: open, in_progress, resolved, archived or active (open + in_progress)")
 	list.Flags().StringVar(&assignedTo, "assigned-to", "", "Filter by assignee user ID, or \"unassigned\"")
 	list.Flags().StringVar(&priority, "priority", "", "Filter by priority: !!!, !! or !")
