@@ -1192,3 +1192,42 @@ func TestAPISkillIssue230RevalidatableImageCache(t *testing.T) {
 		t.Errorf("cupthread-api/SKILL.md still promises an immutable public image cache")
 	}
 }
+
+// TestAPISkillIssue234ImageUploadStable500 pins the issue #234 sync of the
+// stable storage-failure body on POST /api/v1/uploads/images (SaaS PR #793,
+// #690): an unexpected R2 / Cloudflare Images / D1 failure inside the route
+// answers the provider-agnostic `500 {"error": "Image upload failed. Please
+// try again.", "code": "image_upload_failed"}` — the same no-context rule the
+// console icon route applies since SEC-69 — with the provider detail logged
+// server-side only, while the platform-authored 400/413/415 validation set
+// keeps its plain {error} shape without a `code` field, and the client
+// guidance branches on the `code` for retry UX instead of parsing the message.
+func TestAPISkillIssue234ImageUploadStable500(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// The wire body, verbatim, in the endpoint row and the policy section.
+		`500 {"error": "Image upload failed. Please try again.", "code": "image_upload_failed"}`,
+		// The stability framing and the SEC-69 precedent.
+		"stable, provider-agnostic",
+		"the same no-context rule the console icon route applies (SEC-69)",
+		// Detail never reaches the caller.
+		"logged server-side only",
+		// The validation set keeps its uncoded {error} shape.
+		"The `415` bodies carry no `code` field — match on the status, not on an error code.",
+		// Retry guidance keyed on the code, not the message.
+		"branch on `code == \"image_upload_failed\"`",
+		"never parse the `error` text",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#234 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// The pre-#793 catch-all body: a bare generic error with no `code`.
+		`{"error": "Image upload failed"}`,
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still documents the pre-#793 upload-failure body %q", stale)
+		}
+	}
+}
