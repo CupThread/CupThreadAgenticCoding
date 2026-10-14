@@ -1282,3 +1282,67 @@ func TestAPISkillIssue234ImageUploadStable500(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillIssue240VoteProposeUserTokenHeader pins the issue #240 sync of
+// the SaaS #834/#837 write-side token transport: the feature-request vote
+// (POST and DELETE) and propose writes accept the end-user token in either
+// the JSON body field or the X-User-Token header, with the body field winning
+// when both are present, a present-but-invalid body field still failing zod
+// validation, and a payload with neither source answering the same 400 shape
+// (details.fieldErrors.userToken/requesterToken "Required — send the token in
+// the JSON body or the X-User-Token header"). It also pins the spec
+// corrections the SaaS PR shipped: the vote DELETE documents its required
+// appKey-bearing JSON body (a spec-following client that sent none got that
+// 400), the propose row documents the implemented CreateFeatureRequestInput
+// fields (required appKey/title/description; optional requesterName/
+// requesterToken/turnstileToken; no requesterEmail) and the 201
+// {featureRequestId, pending: true} body, and the comment POST keeps
+// Clerk-session-only authentication with no X-User-Token parameter — while
+// the read paths' silent malformed-header degradation never crosses onto the
+// writes (a non-UUID header merged into a write is a hard 400).
+func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// The auth overview bullet names the write-side transport.
+		"the feature-request **vote and propose writes** accept the end-user token in either the JSON body field (`userToken`/`requesterToken`) or the `X-User-Token` header",
+		// SEC-12 subsection: precedence, error contract, asymmetry.
+		"### Vote and propose writes accept the header too (SaaS #834)",
+		"The **body field wins** when both are present: only an *absent* body field is replaced with the header value",
+		"A body field that is **present but invalid** keeps failing schema validation exactly as before",
+		"`details.fieldErrors.<field>: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
+		"a non-UUID header value is a hard `400`, not a silent fallthrough",
+		"The vote `DELETE` still requires a JSON body carrying `appKey`",
+		// Propose row: implemented schema, token transport, 201 body.
+		"there is no `requesterEmail` field",
+		"The requester token may be sent in the body field `requesterToken` **or** the `X-User-Token` header (SaaS #834)",
+		"`details.fieldErrors.requesterToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
+		"Success answers `201 {featureRequestId, pending: true}`",
+		// Vote POST row: header-only body shape.
+		"a header-only vote body carries just `appKey`",
+		"`details.fieldErrors.userToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
+		// Vote DELETE row: the previously undocumented body.
+		"The `DELETE` reads the **same JSON body as the POST**",
+		"`appKey` is always required",
+		"a spec-following client that sent none got the `400 Validation failed` above",
+		// Comments POST: Clerk-session-only, no header parameter.
+		"Authentication is the Clerk end-user session only — the route reads no `X-User-Token`",
+		// Corrected OpenAPI components.
+		"`CreateFeatureRequestInput` requires `appKey`/`title`/`description` with optional `requesterName`/`requesterToken`/`turnstileToken` and no `requesterEmail`",
+		"`VoteResponse` is `voted` + `voteCount` with an optional `warning` (no `featureRequestId`/`hasVoted`)",
+		"the vote `DELETE` documents its JSON body",
+		// Backward compatibility.
+		"every body-token payload accepted before is accepted byte-for-byte on the old validation path",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#240 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// The pre-sync propose row was a single sentence with no contract.
+		"| `/api/v1/feature-requests` | `POST` | Submit a new feature request. |",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still documents the pre-#837 text %q", stale)
+		}
+	}
+}
