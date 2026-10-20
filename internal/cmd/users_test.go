@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -319,4 +321,131 @@ func TestUsersProfileNeverSendsBearerWhenLoggedIn(t *testing.T) {
 	if gotAuth != "" {
 		t.Errorf("Authorization header = %q, want the public GET to stay bearer-free even when logged in", gotAuth)
 	}
+}
+
+// TestUsersProfileResponseEnvelopeContractPin mirrors the SaaS #1190 (#1192)
+// contract pins (issue #254): PublicUserProfileResponse and `users profile
+// --json` must round-trip the exact key sets served by GET
+// /api/v1/users/{userId}/profile — top-level {profile, publicApps,
+// recentComments}, UserProfile {clerkUserId, displayName, avatarUrl, bio,
+// websiteUrl, createdAt}, PublicUserProfileApp {id, workspaceSlug,
+// workspaceName, appSlug, name, description, iconUrl}, and recentComments
+// items {id, body, createdAt, featureRequestId, featureRequestTitle,
+// workspaceSlug, appSlug, appName} — with all required keys preserved even
+// when nullable fields are null or slices are empty, and with none of the
+// removed phantom keys (apps, hideComments, updatedAt, comment appId).
+func TestUsersProfileResponseEnvelopeContractPin(t *testing.T) {
+	sortedKeys := func(t *testing.T, m map[string]any) []string {
+		t.Helper()
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	t.Run("populated profile round-trips exact key sets", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(scopedProfileFixture))
+		}))
+		defer server.Close()
+
+		out, err := runRoot(t, server.URL, "users", "profile", "u_9f2ca1b3d4e5f60718293a4b5c6d7e8f", "--app-key", "key_live_1", "--json")
+		if err != nil {
+			t.Fatalf("users profile --json: %v", err)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+
+		wantTop := []string{"profile", "publicApps", "recentComments"}
+		if got := sortedKeys(t, top); !reflect.DeepEqual(got, wantTop) {
+			t.Errorf("top-level keys = %v, want %v", got, wantTop)
+		}
+
+		profile, ok := top["profile"].(map[string]any)
+		if !ok {
+			t.Fatalf("profile is %T, want object", top["profile"])
+		}
+		wantProfile := []string{"avatarUrl", "bio", "clerkUserId", "createdAt", "displayName", "websiteUrl"}
+		if got := sortedKeys(t, profile); !reflect.DeepEqual(got, wantProfile) {
+			t.Errorf("profile keys = %v, want %v", got, wantProfile)
+		}
+
+		apps, ok := top["publicApps"].([]any)
+		if !ok || len(apps) != 1 {
+			t.Fatalf("publicApps = %#v, want 1-element array", top["publicApps"])
+		}
+		app0, ok := apps[0].(map[string]any)
+		if !ok {
+			t.Fatalf("publicApps[0] is %T, want object", apps[0])
+		}
+		wantApp := []string{"appSlug", "description", "iconUrl", "id", "name", "workspaceName", "workspaceSlug"}
+		if got := sortedKeys(t, app0); !reflect.DeepEqual(got, wantApp) {
+			t.Errorf("publicApps[0] keys = %v, want %v", got, wantApp)
+		}
+
+		comments, ok := top["recentComments"].([]any)
+		if !ok || len(comments) != 1 {
+			t.Fatalf("recentComments = %#v, want 1-element array", top["recentComments"])
+		}
+		comment0, ok := comments[0].(map[string]any)
+		if !ok {
+			t.Fatalf("recentComments[0] is %T, want object", comments[0])
+		}
+		wantComment := []string{"appName", "appSlug", "body", "createdAt", "featureRequestId", "featureRequestTitle", "id", "workspaceSlug"}
+		if got := sortedKeys(t, comment0); !reflect.DeepEqual(got, wantComment) {
+			t.Errorf("recentComments[0] keys = %v, want %v", got, wantComment)
+		}
+	})
+
+	t.Run("placeholder and hidden-comments response keeps required empty arrays and nullable fields", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"profile": {
+					"clerkUserId": "user_placeholder_1190",
+					"displayName": null,
+					"avatarUrl": null,
+					"bio": null,
+					"websiteUrl": null,
+					"createdAt": "2026-01-15T10:00:00.000Z"
+				},
+				"publicApps": [],
+				"recentComments": []
+			}`))
+		}))
+		defer server.Close()
+
+		out, err := runRoot(t, server.URL, "users", "profile", "user_placeholder_1190", "--json")
+		if err != nil {
+			t.Fatalf("users profile --json: %v", err)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+
+		wantTop := []string{"profile", "publicApps", "recentComments"}
+		if got := sortedKeys(t, top); !reflect.DeepEqual(got, wantTop) {
+			t.Errorf("top-level keys = %v, want %v (recentComments must remain required when empty)", got, wantTop)
+		}
+		if apps, ok := top["publicApps"].([]any); !ok || len(apps) != 0 {
+			t.Errorf("publicApps = %#v, want empty JSON array []", top["publicApps"])
+		}
+		if comments, ok := top["recentComments"].([]any); !ok || len(comments) != 0 {
+			t.Errorf("recentComments = %#v, want empty JSON array []", top["recentComments"])
+		}
+		profile, ok := top["profile"].(map[string]any)
+		if !ok {
+			t.Fatalf("profile is %T, want object", top["profile"])
+		}
+		wantProfile := []string{"avatarUrl", "bio", "clerkUserId", "createdAt", "displayName", "websiteUrl"}
+		if got := sortedKeys(t, profile); !reflect.DeepEqual(got, wantProfile) {
+			t.Errorf("profile keys = %v, want %v (nullable fields must stay present as null)", got, wantProfile)
+		}
+	})
 }

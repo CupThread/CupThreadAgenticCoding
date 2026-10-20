@@ -677,9 +677,12 @@ type CreateWorkspaceResponse struct {
 
 // ─── Public user profiles ────────────────────────────────────────────────────
 
-// UserProfile is the profile sub-object of the public profile response.
-// Publication is opt-in (PRIV-06): users without a public profile resolve to
-// null display fields with the requested identifier echoed back.
+// UserProfile is the profile sub-object of the public profile response
+// (OpenAPI component UserProfile, SaaS #1190). Publication is opt-in
+// (PRIV-06): users without a public profile resolve to null display fields
+// with the requested identifier echoed back. All six keys are always emitted;
+// the server never emits hideComments (comment visibility is applied
+// server-side) or updatedAt.
 type UserProfile struct {
 	ClerkUserID string  `json:"clerkUserId"`
 	DisplayName *string `json:"displayName"`
@@ -689,8 +692,11 @@ type UserProfile struct {
 	CreatedAt   string  `json:"createdAt"`
 }
 
-// PublicUserProfileApp is one entry of the publicApps list. PRIV-06 restricts
-// it to apps of workspaces where the user is an owner.
+// PublicUserProfileApp is one entry of the publicApps list (OpenAPI component
+// PublicUserProfileApp, SaaS #1190 — the workspace-owner member-of shape, not
+// the showcase PublicAppSummary shape). PRIV-06 restricts it to public apps of
+// workspaces where the user is an owner; all seven keys are required (nullable
+// only on description and iconUrl).
 type PublicUserProfileApp struct {
 	ID            string  `json:"id"`
 	WorkspaceSlug string  `json:"workspaceSlug"`
@@ -701,6 +707,10 @@ type PublicUserProfileApp struct {
 	IconURL       *string `json:"iconUrl"`
 }
 
+// UserProfileComment is one entry of recentComments on
+// PublicUserProfileResponse (SaaS #1190). All eight keys are required;
+// attribution uses workspaceSlug, appSlug, and appName (appId is never
+// emitted).
 type UserProfileComment struct {
 	ID                  string `json:"id"`
 	Body                string `json:"body"`
@@ -712,6 +722,11 @@ type UserProfileComment struct {
 	AppName             string `json:"appName"`
 }
 
+// PublicUserProfileResponse is the GET /api/v1/users/{userId}/profile envelope
+// (OpenAPI component PublicUserProfileResponse, SaaS #1190). All three
+// top-level keys are required: recentComments is always emitted (an empty
+// array when comments are hidden or absent), and neither apps nor a top-level
+// hideComments key is ever sent.
 type PublicUserProfileResponse struct {
 	Profile        UserProfile            `json:"profile"`
 	PublicApps     []PublicUserProfileApp `json:"publicApps"`
