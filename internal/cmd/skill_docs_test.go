@@ -1346,3 +1346,69 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue254PublicUserProfileResponseShape pins the issue #254 sync
+// of the OpenAPI 3.1 PublicUserProfileResponse contract on GET
+// /api/v1/users/{userId}/profile (SaaS #1190 / PR #1192):
+//   - Top-level keys are {profile, publicApps, recentComments}, all three
+//     required (recentComments is always emitted, [] when hidden or empty —
+//     never apps or top-level hideComments).
+//   - profile (UserProfile component) has {clerkUserId, displayName, avatarUrl,
+//     bio, websiteUrl, createdAt}, all six required, with no hideComments or
+//     updatedAt.
+//   - publicApps items (PublicUserProfileApp component — the workspace-owner
+//     member-of shape, not the showcase PublicAppSummary shape) have {id,
+//     workspaceSlug, workspaceName, appSlug, name, description, iconUrl}, all
+//     seven required.
+//   - recentComments items have {id, body, createdAt, featureRequestId,
+//     featureRequestTitle, workspaceSlug, appSlug, appName}, all eight required
+//     (no appId).
+//   - Both the API skill and the four SDK skills warn strict decoders
+//     (Codable, kotlinx.serialization) to read publicApps and not require the
+//     removed phantom keys.
+func TestSkillDocsIssue254PublicUserProfileResponseShape(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			// Endpoint row summary.
+			"(`PublicUserProfileResponse`: `{profile, publicApps, recentComments}`, all three keys required; `recentComments` is always emitted, `[]` when hidden or empty — never `apps` or top-level `hideComments`, SaaS #1190",
+			// PRIV-06 schema breakdown.
+			"**Exact `PublicUserProfileResponse` shape (OpenAPI 3.1, SaaS #1190 / PR #1192):**",
+			"the top-level response is always `{profile, publicApps, recentComments}` — all three keys required",
+			"`profile` (`UserProfile` component): `{clerkUserId, displayName, avatarUrl, bio, websiteUrl, createdAt}` — all six keys required",
+			"Neither `hideComments` (the privacy flag gates `recentComments` server-side and is never disclosed) nor `updatedAt` is ever emitted on `profile`.",
+			"`publicApps` items (`PublicUserProfileApp` component — the workspace-owner member-of shape, **not** the showcase `PublicAppSummary` `{appId, slug, storeUrl, storeKind}` shape): `{id, workspaceSlug, workspaceName, appSlug, name, description, iconUrl}` — all seven keys required",
+			"`recentComments` items: `{id, body, createdAt, featureRequestId, featureRequestTitle, workspaceSlug, appSlug, appName}` — all eight keys required",
+			"`appId` is never emitted on comment items",
+			"must decode `publicApps` (not `apps`) and must not require the removed phantom keys (`apps`, top-level or inner `hideComments`, inner `updatedAt`, or comment `appId`)",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#254 marker %q", marker)
+			}
+		}
+	})
+
+	sdkMarkers := []string{
+		"**Decode the served `PublicUserProfileResponse` envelope (SaaS #1190):**",
+		"`{profile, publicApps, recentComments}` — all three keys required (`recentComments` is always emitted, `[]` when hidden or empty; never `apps` or top-level `hideComments`)",
+		"`profile` (`UserProfile`) has `{clerkUserId, displayName, avatarUrl, bio, websiteUrl, createdAt}` (no `hideComments` or `updatedAt`)",
+		"`publicApps` item (`PublicUserProfileApp`, not `PublicAppSummary`) has `{id, workspaceSlug, workspaceName, appSlug, name, description, iconUrl}`",
+		"`recentComments` item has `{id, body, createdAt, featureRequestId, featureRequestTitle, workspaceSlug, appSlug, appName}` (no `appId`)",
+		"Strict decoders (`Codable`, `kotlinx.serialization`) must read `publicApps` and must not require the removed phantom keys.",
+	}
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range sdkMarkers {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#254 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}
