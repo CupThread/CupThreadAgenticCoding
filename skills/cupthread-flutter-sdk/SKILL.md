@@ -190,6 +190,7 @@ The public feature-request feed — `GET /api/v1/feature-requests` — is keyset
 - **Treat the cursor as opaque** — never parse, construct, or persist one beyond forwarding it back; malformed cursors fail with `400 {"error": "Invalid cursor"}`.
 - **`hasMore` is exact** (the server fetches one extra row) and `total` stays constant across pages; `limit` is clamped to 1–200 (default 50), and `q`/`versionId` filters compose with the cursor.
 - **The built-in roadmap/feedback screens need no changes** — the fields are additive; clients that only read `requests` keep working.
+- **Public `FeatureRequest` payloads omit tenant-internal keys (SaaS #1320 / PR #1323):** `GET /api/v1/feature-requests` and `GET /api/v1/feature-requests/{id}` serve only the documented public `FeatureRequest` schema (including `importedVotes`, `voteCount`, `hasVoted`, `isOwnRequest`, and the column/version fields). Ten undocumented tenant-internal keys (`importSource`, `importRef`, `githubIssueId`, `githubIssueNumber`, `githubIssueUrl`, `githubDiscussionId`, `githubDiscussionNumber`, `githubDiscussionUrl`, `githubLastSyncedAt`, `githubSyncStatus`) are never served on public surfaces — drop them from any custom or strict SDK model that required them.
 
 ## Feature Request Vote Rate Limits (429 Too Many Requests)
 
