@@ -79,7 +79,12 @@ func newBillingCheckoutCmd() *cobra.Command {
 			if resp.CheckoutURL == nil {
 				msg := "billing is not configured on the server"
 				if resp.Message != nil {
-					msg = *resp.Message
+					// A 2xx body field returned as the command error, so
+					// cobra prints it to stderr raw — it must pass through
+					// the strict stripper (plus the serverErrorText length
+					// cap) first, exactly like the APIError decode path
+					// (issue #298).
+					msg = api.ServerMessageText(*resp.Message)
 				}
 				return errors.New(msg)
 			}
@@ -119,7 +124,10 @@ func newBillingPortalCmd() *cobra.Command {
 			if resp.PortalURL == nil {
 				msg := "billing is not configured on the server"
 				if resp.Message != nil {
-					msg = *resp.Message
+					// Same 2xx-field strict stripper as the checkout site
+					// above (issue #298): cobra prints the message raw on
+					// stderr, so the terminal controls cannot survive.
+					msg = api.ServerMessageText(*resp.Message)
 				}
 				return errors.New(msg)
 			}

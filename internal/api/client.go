@@ -270,6 +270,17 @@ func serverErrorText(s string) string {
 	return truncateRunes(strings.TrimSpace(output.StripTerminalControls(s)), errorMessageMaxRunes)
 }
 
+// ServerMessageText normalizes a server-supplied free-form message carried
+// in a 2xx body field (issue #298) with exactly the serverErrorText
+// predicate: a hostile or compromised server can aim the same
+// OSC 8/SGR/CR/C1 payload at any 2xx field it knows a command renders, not
+// just at the error-decode path. Commands must run every 2xx message field
+// they turn into error text or human output through this before display;
+// structured output keeps the field byte-faithful and never calls this.
+func ServerMessageText(s string) string {
+	return truncateRunes(strings.TrimSpace(output.StripTerminalControls(s)), errorMessageMaxRunes)
+}
+
 // truncateRunes shortens s to max runes, marking the cut with an ellipsis.
 func truncateRunes(s string, max int) string {
 	r := []rune(s)

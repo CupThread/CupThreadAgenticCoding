@@ -1323,6 +1323,29 @@ func TestServerErrorTextStripsBeforeTrim(t *testing.T) {
 	}
 }
 
+// TestServerMessageTextMatchesServerErrorText pins the 2xx-field helper
+// (issue #298): ServerMessageText must apply exactly the serverErrorText
+// predicate — strip terminal controls (C0, C1, DEL), then trim, then cap at
+// errorMessageMaxRunes with an ellipsis — and pass clean text through
+// byte-identical, so a message under the cap renders unchanged.
+func TestServerMessageTextMatchesServerErrorText(t *testing.T) {
+	if got := ServerMessageText("\x1b \x1b"); got != "" {
+		t.Errorf("ServerMessageText(controls around space) = %q, want empty", got)
+	}
+	if got := ServerMessageText("  \x1b[31mmsg\x1b[0m\t"); got != "[31mmsg[0m" {
+		t.Errorf("ServerMessageText = %q, want stripped visible text without edge whitespace", got)
+	}
+	long := strings.Repeat("m", errorMessageMaxRunes+50)
+	got := ServerMessageText(long)
+	if got != truncateRunes(long, errorMessageMaxRunes) {
+		t.Errorf("ServerMessageText(long) length = %d, want the %d-rune cap with ellipsis", len([]rune(got)), errorMessageMaxRunes)
+	}
+	clean := "billing is not configured on this deployment"
+	if got := ServerMessageText(clean); got != clean {
+		t.Errorf("ServerMessageText(clean) = %q, want it byte-identical", got)
+	}
+}
+
 // TestAPIErrorSanitizesCodeAndRequestIDRendering pins the display-copy
 // sanitization (CodeRabbit review of #287): the decoders store server-derived
 // Code and RequestID raw, so Error() must render sanitized copies — while the
