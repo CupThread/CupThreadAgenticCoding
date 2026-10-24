@@ -148,6 +148,7 @@ cupthread me                               # Show current user, workspaces, and 
 cupthread workspaces members list          # List workspace members & roles
 cupthread workspaces invitations list      # List pending invitations
 cupthread billing show                     # Show subscription tier (free | pro), limits, and usage
+cupthread billing intake-ledger            # Show the monthly intake ledger (durable accepted count, cap, reset budget)
 ```
 All of the above are `[token-safe]`: any workspace role can run them and `cpt_`
 API tokens work.

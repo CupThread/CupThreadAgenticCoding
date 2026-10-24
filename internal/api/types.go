@@ -640,6 +640,19 @@ type BillingPortalResponse struct {
 	Message         *string `json:"message"`
 }
 
+// IntakeLedgerStatus is the current UTC month's BILL-25 intake ledger
+// (GET /api/v1/console/workspaces/{id}/intake-ledger): the durable accepted
+// intake count (feedback submissions plus user-created feature requests —
+// deleting rows never refunds it), the tier cap it is enforced against, and
+// the audited per-month operator reset budget.
+type IntakeLedgerStatus struct {
+	UTCMonth        string `json:"utcMonth"`
+	AcceptedCount   int    `json:"acceptedCount"`
+	Cap             int    `json:"cap"`
+	ResetsUsed      int    `json:"resetsUsed"`
+	ResetsRemaining int    `json:"resetsRemaining"`
+}
+
 // ─── Search ──────────────────────────────────────────────────────────────────
 
 type SearchResultItem struct {
