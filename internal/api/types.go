@@ -285,7 +285,13 @@ type RecentCommenter struct {
 
 // PublicFeatureRequest is one row of the unauthenticated public
 // feature-request feed served by GET /api/v1/feature-requests (a subset of
-// the wire record; the decoder ignores the remaining fields).
+// the documented public FeatureRequest wire record; the decoder ignores the
+// remaining documented fields). Per SaaS #1320 (PR #1323), ten undocumented
+// tenant-internal keys are no longer served on GET /api/v1/feature-requests or
+// GET /api/v1/feature-requests/{id}: importSource, importRef, githubIssueId,
+// githubIssueNumber, githubIssueUrl, githubDiscussionId,
+// githubDiscussionNumber, githubDiscussionUrl, githubLastSyncedAt, and
+// githubSyncStatus (importedVotes remains part of the public schema).
 type PublicFeatureRequest struct {
 	ID            string  `json:"id"`
 	Title         string  `json:"title"`

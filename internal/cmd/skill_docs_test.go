@@ -1412,3 +1412,77 @@ func TestSkillDocsIssue254PublicUserProfileResponseShape(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsIssue262PublicFeatureRequestRemovedInternalFields pins the
+// issue #262 sync of CupThread/SaaS#1320 (PR CupThread/SaaS#1323):
+//   - GET /api/v1/feature-requests and GET /api/v1/feature-requests/{id} no
+//     longer serve the ten undocumented tenant-internal keys: importSource,
+//     importRef, githubIssueId, githubIssueNumber, githubIssueUrl,
+//     githubDiscussionId, githubDiscussionNumber, githubDiscussionUrl,
+//     githubLastSyncedAt, and githubSyncStatus.
+//   - Documented public FeatureRequest fields (including importedVotes,
+//     voteCount, hasVoted, isOwnRequest, and the column/version fields) remain
+//     unchanged.
+//   - Both cupthread-api and the four SDK skills document the removed keys and
+//     instruct strict/custom SDK models to drop them.
+func TestSkillDocsIssue262PublicFeatureRequestRemovedInternalFields(t *testing.T) {
+	removedKeys := []string{
+		"`importSource`",
+		"`importRef`",
+		"`githubIssueId`",
+		"`githubIssueNumber`",
+		"`githubIssueUrl`",
+		"`githubDiscussionId`",
+		"`githubDiscussionNumber`",
+		"`githubDiscussionUrl`",
+		"`githubLastSyncedAt`",
+		"`githubSyncStatus`",
+	}
+
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			// Single-request detail row.
+			"SaaS #1320 / PR #1323: neither this endpoint nor `GET /api/v1/feature-requests` serves the ten undocumented tenant-internal keys",
+			// Public feature-request schema paragraph.
+			"Both `GET /api/v1/feature-requests` (board listing/search) and `GET /api/v1/feature-requests/{id}` (request detail) serve only the documented public `FeatureRequest` schema (SaaS #1320 / PR #1323)",
+			"ten undocumented tenant-internal keys previously leaked as `null`",
+			"are never served on public surfaces (drop them from any SDK or client model that declared them; `importedVotes`, `voteCount`, `hasVoted`, `isOwnRequest`, and the column/version fields remain unchanged)",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#262 marker %q", marker)
+			}
+		}
+		for _, key := range removedKeys {
+			if !strings.Contains(doc, key) {
+				t.Errorf("cupthread-api/SKILL.md is missing removed internal key %s", key)
+			}
+		}
+	})
+
+	sdkMarkers := []string{
+		"**Public `FeatureRequest` payloads omit tenant-internal keys (SaaS #1320 / PR #1323):**",
+		"`GET /api/v1/feature-requests` and `GET /api/v1/feature-requests/{id}` serve only the documented public `FeatureRequest` schema (including `importedVotes`, `voteCount`, `hasVoted`, `isOwnRequest`, and the column/version fields)",
+		"are never served on public surfaces — drop them from any custom or strict SDK model that required them.",
+	}
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range sdkMarkers {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#262 marker %q", skill, marker)
+				}
+			}
+			for _, key := range removedKeys {
+				if !strings.Contains(doc, key) {
+					t.Errorf("%s/SKILL.md is missing removed internal key %s", skill, key)
+				}
+			}
+		})
+	}
+}

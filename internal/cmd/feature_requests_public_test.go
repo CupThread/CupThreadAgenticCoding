@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -255,4 +258,154 @@ func TestAppsPublicFeatureRequestsRequiresAppKey(t *testing.T) {
 	if *gotPath != "" {
 		t.Errorf("no request should be made, got %s", *gotPath)
 	}
+}
+
+// TestAppsPublicFeatureRequestsContractPinNoInternalFields pins the issue #262
+// sync of SaaS #1320 (PR #1323): GET /api/v1/feature-requests no longer serves
+// the ten undocumented tenant-internal keys (importSource, importRef,
+// githubIssueId, githubIssueNumber, githubIssueUrl, githubDiscussionId,
+// githubDiscussionNumber, githubDiscussionUrl, githubLastSyncedAt,
+// githubSyncStatus), while preserving the documented public FeatureRequest
+// fields (including importedVotes, voteCount, hasVoted, and the column/version
+// fields). The CLI's PublicFeatureRequest struct and `apps
+// public-feature-requests --json` must emit only the documented public keys
+// and never expose any of the ten removed tenant-internal keys.
+func TestAppsPublicFeatureRequestsContractPinNoInternalFields(t *testing.T) {
+	removedInternalKeys := []string{
+		"importSource",
+		"importRef",
+		"githubIssueId",
+		"githubIssueNumber",
+		"githubIssueUrl",
+		"githubDiscussionId",
+		"githubDiscussionNumber",
+		"githubDiscussionUrl",
+		"githubLastSyncedAt",
+		"githubSyncStatus",
+	}
+
+	sortedKeys := func(t *testing.T, m map[string]any) []string {
+		t.Helper()
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	t.Run("served public payload round-trips documented keys with no tenant-internal keys", func(t *testing.T) {
+		server, _, _ := publicRequestsServer(t, publicRequestsFixture)
+
+		out, err := runRoot(t, server.URL, "apps", "public-feature-requests", "app_key_1", "--json")
+		if err != nil {
+			t.Fatalf("public-feature-requests --json: %v", err)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+
+		wantTop := []string{"hasMore", "nextCursor", "requests", "total"}
+		if got := sortedKeys(t, top); !reflect.DeepEqual(got, wantTop) {
+			t.Errorf("top-level keys = %v, want %v", got, wantTop)
+		}
+
+		reqs, ok := top["requests"].([]any)
+		if !ok || len(reqs) != 1 {
+			t.Fatalf("requests = %#v, want 1-element array", top["requests"])
+		}
+		req0, ok := reqs[0].(map[string]any)
+		if !ok {
+			t.Fatalf("requests[0] is %T, want object", reqs[0])
+		}
+		wantReq := []string{
+			"columnName",
+			"commentCount",
+			"createdAt",
+			"description",
+			"hasVoted",
+			"id",
+			"importedVotes",
+			"status",
+			"title",
+			"updatedAt",
+			"versionLabel",
+			"voteCount",
+		}
+		if got := sortedKeys(t, req0); !reflect.DeepEqual(got, wantReq) {
+			t.Errorf("requests[0] keys = %v, want %v", got, wantReq)
+		}
+		for _, internalKey := range removedInternalKeys {
+			if _, present := req0[internalKey]; present {
+				t.Errorf("requests[0] unexpectedly contains removed tenant-internal key %q", internalKey)
+			}
+		}
+	})
+
+	t.Run("legacy or proxy payload carrying removed internal keys strips all ten on --json decode", func(t *testing.T) {
+		legacyPayload := `{
+			"requests": [{
+				"id": "fr_pub_legacy",
+				"appId": "app_1",
+				"title": "Offline sync",
+				"description": "Support offline cache",
+				"status": "planned",
+				"columnName": "Planned",
+				"versionLabel": "2.0.0",
+				"voteCount": 42,
+				"importedVotes": 10,
+				"hasVoted": true,
+				"isOwnRequest": false,
+				"commentCount": 5,
+				"createdAt": "2026-09-01T12:00:00.000Z",
+				"updatedAt": "2026-09-02T12:00:00.000Z",
+				"importSource": null,
+				"importRef": null,
+				"githubIssueId": null,
+				"githubIssueNumber": null,
+				"githubIssueUrl": null,
+				"githubDiscussionId": null,
+				"githubDiscussionNumber": null,
+				"githubDiscussionUrl": null,
+				"githubLastSyncedAt": null,
+				"githubSyncStatus": null
+			}],
+			"total": 1,
+			"hasMore": false,
+			"nextCursor": null
+		}`
+		server, _, _ := publicRequestsServer(t, legacyPayload)
+
+		out, err := runRoot(t, server.URL, "apps", "public-feature-requests", "app_key_1", "--json")
+		if err != nil {
+			t.Fatalf("public-feature-requests --json: %v", err)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+		reqs, ok := top["requests"].([]any)
+		if !ok || len(reqs) != 1 {
+			t.Fatalf("requests = %#v, want 1-element array", top["requests"])
+		}
+		req0, ok := reqs[0].(map[string]any)
+		if !ok {
+			t.Fatalf("requests[0] is %T, want object", reqs[0])
+		}
+		for _, internalKey := range removedInternalKeys {
+			if _, present := req0[internalKey]; present {
+				t.Errorf("requests[0] leaked removed tenant-internal key %q in --json output", internalKey)
+			}
+		}
+		if got := req0["importedVotes"]; got != float64(10) {
+			t.Errorf("importedVotes = %v, want 10 preserved", got)
+		}
+		if got := req0["voteCount"]; got != float64(42) {
+			t.Errorf("voteCount = %v, want 42 preserved", got)
+		}
+		if got := req0["hasVoted"]; got != true {
+			t.Errorf("hasVoted = %v, want true preserved", got)
+		}
+	})
 }
