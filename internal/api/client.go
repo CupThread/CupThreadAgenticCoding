@@ -90,8 +90,21 @@ type Client struct {
 func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
-		HTTP:    &http.Client{Timeout: 60 * time.Second},
+		HTTP:    &http.Client{Timeout: 60 * time.Second, CheckRedirect: neverFollowRedirects},
 	}
+}
+
+// neverFollowRedirects hands every 3xx back to the caller instead of
+// replaying the request against the Location target (issue #294). Go's
+// default policy forwards custom headers — here X-User-Token, X-App-Key and
+// X-Workspace-Id — verbatim to any cross-host hop, preserves the method and
+// body on 307/308, and ignores the port in its credential-strip check, so a
+// single redirect from the API origin would deliver caller credentials and
+// request bodies to a host the user never dialed. An API origin answering
+// 3xx is not a success the CLI should chase: the response flows through the
+// regular decode path and surfaces as a non-2xx APIError.
+func neverFollowRedirects(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // requestIDHeader is the OPS-01 correlation header: every API response

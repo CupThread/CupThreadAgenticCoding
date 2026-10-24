@@ -510,8 +510,39 @@ func decodeTokenResponse(body []byte) (*TokenSet, error) {
 
 // httpClient bounds every OAuth/token request (PKCE code exchange, device
 // flow, transparent refresh) so a stalled token endpoint cannot hang the CLI
-// the way the timeout-less http.DefaultClient would.
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// the way the timeout-less http.DefaultClient would. Redirects stay pinned
+// to the origin being dialed (issue #294): these form bodies carry the
+// refresh token, PKCE code_verifier and device_code, and Go's default policy
+// would replay them — along with every header — to any cross-host 307/308
+// Location, silently defeating the issuer pinning --base-url promises.
+var httpClient = newOAuthHTTPClient(30 * time.Second)
+
+// newOAuthHTTPClient builds the OAuth transport: the bounded timeout plus
+// the same-origin-only redirect policy.
+func newOAuthHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: sameOriginRedirectsOnly,
+	}
+}
+
+// sameOriginRedirectsOnly allows a redirect only when it stays on the exact
+// scheme+host origin the request was first dialed against. The comparison
+// covers URL.Host including the port, so a same-host hop onto a different
+// port is refused too — Go's built-in credential stripping ignores the port,
+// and this policy must not inherit that hole. The hop cap mirrors the
+// 10-redirect default that supplying CheckRedirect otherwise replaces.
+func sameOriginRedirectsOnly(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	origin := via[0].URL
+	if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+		return fmt.Errorf("refusing to follow redirect to %s://%s: OAuth endpoints must stay on %s://%s",
+			req.URL.Scheme, req.URL.Host, origin.Scheme, origin.Host)
+	}
+	return nil
+}
 
 // maxOAuthResponseBytes caps how much of any token/device/revocation
 // response the CLI buffers (REL-1): OAuth bodies are form-encoded JSON a
