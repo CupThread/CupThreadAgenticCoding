@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -189,6 +191,116 @@ func TestCommentsModerationListJSON(t *testing.T) {
 			t.Errorf("JSON output missing %q:\n%s", want, out)
 		}
 	}
+}
+
+// servedCommentKeys is the exact per-row key set the server emits on both
+// comment listings (SaaS mapCommentRow, verified against origin/main) — the
+// contract the structured writer must reproduce for issue #276.
+var servedCommentKeys = []string{
+	"appId", "authorAvatarUrl", "authorClerkId", "authorName", "body",
+	"createdAt", "featureRequestId", "id", "isHidden", "parentId",
+	"replyToAuthorName", "replyToClerkId", "updatedAt",
+}
+
+// servedCommentsPage carries one anonymous row (authorClerkId null) and one
+// signed-in row (the u_* public pseudonym) with every served key present.
+const servedCommentsPage = `{"id": "cmt_anon_01", "featureRequestId": "fr_1", "appId": "app_1",
+		"authorClerkId": null, "authorName": "Lex", "authorAvatarUrl": null,
+		"body": "anonymous row", "parentId": null, "replyToClerkId": null,
+		"replyToAuthorName": null, "isHidden": false,
+		"createdAt": "2026-09-18T01:02:03Z", "updatedAt": "2026-09-18T01:02:03Z"}` + "," + `{"id": "cmt_user_02", "featureRequestId": "fr_1", "appId": "app_1",
+		"authorClerkId": "u_4f9a2b", "authorName": "Kim", "authorAvatarUrl": null,
+		"body": "signed-in row", "parentId": "cmt_anon_01", "replyToClerkId": null,
+		"replyToAuthorName": "Lex", "isHidden": false,
+		"createdAt": "2026-09-18T02:02:03Z", "updatedAt": "2026-09-18T02:05:03Z"}`
+
+// TestCommentsListJSONKeepsNestedServedKeys is the issue #276 command-level
+// contract: the server names appId, authorClerkId (null for an anonymous
+// author, the u_* pseudonym for a signed-in one) and updatedAt on every
+// comment row, and both structured listings must reproduce exactly the
+// served set — nothing dropped, nothing invented — while the human table
+// stays on its six columns.
+func TestCommentsListJSONKeepsNestedServedKeys(t *testing.T) {
+	page := commentPage(servedCommentsPage, 2, "")
+
+	assertServedRows := func(t *testing.T, out string) {
+		t.Helper()
+		var resp struct {
+			Comments []map[string]json.RawMessage `json:"comments"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &resp); err != nil {
+			t.Fatalf("unmarshal structured output: %v\n%s", err, out)
+		}
+		if len(resp.Comments) != 2 {
+			t.Fatalf("comments = %d rows, want 2:\n%s", len(resp.Comments), out)
+		}
+		for i, row := range resp.Comments {
+			got := make([]string, 0, len(row))
+			for key := range row {
+				got = append(got, key)
+			}
+			sort.Strings(got)
+			if !reflect.DeepEqual(got, servedCommentKeys) {
+				t.Errorf("comment %d key set = %v, want the served %v", i, got, servedCommentKeys)
+			}
+		}
+		if string(resp.Comments[0]["authorClerkId"]) != "null" {
+			t.Errorf("anonymous authorClerkId = %s, want the served null", resp.Comments[0]["authorClerkId"])
+		}
+		if string(resp.Comments[1]["authorClerkId"]) != `"u_4f9a2b"` {
+			t.Errorf("signed-in authorClerkId = %s, want the pseudonym", resp.Comments[1]["authorClerkId"])
+		}
+		for i, row := range resp.Comments {
+			if string(row["appId"]) != `"app_1"` {
+				t.Errorf("comment %d appId = %s, want app_1", i, row["appId"])
+			}
+			if string(row["updatedAt"]) == "" || string(row["updatedAt"]) == "null" {
+				t.Errorf("comment %d updatedAt = %s, want the served timestamp", i, row["updatedAt"])
+			}
+		}
+	}
+
+	t.Run("public listing", func(t *testing.T) {
+		server, _ := serveCommentPages(t, []string{page})
+		defer server.Close()
+
+		out, err := runPublicRoot(t, server.URL, "comments", "list", "fr_1", "--json")
+		if err != nil {
+			t.Fatalf("comments list --json: %v", err)
+		}
+		assertServedRows(t, out)
+	})
+
+	t.Run("moderation listing", func(t *testing.T) {
+		server, _ := serveCommentPages(t, []string{page})
+		defer server.Close()
+
+		out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_1", "--workspace", "ws_1", "--json")
+		if err != nil {
+			t.Fatalf("comments moderation list --json: %v", err)
+		}
+		assertServedRows(t, out)
+	})
+
+	t.Run("human table unchanged", func(t *testing.T) {
+		server, _ := serveCommentPages(t, []string{page})
+		defer server.Close()
+
+		out, err := runPublicRoot(t, server.URL, "comments", "list", "fr_1")
+		if err != nil {
+			t.Fatalf("comments list: %v", err)
+		}
+		for _, want := range []string{"Lex", "anonymous row", "Kim", "signed-in row", "(2 comments)"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("human output missing %q:\n%s", want, out)
+			}
+		}
+		for _, leaked := range []string{"appId", "authorClerkId", "updatedAt", "u_4f9a2b"} {
+			if strings.Contains(out, leaked) {
+				t.Errorf("human output leaks machine key %q:\n%s", leaked, out)
+			}
+		}
+	})
 }
 
 // TestCommentsListNotFoundCoversUnapproved covers the PRIV-12 existence
