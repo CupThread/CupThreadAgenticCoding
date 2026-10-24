@@ -170,14 +170,28 @@ const frListEnvelopeFixture = `{
 
 // commentsEnvelopeFixture mirrors the comments page shape shared by the
 // public thread listing and the Console moderation listing (PROD-31): all
-// four keys are always present, nextCursor null on the last page.
+// four envelope keys are always present, nextCursor null on the last page,
+// and each comment row carries the complete 13-key served record — verified
+// against SaaS origin/main mapCommentRow, where both listing queries select
+// every column and the mapper always emits all keys (updatedAt falling back
+// to createdAt). The two rows exercise both authorClerkId branches: an
+// anonymous author (null) and a signed-in author (the app-scoped u_* public
+// pseudonym).
 const commentsEnvelopeFixture = `{
 	"comments": [{
 		"id": "cmt_1", "featureRequestId": "fr_1", "appId": "app_1",
 		"authorClerkId": null, "authorName": "Lex", "authorAvatarUrl": null,
 		"body": "Same issue here", "parentId": null,
 		"replyToClerkId": null, "replyToAuthorName": null,
-		"isHidden": false, "createdAt": "2026-09-02T08:00:00.000Z"
+		"isHidden": false, "createdAt": "2026-09-02T08:00:00.000Z",
+		"updatedAt": "2026-09-02T08:00:00.000Z"
+	}, {
+		"id": "cmt_2", "featureRequestId": "fr_1", "appId": "app_1",
+		"authorClerkId": "u_4f9a2b", "authorName": "Kim", "authorAvatarUrl": null,
+		"body": "Fixed it locally", "parentId": "cmt_1",
+		"replyToClerkId": null, "replyToAuthorName": "Lex",
+		"isHidden": false, "createdAt": "2026-09-02T09:30:00.000Z",
+		"updatedAt": "2026-09-02T09:31:00.000Z"
 	}],
 	"total": 2,
 	"hasMore": true,
@@ -191,7 +205,10 @@ const commentsEnvelopeFixture = `{
 // (verified against SaaS origin/main b70bccc, where every handler returns
 // the repository result verbatim); the test fails when a key stops
 // round-tripping, turning the next additive server field into a test
-// failure instead of a silent drop.
+// failure instead of a silent drop. Since issue #276 the guard also walks
+// one level deeper: every top-level array of objects (comment rows, request
+// rows, workspace entries) gets the same sent ⊆ re-marshaled comparison per
+// item, because the envelope-level check cannot see inside list items.
 func TestAdditiveEnvelopesRoundTripWithoutKeyLoss(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -234,6 +251,24 @@ func TestAdditiveEnvelopesRoundTripWithoutKeyLoss(t *testing.T) {
 				if r.Total != 2 || !r.HasMore || r.NextCursor == nil || *r.NextCursor != "2026-09-02T08:00:00.000Z|cmt_1" {
 					t.Errorf("page = (%d, %v, %v), want (2, true, cursor)", r.Total, r.HasMore, r.NextCursor)
 				}
+				if len(r.Comments) != 2 {
+					t.Fatalf("comments = %d rows, want the fixture's 2", len(r.Comments))
+				}
+				anonymous, signedIn := r.Comments[0], r.Comments[1]
+				if anonymous.AuthorClerkID != nil {
+					t.Errorf("anonymous AuthorClerkID = %v, want nil for the explicit null", anonymous.AuthorClerkID)
+				}
+				if signedIn.AuthorClerkID == nil || *signedIn.AuthorClerkID != "u_4f9a2b" {
+					t.Errorf("signed-in AuthorClerkID = %v, want u_4f9a2b", signedIn.AuthorClerkID)
+				}
+				for i, c := range r.Comments {
+					if c.AppID == nil || *c.AppID != "app_1" {
+						t.Errorf("comment %d AppID = %v, want app_1", i, c.AppID)
+					}
+					if c.UpdatedAt == "" {
+						t.Errorf("comment %d UpdatedAt = %q, want the served value", i, c.UpdatedAt)
+					}
+				}
 			},
 		},
 	}
@@ -259,10 +294,87 @@ func TestAdditiveEnvelopesRoundTripWithoutKeyLoss(t *testing.T) {
 					t.Errorf("top-level key %q is sent by the server but dropped by %T: add the field to the struct and extend the fixture", key, tt.target)
 				}
 			}
+			// One level deeper (issue #276): the top-level check cannot see
+			// inside list items, so walk every top-level array of objects
+			// and require each item's served keys to survive re-marshaling.
+			for key, raw := range sent {
+				var sentItems []map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &sentItems); err != nil || len(sentItems) == 0 {
+					continue // not a non-empty array of objects: nothing to walk
+				}
+				gotRaw, ok := got[key]
+				if !ok {
+					continue // already reported by the top-level check
+				}
+				var gotItems []map[string]json.RawMessage
+				if err := json.Unmarshal(gotRaw, &gotItems); err != nil {
+					t.Errorf("re-marshaled %q = %s is not an array of objects", key, gotRaw)
+					continue
+				}
+				if len(gotItems) != len(sentItems) {
+					t.Errorf("re-marshaled %q has %d items, want the served %d", key, len(gotItems), len(sentItems))
+					continue
+				}
+				for i, sentItem := range sentItems {
+					for itemKey := range sentItem {
+						if _, ok := gotItems[i][itemKey]; !ok {
+							t.Errorf("nested item %s[%d] key %q is sent by the server but dropped by %T: add the field to the item struct and extend the fixture", key, i, itemKey, tt.target)
+						}
+					}
+				}
+			}
 			if tt.check != nil {
 				tt.check(t, tt.target)
 			}
 		})
+	}
+}
+
+// TestCommentsEnvelopeItemKeySetsMatchServer extends the #79 guard one level
+// deeper for the one fixture that carries the complete served row shape
+// (issue #276; verified against SaaS origin/main mapCommentRow, shared by the
+// public thread listing and the Console moderation listing). Each comment
+// item's re-marshaled key set must EQUAL the served set: the sent ⊆ got
+// direction fails when a server key stops being modeled, and got ⊆ sent
+// fails when the struct invents a key the server never serves — the phantom
+// authorEmail this issue removed must stay gone.
+func TestCommentsEnvelopeItemKeySetsMatchServer(t *testing.T) {
+	var sent struct {
+		Comments []json.RawMessage `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(commentsEnvelopeFixture), &sent); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	var resp ListCommentsResponse
+	if err := json.Unmarshal([]byte(commentsEnvelopeFixture), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(sent.Comments) != len(resp.Comments) || len(sent.Comments) == 0 {
+		t.Fatalf("decoded %d of %d comment rows", len(resp.Comments), len(sent.Comments))
+	}
+	for i, raw := range sent.Comments {
+		var sentKeys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &sentKeys); err != nil {
+			t.Fatalf("comment %d: %v", i, err)
+		}
+		out, err := json.Marshal(resp.Comments[i])
+		if err != nil {
+			t.Fatalf("marshal comment %d: %v", i, err)
+		}
+		var gotKeys map[string]json.RawMessage
+		if err := json.Unmarshal(out, &gotKeys); err != nil {
+			t.Fatalf("re-marshal comment %d: %v", i, err)
+		}
+		for key := range sentKeys {
+			if _, ok := gotKeys[key]; !ok {
+				t.Errorf("comment %d key %q is sent by the server but dropped by FeatureRequestComment: add the field and extend the fixture", i, key)
+			}
+		}
+		for key := range gotKeys {
+			if _, ok := sentKeys[key]; !ok {
+				t.Errorf("re-marshaled comment %d invents key %q the server never serves: remove the field from FeatureRequestComment", i, key)
+			}
+		}
 	}
 }
 

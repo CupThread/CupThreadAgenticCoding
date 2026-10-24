@@ -321,11 +321,22 @@ type ListPublicFeatureRequestsResponse struct {
 
 // ─── Feature request comments ────────────────────────────────────────────────
 
+// FeatureRequestComment is one row of a comments page, shared by the public
+// thread listing and the Console moderation listing. It models the exact
+// 13-key record the server serves (SaaS mapCommentRow, verified against
+// origin/main: both listing queries select every column and the mapper always
+// emits all keys, updatedAt falling back to createdAt). Anything unmodeled
+// would silently vanish from --json/-o yaml, and anything the server never
+// sends would be invented as null — the nested-item residual of the #79
+// envelope guard (issue #276), which is why the phantom authorEmail is
+// absent. authorClerkId is the app-scoped public pseudonym (u_*), never a raw
+// identity-provider id (PRIV-06).
 type FeatureRequestComment struct {
 	ID                string  `json:"id"`
 	FeatureRequestID  string  `json:"featureRequestId"`
+	AppID             *string `json:"appId"`
+	AuthorClerkID     *string `json:"authorClerkId"`
 	AuthorName        *string `json:"authorName"`
-	AuthorEmail       *string `json:"authorEmail"`
 	AuthorAvatarURL   *string `json:"authorAvatarUrl"`
 	Body              string  `json:"body"`
 	ParentID          *string `json:"parentId"`
@@ -333,6 +344,7 @@ type FeatureRequestComment struct {
 	ReplyToAuthorName *string `json:"replyToAuthorName"`
 	IsHidden          bool    `json:"isHidden"`
 	CreatedAt         string  `json:"createdAt"`
+	UpdatedAt         string  `json:"updatedAt"`
 }
 
 // ListCommentsResponse is the page shape shared by the public thread listing
