@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
 
 // Client-side request-body caps, mirroring the server's SEC-36 intake limits
@@ -181,14 +183,18 @@ func (a *app) emitMutationResult(action, id string) error {
 }
 
 // warnf reports a non-fatal warning. In structured mode it goes to stderr so
-// stdout stays a single machine-parseable document. The human line passes
-// through PrintfSafe: warnings interpolate server-derived text (revoke
-// failures quote the server's error, the issuer URL and the stored token
-// prefix), so a hostile value cannot render escape sequences or forge extra
-// lines (issue #280).
+// stdout stays a single machine-parseable document. Both branches sanitize:
+// warnings interpolate server-derived text (revoke failures quote the
+// server's error, the issuer URL and the stored token prefix), so a hostile
+// value can neither render escape sequences nor forge extra lines — the
+// human line through PrintfSafe, the structured line through the same
+// StripTerminalControls predicate (issue #286: the structured branch used to
+// echo the raw value, so --json/-o yaml disagreed with human mode on
+// identical data). Structured stdout documents stay byte-faithful; only
+// stderr, which is human-facing in every mode, is touched.
 func (a *app) warnf(format string, args ...any) {
 	if a.structured() {
-		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		fmt.Fprintln(os.Stderr, output.StripTerminalControls(fmt.Sprintf(format, args...)))
 		return
 	}
 	a.out.PrintfSafe(format, args...)

@@ -141,9 +141,11 @@ func readConfigFile(t *testing.T, cfgPath string) config.Config {
 // TestOAuthLoginProbeFailurePersistsIssuedPair pins the core of issue #69:
 // when the post-login session check fails transiently after the OAuth pair
 // was issued, the pair is already on disk, the command still succeeds, the
-// warning goes to stderr, and saved workspace defaults from a previous login
-// are cleared because they could not be verified. A follow-up authenticated
-// command works with the persisted pair — no re-login needed.
+// warnings go through app.warnf like the success path's reconcile
+// disclosures (issue #286: the raw-warnf closure that always wrote stderr
+// bypassed the sanitization), and saved workspace defaults from a previous
+// login are cleared because they could not be verified. A follow-up
+// authenticated command works with the persisted pair — no re-login needed.
 func TestOAuthLoginProbeFailurePersistsIssuedPair(t *testing.T) {
 	server := oauthProbeServer(t, http.StatusInternalServerError, 1)
 	defer server.Close()
@@ -172,13 +174,16 @@ func TestOAuthLoginProbeFailurePersistsIssuedPair(t *testing.T) {
 	if loginErr != nil {
 		t.Fatalf("finishOAuthLogin with failing probe: %v", loginErr)
 	}
-	if !strings.Contains(stderr, "warning: logged in, but could not verify the session yet") || !strings.Contains(stderr, "cupthread auth status") {
-		t.Errorf("stderr = %q, want the advisory warning naming 'cupthread auth status'", stderr)
+	if !strings.Contains(stdout, "warning: logged in, but could not verify the session yet") || !strings.Contains(stdout, "cupthread auth status") {
+		t.Errorf("stdout = %q, want the advisory warning naming 'cupthread auth status'", stdout)
 	}
 	for _, want := range []string{"Cleared saved default workspace ws_stale", "Dropped saved per-workspace app default(s) for ws_stale"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr = %q, missing disclosure %q", stderr, want)
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, missing disclosure %q", stdout, want)
 		}
+	}
+	if strings.Contains(stderr, "warning") || strings.Contains(stderr, "Cleared saved") {
+		t.Errorf("stderr = %q, want no warnings in human mode (they land on stdout next to the success line)", stderr)
 	}
 	if !strings.Contains(stdout, "✓ Logged in (OAuth") || strings.Contains(stdout, "Logged in as") {
 		t.Errorf("stdout = %q, want the no-email success line", stdout)
@@ -230,11 +235,14 @@ func TestOAuthLoginProbeFailureFreshMachineWarnsOnly(t *testing.T) {
 	if loginErr != nil {
 		t.Fatalf("finishOAuthLogin with failing probe: %v", loginErr)
 	}
-	if !strings.Contains(stderr, "warning: logged in, but could not verify the session yet") {
-		t.Errorf("stderr = %q, want the advisory warning", stderr)
+	if !strings.Contains(stdout, "warning: logged in, but could not verify the session yet") {
+		t.Errorf("stdout = %q, want the advisory warning", stdout)
 	}
-	if strings.Contains(stderr, "Cleared saved default workspace") || strings.Contains(stderr, "Dropped saved per-workspace") {
-		t.Errorf("stderr = %q, want no context disclosures on a fresh machine", stderr)
+	if strings.Contains(stderr, "warning: logged in") {
+		t.Errorf("stderr = %q, want no advisory warning in human mode (it lands on stdout next to the success line)", stderr)
+	}
+	if strings.Contains(stdout, "Cleared saved default workspace") || strings.Contains(stdout, "Dropped saved per-workspace") {
+		t.Errorf("stdout = %q, want no context disclosures on a fresh machine", stdout)
 	}
 	if !strings.Contains(stdout, "✓ Logged in (OAuth") {
 		t.Errorf("stdout = %q, want the success line", stdout)
@@ -391,7 +399,9 @@ func TestLoginTokenProbeRejectionPersistsNothing(t *testing.T) {
 // TestDeviceFlowPersistsPairDespiteProbeFailure reproduces the issue's exact
 // scenario end to end: a device-flow login approved in the browser whose
 // session check then answers 500 must still exit 0 with the exchanged pair
-// on disk and the warning on stderr.
+// on disk and the warnings routed through app.warnf (issue #286: human-mode
+// warnings land on stdout next to the success line, structured ones on
+// stderr).
 func TestDeviceFlowPersistsPairDespiteProbeFailure(t *testing.T) {
 	server := deviceFlowServer(t, http.StatusInternalServerError)
 	defer server.Close()
@@ -440,8 +450,8 @@ func TestDeviceFlowPersistsPairDespiteProbeFailure(t *testing.T) {
 	if !strings.Contains(stdout, "✓ Logged in (OAuth") || strings.Contains(stdout, "Logged in as") {
 		t.Errorf("stdout = %q, want the no-email success line", stdout)
 	}
-	if !strings.Contains(stderr, "warning: logged in, but could not verify the session yet") || !strings.Contains(stderr, "cupthread auth status") {
-		t.Errorf("stderr = %q, want the advisory warning", stderr)
+	if !strings.Contains(stdout, "warning: logged in, but could not verify the session yet") || !strings.Contains(stdout, "cupthread auth status") {
+		t.Errorf("stdout = %q, want the advisory warning", stdout)
 	}
 
 	cfg := readConfigFile(t, cfgPath)

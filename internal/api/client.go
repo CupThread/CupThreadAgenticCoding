@@ -222,13 +222,15 @@ func sanitizeErrorText(s string) string {
 const errorMessageMaxRunes = 200
 
 // serverErrorText normalizes a server-supplied error string for
-// APIError.Message: surrounding whitespace is dropped, terminal controls are
-// stripped (the same predicate as validation details and table cells), and
-// the result is capped. It runs at the two error-decode sites so both the
-// human Error() rendering and the structured error payload are covered, and
-// clean messages pass through byte-identical.
+// APIError.Message: terminal controls are stripped first, then surrounding
+// whitespace dropped (trimming only before the strip would let a string like
+// "\x1b \x1b" sanitize to " " and pass as a message), and the result is
+// capped (the same predicate as validation details and table cells). It runs
+// at the two error-decode sites so both the human Error() rendering and the
+// structured error payload are covered, and clean messages pass through
+// byte-identical.
 func serverErrorText(s string) string {
-	return truncateRunes(sanitizeErrorText(strings.TrimSpace(s)), errorMessageMaxRunes)
+	return truncateRunes(strings.TrimSpace(output.StripTerminalControls(s)), errorMessageMaxRunes)
 }
 
 // truncateRunes shortens s to max runes, marking the cut with an ellipsis.
@@ -242,13 +244,20 @@ func truncateRunes(s string, max int) string {
 
 func (e *APIError) Error() string {
 	suffix := e.detailsSuffix()
+	// Display copies only: Code drives control-flow comparisons and the
+	// structured payload stays byte-faithful, so the stored fields stay raw
+	// and the terminal-facing interpolation is sanitized (CodeRabbit review
+	// of #287). A Code/RequestID of only controls renders as absent instead
+	// of an empty code=/request-id= slot.
+	code := sanitizeErrorText(e.Code)
+	requestID := sanitizeErrorText(e.RequestID)
 	switch {
-	case e.Code != "" && e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)%s", e.Message, e.Status, e.Code, e.RequestID, suffix)
-	case e.Code != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s)%s", e.Message, e.Status, e.Code, suffix)
-	case e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, request-id=%s)%s", e.Message, e.Status, e.RequestID, suffix)
+	case code != "" && requestID != "":
+		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)%s", e.Message, e.Status, code, requestID, suffix)
+	case code != "":
+		return fmt.Sprintf("%s (HTTP %d, code=%s)%s", e.Message, e.Status, code, suffix)
+	case requestID != "":
+		return fmt.Sprintf("%s (HTTP %d, request-id=%s)%s", e.Message, e.Status, requestID, suffix)
 	default:
 		return fmt.Sprintf("%s (HTTP %d)%s", e.Message, e.Status, suffix)
 	}
