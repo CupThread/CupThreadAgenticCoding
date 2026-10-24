@@ -5,6 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -15,10 +19,6 @@ import (
 	"testing"
 	"unicode/utf8"
 )
-
-// requestIDPattern mirrors the API's accepted correlation-ID charset and
-// length (OPS-01): ^[A-Za-z0-9._-]{8,64}$.
-var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
 
 // cliRequestIDPattern pins the CLI's own cli-<uuid v4> generator shape.
 var cliRequestIDPattern = regexp.MustCompile(
@@ -131,6 +131,217 @@ func TestUploadAppIconSendsAndEchoesRequestID(t *testing.T) {
 	if apiErr.RequestID != got {
 		t.Errorf("RequestID = %q, want the echoed %q", apiErr.RequestID, got)
 	}
+}
+
+// TestDecodeSitesValidateRequestIDEcho pins the issue #288 contract at the
+// two decode sites: the server-controlled X-Request-Id echo is stored only
+// when it satisfies the API's own OPS-01 acceptance rule
+// ^[A-Za-z0-9._-]{8,64}$. Raw ESC/BEL header bytes are already rejected by
+// the transport (malformed MIME header line), but the UTF-8-encoded C1 form
+// (U+009D OSC, U+009C ST, U+009B CSI) is legal obs-text and would otherwise
+// reach the rendered error line and the structured `api request` payload. A
+// conforming echo must round-trip byte-identically so correlation does not
+// regress.
+func TestDecodeSitesValidateRequestIDEcho(t *testing.T) {
+	osc, st, csi := "\u009d", "\u009c", "\u009b"
+	hostile := osc + "8;;https://evil.example" + st + "CLICK" + csi + "31mRED" + st
+
+	t.Run("decodeResponse drops the hostile echo", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-Id", hostile)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Not found","code":"not_found"}`))
+		}))
+		defer server.Close()
+
+		client := New(server.URL)
+		err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got %v", err)
+		}
+		if apiErr.RequestID != "" {
+			t.Errorf("RequestID = %q, want the nonconforming echo dropped", apiErr.RequestID)
+		}
+		if strings.Contains(apiErr.Error(), "request-id=") {
+			t.Errorf("Error() = %q, want no request-id segment for a dropped echo", apiErr.Error())
+		}
+		for _, r := range apiErr.Error() {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("Error() contains control rune %U", r)
+				break
+			}
+		}
+	})
+
+	t.Run("postMultipartFile drops the hostile echo", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Request-Id", hostile)
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			_, _ = w.Write([]byte(`{"error":"Only PNG, JPEG, WebP, and GIF images are supported.","code":"unsupported_media_type"}`))
+		}))
+		defer server.Close()
+
+		client := New(server.URL)
+		_, err := client.UploadAppIcon(context.Background(), "ws_1", "app_1", "icon.png", []byte("not an image"))
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *APIError, got %v", err)
+		}
+		if apiErr.RequestID != "" {
+			t.Errorf("RequestID = %q, want the nonconforming echo dropped", apiErr.RequestID)
+		}
+		for _, r := range apiErr.Error() {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("Error() contains control rune %U", r)
+				break
+			}
+		}
+	})
+
+	t.Run("conforming echoes round-trip byte-identically", func(t *testing.T) {
+		for _, legit := range []string{
+			"srv-generated-uuid",
+			"cli-1b2c3d4e-f6a7-4c8d-9e0f-1a2b3c4d5e6f",
+			"abcdefgh",
+			strings.Repeat("a", 64),
+		} {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Request-Id", legit)
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"Not found"}`))
+			}))
+			client := New(server.URL)
+			err := client.Do(context.Background(), "GET", "/x", nil, nil, nil)
+			server.Close()
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("expected *APIError, got %v", err)
+			}
+			if apiErr.RequestID != legit {
+				t.Errorf("RequestID = %q, want the conforming echo %q byte-identical", apiErr.RequestID, legit)
+			}
+		}
+	})
+}
+
+// TestSanitizeRequestID covers the validator boundaries directly: the OPS-01
+// charset and the 8–64 length budget, with the multi-byte trap that a
+// UTF-8-encoded C1 control is two legal obs-text bytes but never a legal
+// correlation ID.
+func TestSanitizeRequestID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"srv-generated-uuid", "srv-generated-uuid"},
+		{"cli-1b2c3d4e-f6a7-4c8d-9e0f-1a2b3c4d5e6f", "cli-1b2c3d4e-f6a7-4c8d-9e0f-1a2b3c4d5e6f"},
+		{"abcdefgh", "abcdefgh"},
+		{strings.Repeat(".", 64), strings.Repeat(".", 64)},
+		{"", ""},
+		{"abcdefg", ""},
+		{strings.Repeat("a", 65), ""},
+		{"has space", ""},
+		{"slash/echo", ""},
+		{"café-uuid", ""},
+		{"ok\u009did", ""},
+		{"cli-1\rFAKE", ""},
+	}
+	for _, tc := range cases {
+		if got := sanitizeRequestID(tc.in); got != tc.want {
+			t.Errorf("sanitizeRequestID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestNoRawRequestIDEchoAssignments is the planted-violation guard for issue
+// #288: every assignment to a RequestID field in client.go must wrap the
+// header read in sanitizeRequestID (the display-time sanitization Error()
+// applies does not cover the structured `api request` payload, and cobra's
+// error printer is outside the cmd package's Printf scanners), so a future
+// decode site cannot reintroduce the raw echo silently. The checker itself
+// is pinned against planted sources: it must flag the raw assignment shape
+// and accept the sanitized one.
+func TestNoRawRequestIDEchoAssignments(t *testing.T) {
+	violations := scanRawRequestIDAssignments(t, "client.go", nil)
+	if len(violations) != 0 {
+		t.Errorf("raw X-Request-Id echo assignments in client.go: %v", violations)
+	}
+
+	planted := `package api
+
+import "net/http"
+
+func plantedDecode(resp *http.Response) error {
+	var apiErr APIError
+	apiErr.RequestID = resp.Header.Get(requestIDHeader)
+	apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+	return nil
+}
+`
+	violations = scanRawRequestIDAssignments(t, "planted.go", []byte(planted))
+	if len(violations) != 1 {
+		t.Fatalf("planted violations = %v, want exactly the raw assignment", violations)
+	}
+	if !strings.Contains(violations[0], "planted.go:7") {
+		t.Errorf("violation = %q, want it to name planted.go:7", violations[0])
+	}
+}
+
+// scanRawRequestIDAssignments parses the named file (from src when given,
+// otherwise from the package directory) and reports every assignment to a
+// field named RequestID whose right-hand side is a raw .Get header read —
+// i.e. one not wrapped in sanitizeRequestID.
+func scanRawRequestIDAssignments(t *testing.T, name string, src any) []string {
+	t.Helper()
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, name, src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	var violations []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			if i >= len(assign.Rhs) {
+				break
+			}
+			sel, ok := lhs.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "RequestID" {
+				continue
+			}
+			if isRawHeaderGetCall(assign.Rhs[i]) {
+				violations = append(violations,
+					fmt.Sprintf("%s:%d stores the raw X-Request-Id echo; wrap it in sanitizeRequestID",
+						name, fset.Position(lhs.Pos()).Line))
+			}
+		}
+		return true
+	})
+	return violations
+}
+
+// isRawHeaderGetCall reports whether expr is a call of the shape
+// <recv>.Get(…) — the raw header-read shape that must pass through
+// sanitizeRequestID before being stored — unwrapping parentheses first.
+func isRawHeaderGetCall(expr ast.Expr) bool {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = paren.X
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel.Name == "Get"
 }
 
 func TestDoSendsAuthAndWorkspaceHeaders(t *testing.T) {

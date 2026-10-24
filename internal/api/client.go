@@ -14,6 +14,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,6 +98,29 @@ func New(baseURL string) *Client {
 // echoes it, and the API accepts a caller-supplied value only when it
 // matches ^[A-Za-z0-9._-]{8,64}$ (anything else is ignored and replaced).
 const requestIDHeader = "X-Request-Id"
+
+// requestIDPattern is the OPS-01 acceptance rule the API applies to
+// caller-supplied X-Request-Id values.
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{8,64}$`)
+
+// sanitizeRequestID validates the server's X-Request-Id echo against the
+// OPS-01 acceptance rule: an echo outside ^[A-Za-z0-9._-]{8,64}$ can never
+// be legitimate, because the API replaces nonconforming caller values and
+// the CLI itself sends only cli-<uuid>. The raw ESC/BEL form of a forged
+// header is already rejected by the transport (malformed MIME header line),
+// but the UTF-8-encoded C1 form (U+009B CSI, U+009D OSC) is legal obs-text
+// and would render as terminal commands on the error line — Error()
+// sanitizes its display copy, but the structured `api request` payload
+// carries the stored field verbatim. A conforming echo round-trips
+// byte-identically so correlation does not regress; anything else is
+// dropped, and Error() already omits the request-id segment when the field
+// is empty.
+func sanitizeRequestID(s string) string {
+	if !requestIDPattern.MatchString(s) {
+		return ""
+	}
+	return s
+}
 
 // NewRequestID returns a fresh correlation ID in the cli-<uuid> form the API
 // accepts — 40 characters within the 8–64 charset budget. The time+pid
@@ -713,7 +737,7 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 			apiErr.Code = parsed.Code
 			apiErr.Details = parsed.Details
 		}
-		apiErr.RequestID = resp.Header.Get(requestIDHeader)
+		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
 		if apiErr.TierLimit() {
 			if hint := apiErr.Hint(); hint != "" {
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
@@ -903,7 +927,7 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			apiErr.Code = parsed.Code
 			apiErr.Details = parsed.Details
 		}
-		apiErr.RequestID = resp.Header.Get(requestIDHeader)
+		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
 			return fmt.Errorf("unsupported image type: %w", apiErr)
 		}
