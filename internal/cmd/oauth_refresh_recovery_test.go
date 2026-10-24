@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,11 +67,19 @@ func listRecoveryFiles(t *testing.T, cfgPath string) []string {
 // recovery left behind by a previous invocation.
 func writeRecoveryFile(t *testing.T, cfgPath string, authState *config.Auth) string {
 	t.Helper()
+	return writeRecoveryFileAt(t, cfgPath, 111111111111111111, authState)
+}
+
+// writeRecoveryFileAt seeds a recovery file with an explicit timestamp
+// suffix, for tests that need several candidates with a deterministic
+// newest-first order.
+func writeRecoveryFileAt(t *testing.T, cfgPath string, ts int64, authState *config.Auth) string {
+	t.Helper()
 	data, err := json.Marshal(authState)
 	if err != nil {
 		t.Fatalf("encode recovery fixture: %v", err)
 	}
-	path := filepath.Join(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".recovery-"+strings.Repeat("1", 18))
+	path := fmt.Sprintf("%s.recovery-%d", cfgPath, ts)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write recovery fixture: %v", err)
 	}
@@ -654,5 +663,158 @@ func TestRefreshRecoveryWriteFailureFailsWithoutToken(t *testing.T) {
 	}
 	if strings.Contains(stderr, "recovery copy carrying the rotated pair") {
 		t.Errorf("stderr claims a recovery copy exists:\n%s", stderr)
+	}
+}
+
+// TestRecoveryRecursionNeverRevisitsACandidate pins the attempted-set bound
+// from the #299 review: with two expired recovery candidates that the server
+// rejects with invalid_grant, the recursion must try each candidate exactly
+// once and terminate in the revoked-chain error — never alternate between
+// the two candidates forever while holding the config lock (each rejected
+// candidate is recorded before its retry, so a revisit is impossible).
+func TestRecoveryRecursionNeverRevisitsACandidate(t *testing.T) {
+	var mu sync.Mutex
+	var gotRefreshTokens []string
+	var tokenPosts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			_ = r.ParseForm()
+			mu.Lock()
+			gotRefreshTokens = append(gotRefreshTokens, r.FormValue("refresh_token"))
+			mu.Unlock()
+			tokenPosts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(invalidGrantBd))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withRaceTestEnv(t, server.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	// The disk pair sits a full five minutes behind the recovery candidates
+	// (RFC3339 truncates to seconds, so a one-minute gap could still land
+	// both on the same second and trip the documented same-second
+	// freshness tie-break into adopting the stale disk pair).
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-5*time.Minute))
+	// Two expired same-issuer recovery candidates; the 9-suffixed file is
+	// the newest, so the recursion must try it first and never come back.
+	expired := func(access, refresh string) *config.Auth {
+		return &config.Auth{
+			Method:        "oauth",
+			AccessToken:   access,
+			RefreshToken:  refresh,
+			ExpiresAt:     time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+			ClientID:      auth.FirstPartyClientID,
+			IssuedBaseURL: server.URL,
+		}
+	}
+	writeRecoveryFileAt(t, cfgPath, 111111111111111111, expired(recoveredAccess, recoveredRefresh))
+	writeRecoveryFileAt(t, cfgPath, 999999999999999999, expired(secondAccess, secondRefresh))
+
+	a := raceTestApp(t, cfgPath, server.URL)
+	_, err := a.client.Token(context.Background())
+	if err == nil {
+		t.Fatal("expected the revoked-chain error when every recovery candidate is rejected")
+	}
+	if !strings.Contains(err.Error(), "revoked server-side") {
+		t.Errorf("error = %v, want the revoked-chain diagnosis after the candidates run out", err)
+	}
+	if got := tokenPosts.Load(); got != 3 {
+		t.Errorf("token endpoint POSTs = %d, want 3 (the disk pair, then each candidate once)", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{staleRefresh, secondRefresh, recoveredRefresh}
+	if !reflect.DeepEqual(gotRefreshTokens, want) {
+		t.Errorf("refresh tokens POSTed = %v, want %v (each candidate at most once)", gotRefreshTokens, want)
+	}
+}
+
+// TestRecoveryAdoptionAdoptsLegacyPairWithoutPinnedIssuer pins the issuer
+// fallback (#299 review): recovery records written before issuer pinning
+// existed carry no IssuedBaseURL, and they must resolve against the failed
+// credential's issuer — not against the default server — or a custom
+// base-URL user would be told to log in again over what is only a transient
+// disk error.
+func TestRecoveryAdoptionAdoptsLegacyPairWithoutPinnedIssuer(t *testing.T) {
+	var tokenPosts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			tokenPosts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(invalidGrantBd))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withRaceTestEnv(t, server.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	writeRecoveryFile(t, cfgPath, &config.Auth{
+		Method:       "oauth",
+		AccessToken:  recoveredAccess,
+		RefreshToken: recoveredRefresh,
+		ExpiresAt:    time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		ClientID:     auth.FirstPartyClientID,
+		// No IssuedBaseURL: a legacy record from before pinning existed.
+	})
+
+	a := raceTestApp(t, cfgPath, server.URL)
+	token, err := a.client.Token(context.Background())
+	if err != nil {
+		t.Fatalf("token provider: %v", err)
+	}
+	if token != recoveredAccess {
+		t.Errorf("token = %q, want the recovered %q (the legacy pair must be adopted)", token, recoveredAccess)
+	}
+	if got := tokenPosts.Load(); got != 1 {
+		t.Errorf("token endpoint POSTs = %d, want 1 (adopt the usable pair, no second refresh)", got)
+	}
+	disk := readDiskAuth(t, cfgPath)
+	if disk == nil || disk.RefreshToken != recoveredRefresh || disk.AccessToken != recoveredAccess {
+		t.Errorf("on-disk auth = %+v, want the adopted legacy pair persisted", disk)
+	}
+	if files := listRecoveryFiles(t, cfgPath); len(files) != 0 {
+		t.Errorf("recovery files = %v, want none (the adopted pair is persisted)", files)
+	}
+}
+
+// TestLogoutWarnsWhenRecoveryCleanupFails covers the purge-failure surface
+// (#299 review): a recovery entry that cannot be removed must be reported
+// on stderr — a surviving entry keeps an adoptable bearer-and-refresh pair
+// on disk — while logout itself still succeeds, because the credential
+// de-provisioning it performs is already complete.
+func TestLogoutWarnsWhenRecoveryCleanupFails(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, "https://api.cupthread.com", staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	// A non-empty directory wearing a recovery-file name is the portable
+	// removal-failure injection: os.Remove rejects it on every platform
+	// (ENOTEMPTY / ERROR_DIR_NOT_EMPTY).
+	stuck := filepath.Join(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".recovery-"+strings.Repeat("7", 18))
+	if err := os.Mkdir(stuck, 0o700); err != nil {
+		t.Fatalf("mkdir stuck recovery entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "pair.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("fill stuck recovery entry: %v", err)
+	}
+
+	_, stderr, err := runRootCapture(t, cfgPath, "http://127.0.0.1:1", "auth", "logout", "--json")
+	if err != nil {
+		t.Fatalf("auth logout: %v (a cleanup failure must not fail logout)", err)
+	}
+	if !strings.Contains(stderr, "could not be removed") || !strings.Contains(stderr, stuck) {
+		t.Errorf("stderr does not warn about the surviving recovery entry:\n%s", stderr)
+	}
+	if fi, serr := os.Stat(stuck); serr != nil || !fi.IsDir() {
+		t.Errorf("stuck recovery entry stat = (%v, %v), want it still present (the removal genuinely failed)", fi, serr)
 	}
 }

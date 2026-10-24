@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -338,14 +339,17 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 			fmt.Fprintf(os.Stderr, "warning: this platform has no cross-process config lock; concurrent cupthread invocations could race a token refresh — avoid running them simultaneously\n")
 		}
 	}
-	return a.refreshLocked(ctx, snap)
+	return a.refreshLocked(ctx, snap, map[string]struct{}{})
 }
 
 // refreshLocked is the refresh body proper; the config lock is already held
 // by refreshAcrossProcesses (or the recovery-adoption recursion below, which
 // must not re-lock a lock it holds — flock on a second descriptor of the
-// same file would deadlock against itself).
-func (a *app) refreshLocked(ctx context.Context, snap *config.Auth) (string, error) {
+// same file would deadlock against itself). attempted carries every refresh
+// token this refresh has already tried a recovery adoption of, so the
+// recursion can never revisit a candidate: each level must consume one
+// previously-untried recovery file or terminate.
+func (a *app) refreshLocked(ctx context.Context, snap *config.Auth, attempted map[string]struct{}) (string, error) {
 	// Cross-process double-check: another CLI process may have rotated the
 	// pair between this process's start and now. Adopting the disk pair
 	// skips the token endpoint entirely — the disk-level analogue of the
@@ -406,7 +410,7 @@ func (a *app) refreshLocked(ctx context.Context, snap *config.Auth) (string, err
 		}
 		var apiErr *auth.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == "invalid_grant" {
-			if adopted, recPath := newestAdoptableRecovery(a.cfgPath, refreshToken, snap.IssuerBaseURL(a.cfg.BaseURL)); adopted != nil {
+			if adopted, recPath := newestAdoptableRecovery(a.cfgPath, refreshToken, snap.IssuerBaseURL(a.cfg.BaseURL), attempted); adopted != nil {
 				a.cfg.Auth = adopted
 				// Same baseline acknowledgment as the disk adoptions above
 				// (issue #285): the adopted pair must never be re-applied by
@@ -415,18 +419,22 @@ func (a *app) refreshLocked(ctx context.Context, snap *config.Auth) (string, err
 				// A recovered pair whose access token has already expired
 				// cannot serve this request; rotate it right now under the
 				// still-held lock (issue #299). The recursion is bounded:
-				// each level either succeeds, adopts a strictly newer
-				// recovery pair (the one just tried is excluded), or falls
+				// the adopted token joins attempted before the retry, and
+				// newestAdoptableRecovery excludes the whole set, so every
+				// level consumes one previously-untried recovery file — a
+				// rejected candidate can never come back around (CodeRabbit
+				// review of #299), and when the files run out the flow falls
 				// through to the revoked-chain error.
+				attempted[adopted.RefreshToken] = struct{}{}
 				if !authAccessUsable(adopted, time.Now()) {
-					return a.refreshLocked(ctx, adopted)
+					return a.refreshLocked(ctx, adopted, attempted)
 				}
 				if serr := a.saveAuthWithRetry(); serr != nil {
-					a.removeRecoveryFiles(recPath)
+					a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(recPath))
 					warnStderrLine("warning: recovered the OAuth credential pair from %s, but it could not be saved to %s (%v) — the pair stays in the recovery file until a save succeeds", recPath, a.cfgPath, serr)
 					return adopted.AccessToken, nil
 				}
-				a.removeRecoveryFiles("")
+				a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(""))
 				return adopted.AccessToken, nil
 			}
 			return "", fmt.Errorf("refresh OAuth token: the OAuth credential chain was revoked server-side (likely a concurrent refresh race or replay detection); run 'cupthread auth login' again: %w", err)
@@ -465,7 +473,7 @@ func (a *app) persistRotatedPair() error {
 	if saveErr == nil {
 		// Persisted: every recovery copy predates this rotation and holds a
 		// strictly staler pair of the chain — dead weight to clean up.
-		a.removeRecoveryFiles("")
+		a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(""))
 		return nil
 	}
 	// Acknowledge the rotated pair (issue #285): the baseline must not treat
@@ -476,7 +484,7 @@ func (a *app) persistRotatedPair() error {
 	if rerr != nil {
 		return fmt.Errorf("save refreshed tokens: %w; recovery copy failed too (%v) — the rotated pair is lost and 'cupthread auth login' will be needed", saveErr, rerr)
 	}
-	a.removeRecoveryFiles(recPath)
+	a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(recPath))
 	warnStderrLine("warning: the refreshed OAuth credentials could not be saved to %s (%v); a recovery copy carrying the rotated pair was written to %s — the next command adopts it automatically, and it can be deleted once the config saves cleanly", a.cfgPath, saveErr, recPath)
 	return nil
 }
@@ -576,15 +584,20 @@ func writeRecoveryCredential(cfgPath string, authState *config.Auth) (string, er
 // that holds a plausible pair to adopt: parseable JSON, an OAuth method with
 // both tokens present, a refresh token different from triedRefresh (the
 // token whose refresh just failed with invalid_grant — a recovery file
-// carrying it is the stale record of an older rotation), and an issuer
-// resolving to the same server as issuer (the failed credential's issuer:
-// a recovery file from another server's chain must never be adopted, the
-// same cross-identity hazard the login/logout purges close for accounts).
-// Files with an unparseable timestamp suffix or unreadable/invalid content
-// are skipped; the newest surviving candidate wins, because every older
-// recovery file describes an earlier, already-superseded rotation of the
-// same chain.
-func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string) (*config.Auth, string) {
+// carrying it is the stale record of an older rotation) and not in attempted
+// (every token an earlier level of this same refresh already tried — without
+// the set, two rejected candidates could alternate forever while the config
+// lock is held, CodeRabbit review of #299), and an issuer resolving to the
+// same server as issuer (the failed credential's issuer: a recovery file
+// from another server's chain must never be adopted, the same cross-identity
+// hazard the login/logout purges close for accounts). Candidates written
+// before issuer pinning existed carry no IssuedBaseURL; they resolve against
+// issuer itself, so a legacy record still recovers on the server it was
+// saved for instead of dead-ending on the default base URL. Files with an
+// unparseable timestamp suffix or unreadable/invalid content are skipped;
+// the newest surviving candidate wins, because every older recovery file
+// describes an earlier, already-superseded rotation of the same chain.
+func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string, attempted map[string]struct{}) (*config.Auth, string) {
 	matches, _ := filepath.Glob(cfgPath + ".recovery-*")
 	prefix := filepath.Base(cfgPath) + ".recovery-"
 	type candidate struct {
@@ -613,7 +626,10 @@ func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string) (*config.Auth
 			authState.RefreshToken == "" || authState.RefreshToken == triedRefresh {
 			continue
 		}
-		if authState.IssuerBaseURL("") != issuer {
+		if _, tried := attempted[authState.RefreshToken]; tried {
+			continue
+		}
+		if authState.IssuerBaseURL(issuer) != issuer {
 			continue
 		}
 		return &authState, c.path
@@ -623,16 +639,32 @@ func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string) (*config.Auth
 
 // removeRecoveryFiles deletes the recovery files next to the config, except
 // keep when non-empty (the file whose pair is still the only record of a
-// live rotation). Best-effort: a file that survives is harmless stale
-// hygiene, never a correctness problem, because adoption only ever runs
-// under the config lock and validates the pair's content.
-func (a *app) removeRecoveryFiles(keep string) {
+// live rotation), and reports every removal that failed so callers can
+// surface a surviving credential file instead of reporting success while a
+// bearer-and-refresh pair stays on disk (CodeRabbit review of #299). A file
+// that vanished between the glob and the remove is not a failure — that
+// race is another caller's successful cleanup.
+func (a *app) removeRecoveryFiles(keep string) error {
 	matches, _ := filepath.Glob(a.cfgPath + ".recovery-*")
+	var errs []error
 	for _, m := range matches {
 		if m == keep {
 			continue
 		}
-		_ = os.Remove(m)
+		if err := os.Remove(m); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// warnRecoveryCleanupFailure reports a failed recovery-file cleanup the way
+// every warning of the #299 recovery machinery is reported: one sanitized
+// line on stderr in every output mode, never failing the command — the
+// credential operation itself already succeeded.
+func (a *app) warnRecoveryCleanupFailure(err error) {
+	if err != nil {
+		warnStderrLine("warning: some stale OAuth recovery files next to %s could not be removed (%v) — they stay adoptable until removed manually", a.cfgPath, err)
 	}
 }
 

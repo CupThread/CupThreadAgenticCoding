@@ -195,7 +195,7 @@ func loginWithToken(ctx context.Context, token string) error {
 	// credential, and leaving it behind would let a later invalid_grant
 	// adopt the wrong account's tokens (issue #299 review). Only a
 	// successful save purges — on failure the old state stays authoritative.
-	A.removeRecoveryFiles("")
+	A.warnRecoveryCleanupFailure(A.removeRecoveryFiles(""))
 	res := loginResult{
 		Method:      "token",
 		TokenPrefix: prefix,
@@ -277,7 +277,7 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 	// Same recovery-file purge as loginWithToken: the freshly issued pair
 	// supersedes every recovery file a previous chain left next to the
 	// config (issue #299 review).
-	A.removeRecoveryFiles("")
+	A.warnRecoveryCleanupFailure(A.removeRecoveryFiles(""))
 
 	var me api.MeResponse
 	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
@@ -414,8 +414,10 @@ notices and warnings go to stderr so scripts can parse stdout directly.`,
 			// Logout de-provisions the local credential state: a leftover
 			// recovery file would keep a live, server-side-valid pair of the
 			// logged-out chain on disk and could be adopted by a later
-			// login's invalid_grant handling (issue #299 review).
-			A.removeRecoveryFiles("")
+			// login's invalid_grant handling (issue #299 review). A removal
+			// that fails is warned about, never fatal: the credential state
+			// itself is already de-provisioned (issue #299 review).
+			A.warnRecoveryCleanupFailure(A.removeRecoveryFiles(""))
 			A.warnEnvTokenOverride("unset it to fully de-provision this machine")
 			if A.structured() {
 				return A.out.Structured(logoutResult{
