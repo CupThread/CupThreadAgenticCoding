@@ -471,8 +471,12 @@ func serverErrorText(s string) string {
 }
 
 func (e *APIError) Error() string {
-	if e.Code != "" {
-		return fmt.Sprintf("oauth error %s", serverErrorText(e.Code))
+	// The emptiness check must run on the sanitized code: a Code of only
+	// whitespace or controls (postForm copies parsed.Error verbatim) would
+	// pass the raw check, sanitize to "", and render a bare "oauth error "
+	// with the body never shown (CodeRabbit review of #287).
+	if code := serverErrorText(e.Code); code != "" {
+		return fmt.Sprintf("oauth error %s", code)
 	}
 	return fmt.Sprintf("oauth error: %s", serverErrorText(e.Body))
 }

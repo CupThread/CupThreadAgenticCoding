@@ -684,6 +684,16 @@ func TestAPIErrorSanitizedRendering(t *testing.T) {
 		t.Errorf("clean code rendered as %q, want byte-identical", got)
 	}
 
+	// A code that sanitizes to empty — the "   " body postForm copies out of
+	// a nonconforming {"error":"   "} response — falls back to the body
+	// instead of rendering a bare "oauth error " (CodeRabbit review of
+	// #287).
+	got = (&APIError{Code: "   ", Body: hostile}).Error()
+	want = "oauth error: <html>]8;;http://evil.exampleclick]8;;FAKE-LINE31mC1 SGR0m</html>"
+	if got != want {
+		t.Errorf("empty-after-sanitize code = %q, want the body fallback %q", got, want)
+	}
+
 	// A body beyond the cap truncates instead of flooding the error line.
 	got = (&APIError{Body: strings.Repeat("a", 300)}).Error()
 	if runeCount := len([]rune(got)); runeCount != len("oauth error: ")+200+1 {

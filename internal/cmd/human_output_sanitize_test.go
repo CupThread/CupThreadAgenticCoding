@@ -798,9 +798,12 @@ func scanRawPrintfInterpolations(dir string, banned []string) ([]string, error) 
 // banned server-derived expression through a literal format, or formats a
 // non-literal format string — the pass-through shape of the local raw-warnf
 // closure, which cannot be statically verified and is exactly how the leak
-// escaped. Verified stderr writers go through app.warnf (both branches
-// sanitized) or wrap the argument in output.StripTerminalControls at the
-// call site.
+// escaped. Each argument is inspected separately (CodeRabbit review of
+// #287): an argument is a violation only when it is not itself wrapped in
+// output.StripTerminalControls — the call-site wrap verified stderr writers
+// use instead of app.warnf (whose branches are both sanitized). A whole-call
+// text match would flag those sanitized calls, contradicting the documented
+// safe form.
 func scanRawStderrFprintfInterpolations(dir string, banned []string) ([]string, error) {
 	var violations []string
 	entries, err := os.ReadDir(dir)
@@ -848,18 +851,48 @@ func scanRawStderrFprintfInterpolations(dir string, banned []string) ([]string, 
 					e.Name(), fset.Position(call.Pos()).Line, strings.TrimSpace(callText)))
 				return true
 			}
-			for _, b := range banned {
-				if strings.Contains(callText, b) {
-					violations = append(violations, fmt.Sprintf(
-						"%s:%d interpolates server-derived %s through Fprintf(os.Stderr, …); sanitize it (issues #183/#275/#280/#286):\n%s",
-						e.Name(), fset.Position(call.Pos()).Line, b, strings.TrimSpace(callText)))
-					break
+			for _, arg := range call.Args[1:] {
+				if stderrArgSanitized(arg) {
+					continue
+				}
+				argText := string(src[fset.Position(arg.Pos()).Offset:fset.Position(arg.End()).Offset])
+				for _, b := range banned {
+					if strings.Contains(argText, b) {
+						violations = append(violations, fmt.Sprintf(
+							"%s:%d interpolates server-derived %s through Fprintf(os.Stderr, …); sanitize it (issues #183/#275/#280/#286):\n%s",
+							e.Name(), fset.Position(call.Pos()).Line, b, strings.TrimSpace(callText)))
+						break
+					}
 				}
 			}
 			return true
 		})
 	}
 	return violations, nil
+}
+
+// stderrArgSanitized reports whether expr is an output.StripTerminalControls(…)
+// call, the per-argument call-site wrap the stderr scanner accepts in place of
+// app.warnf (issue #286, CodeRabbit review of #287). Parenthesized wraps are
+// unwrapped so (output.StripTerminalControls(x)) is recognized too.
+func stderrArgSanitized(expr ast.Expr) bool {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = paren.X
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if !ok || len(call.Args) != 1 {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "StripTerminalControls" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "output"
 }
 
 // TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
@@ -893,8 +926,10 @@ func TestNoResidualServerTextThroughPrintf(t *testing.T) {
 // (single- and multi-line) and skip raw calls that carry no banned
 // expression; the stderr scanner (issue #286) must flag a planted
 // fmt.Fprintf(os.Stderr, …) call interpolating a banned expression and the
-// dynamic-format pass-through closure shape, while skipping sanitized and
-// benign literal-format calls.
+// dynamic-format pass-through closure shape, while skipping sanitized calls —
+// including a banned expression wrapped in output.StripTerminalControls at
+// the call site (CodeRabbit review of #287) — and benign literal-format
+// calls.
 func TestPrintfScanHelperCatchesPlantedViolations(t *testing.T) {
 	dir := t.TempDir()
 	src := `package cmd
@@ -955,6 +990,8 @@ func plantedStderr() {
 	}
 	fmt.Fprintf(os.Stderr, "bad default workspace %s\n", A.cfg.DefaultWorkspace)
 	fmt.Fprintf(os.Stderr, "ok %s\n", output.StripTerminalControls(verificationURI))
+	fmt.Fprintf(os.Stderr, "ok sanitized default workspace %s\n",
+		output.StripTerminalControls(A.cfg.DefaultWorkspace))
 	fmt.Fprintf(os.Stderr, "benign %d\n", 3)
 }
 `
@@ -981,6 +1018,13 @@ func plantedStderr() {
 		}
 		if !found {
 			t.Errorf("stderr violations missing %q:\n%v", want, stderrViolations)
+		}
+	}
+	// The sanitized wrap of the same banned expression (CodeRabbit review of
+	// #287) is the documented safe form and must not be reported.
+	for _, v := range stderrViolations {
+		if strings.Contains(v, "planted_stderr.go:15") || strings.Contains(v, "planted_stderr.go:16") {
+			t.Errorf("stderr scanner flagged the sanitized wrap:\n%v", v)
 		}
 	}
 }
