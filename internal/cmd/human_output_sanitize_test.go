@@ -21,10 +21,12 @@ import (
 
 // hostileOSC8URL is the issue #183 attack payload: a protocol-legal JSON
 // string value that decodes into an OSC 8 hyperlink to evil.example labeled
-// "CupThread Security" followed by red SGR text, a forged success line via CR,
-// and the C1 (ESC-free) form of the same sequences.
+// "CupThread Security" followed by red SGR text, a forged success line via
+// CR+LF (the CR rewrites the line, the LF starts a new one — a sanitizer that
+// strips only one of the pair still forges output), and the C1 (ESC-free)
+// form of the same sequences.
 const hostileOSC8URL = "\x1b]8;;https://evil.example/verify\x1b\\CupThread Security\x1b]8;;\x1b\\" +
-	" \x1b[31mACCOUNT COMPROMISED\x1b[0m\r✓ Forged success line\u009b31mC1 SGR\u009b0m"
+	" \x1b[31mACCOUNT COMPROMISED\x1b[0m\r\n✓ Forged success line\u009b31mC1 SGR\u009b0m"
 
 // assertNoControlBytesStrict fails when s contains any C0 control (tab and
 // newline included — the strict human-line contract), DEL, or C1 control
@@ -111,6 +113,103 @@ func TestBillingCheckoutAndPortalURLSanitized(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBillingUnconfiguredMessageSanitizedOnStderr covers the 2xx message
+// field (issue #298): when billing is not configured on the server, checkout
+// and portal return the server's free-form `message` as the command error,
+// so cobra prints it to stderr raw — a hostile message must reach the
+// terminal with zero control bytes, exactly like the APIError decode path.
+// In --json mode the same response is a structured success (the message is a
+// field, not a failure) and the field stays byte-faithful; a clean message
+// renders byte-identical to the pre-fix behavior.
+func TestBillingUnconfiguredMessageSanitizedOnStderr(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	cases := []struct {
+		name      string
+		path      string
+		response  string
+		cmd       []string
+		jsonField string
+	}{
+		{
+			name:      "checkout",
+			path:      "/api/v1/console/workspaces/ws_1/billing/checkout",
+			response:  `{"checkoutUrl":null,"polarConfigured":false,"message":` + mustQuoteJSON(t, hostileOSC8URL) + `}`,
+			cmd:       []string{"billing", "checkout", "--workspace", "ws_1"},
+			jsonField: "message",
+		},
+		{
+			name:      "portal",
+			path:      "/api/v1/console/workspaces/ws_1/billing/portal",
+			response:  `{"portalUrl":null,"polarConfigured":false,"message":` + mustQuoteJSON(t, hostileOSC8URL) + `}`,
+			cmd:       []string{"billing", "portal", "--workspace", "ws_1"},
+			jsonField: "message",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path {
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+
+			_, stderr, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL, tc.cmd...)
+			if err == nil {
+				t.Fatal("billing without a URL in the response should fail")
+			}
+			assertNoControlBytesStrict(t, stderr)
+			// assertNoControlBytesStrict tolerates the LF separators the CLI
+			// itself appends, so it alone cannot catch a forged extra line:
+			// pin the sanitized error to exactly one line plus its newline.
+			if !strings.HasSuffix(stderr, "\n") || strings.Contains(strings.TrimSuffix(stderr, "\n"), "\n") {
+				t.Errorf("stderr must carry exactly one error line and its final newline:\n%q", stderr)
+			}
+			if !strings.Contains(stderr, "Error: ]8;;https://evil.example/verify\\CupThread Security") {
+				t.Errorf("stderr lost the sanitized message text:\n%q", stderr)
+			}
+			if !strings.Contains(stderr, "Forged success line31mC1 SGR") {
+				t.Errorf("stderr lost the visible forged-line text:\n%q", stderr)
+			}
+
+			// Structured mode returns the payload before the URL check, so
+			// the same response is a success and the field stays
+			// byte-faithful (encoding/json escapes the controls).
+			stdout, _, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL, append(tc.cmd, "--json")...)
+			if err != nil {
+				t.Fatalf("%v --json: %v", tc.cmd, err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &payload); err != nil {
+				t.Fatalf("decode --json output %q: %v", stdout, err)
+			}
+			if got, _ := payload[tc.jsonField].(string); got != hostileOSC8URL {
+				t.Errorf("--json %s = %q, want the message byte-faithful", tc.jsonField, got)
+			}
+		})
+	}
+
+	t.Run("clean message unchanged", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"portalUrl":null,"polarConfigured":false,"message":"billing is not configured on this deployment"}`))
+		}))
+		defer server.Close()
+
+		_, stderr, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL, "billing", "portal", "--workspace", "ws_1")
+		if err == nil {
+			t.Fatal("billing without a URL in the response should fail")
+		}
+		assertNoControlBytesStrict(t, stderr)
+		if !strings.Contains(stderr, "Error: billing is not configured on this deployment") {
+			t.Errorf("stderr lost the clean message verbatim:\n%q", stderr)
+		}
+	})
 }
 
 // TestAppsCreateAppKeyAndIconLinesSanitized covers the apps surfaces from
