@@ -154,10 +154,23 @@ func TestBlankArgGuardKeepsNonBlankIDsWorking(t *testing.T) {
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "assign", "sub_1", "user_1"); err != nil {
 		t.Fatalf("inbox assign sub_1 user_1: %v", err)
 	}
+	// The optional assignee staying absent (the unassign form) must keep
+	// passing the second validator — nonBlankArg(1, …) only fires when the
+	// argument is present.
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "assign", "sub_1"); err != nil {
+		t.Fatalf("inbox assign sub_1 (unassign): %v", err)
+	}
+
+	// A blank optional assignee is refused locally too (CodeRabbit review of
+	// #296): RunE would otherwise send assignedTo: "" as a real assignment.
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "assign", "sub_1", "")
+	if err == nil || !strings.Contains(err.Error(), "clerk user id is empty") {
+		t.Errorf("inbox assign sub_1 \"\" error = %v, want the blank-assignee refusal", err)
+	}
 
 	// An unknown non-blank id keeps its server not-found error — the guard
 	// must not swallow resolution failures behind a local message.
-	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "get", "sub_missing")
+	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "get", "sub_missing")
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not found") {
 		t.Errorf("inbox get sub_missing error = %v, want the server not-found error", err)
 	}
@@ -166,8 +179,8 @@ func TestBlankArgGuardKeepsNonBlankIDsWorking(t *testing.T) {
 		t.Errorf("comments moderation hide cmt_missing error = %v, want the not-found error", err)
 	}
 
-	if hits != 5 {
-		t.Errorf("server saw %d request(s), want 5", hits)
+	if hits != 6 {
+		t.Errorf("server saw %d request(s), want 6", hits)
 	}
 }
 

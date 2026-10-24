@@ -305,7 +305,7 @@ func newInboxAssignCmd() *cobra.Command {
 
 The assignee must be a member of the workspace. Assigning an open submission
 also moves it to in_progress. Omitting the user ID unassigns it.`,
-		Args:                  cobra.MatchAll(cobra.RangeArgs(1, 2), nonBlankArg(0, "submission id")),
+		Args:                  cobra.MatchAll(cobra.RangeArgs(1, 2), nonBlankArg(0, "submission id"), nonBlankArg(1, "clerk user id")),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
