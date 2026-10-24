@@ -58,17 +58,37 @@ func TestReadInputFileAttachedFIFOIsRejected(t *testing.T) {
 		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
-	// The writer's open blocks until our read end opens; readInputFile's
-	// O_NONBLOCK open unblocks it immediately. The writer outcome is
-	// irrelevant — the reader must reject the descriptor before any read.
+	// Hold a read end open first — an O_NONBLOCK read open succeeds without a
+	// writer — so the writer's blocking O_WRONLY open attaches immediately
+	// instead of parking on readInputFile to unblock it. readInputFile is
+	// gated on the writer's confirmed attachment so the test exercises the
+	// attached-writer state it is named for, and both ends are closed after
+	// the assertion.
+	r, err := os.OpenFile(fifo, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("open FIFO read end: %v", err)
+	}
+	defer r.Close()
+
+	attached := make(chan *os.File, 1)
 	go func() {
 		w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
 		if err != nil {
+			attached <- nil
 			return
 		}
-		_, _ = w.Write([]byte("hello"))
-		_ = w.Close()
+		attached <- w
 	}()
+	var w *os.File
+	select {
+	case w = <-attached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer never attached to the FIFO — the read end is not open")
+	}
+	if w == nil {
+		t.Fatal("writer failed to open the FIFO write end")
+	}
+	defer w.Close()
 
 	done := make(chan error, 1)
 	go func() {
