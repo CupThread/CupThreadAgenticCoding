@@ -95,7 +95,7 @@ func newColumnsCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Created column %s (%s)", resp.Name, resp.ID)
+			A.out.PrintfSafe("✓ Created column %s (%s)", resp.Name, resp.ID)
 			return nil
 		},
 	}
@@ -257,7 +257,7 @@ func newVersionsCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Created version %s (%s)", resp.Label, resp.ID)
+			A.out.PrintfSafe("✓ Created version %s (%s)", resp.Label, resp.ID)
 			return nil
 		},
 	}

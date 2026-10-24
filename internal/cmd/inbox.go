@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -383,7 +384,14 @@ outside the workspace are skipped; the command reports which IDs were updated.`,
 				return A.out.Structured(resp)
 			}
 			A.out.Printf("✓ Updated %d submission(s)", resp.UpdatedCount)
-			A.out.Printf("  %s", strings.Join(resp.UpdatedIds, "\n  "))
+			// The IDs are server-derived (issue #275): strip each one so no
+			// control bytes ride into the human output, but keep the
+			// deliberate multi-line join — PrintfSafe would eat the layout.
+			stripped := make([]string, 0, len(resp.UpdatedIds))
+			for _, id := range resp.UpdatedIds {
+				stripped = append(stripped, output.StripTerminalControls(id))
+			}
+			A.out.Printf("  %s", strings.Join(stripped, "\n  "))
 			return nil
 		},
 	}
@@ -412,12 +420,14 @@ func newInboxRetryCmd() *cobra.Command {
 				return A.out.Structured(resp)
 			}
 			if resp.Error != nil {
-				return fmt.Errorf("retry failed: %s", *resp.Error)
+				// The error text is free-form server output that cobra prints
+				// to stderr raw (issue #275): strip it at the boundary.
+				return fmt.Errorf("retry failed: %s", output.StripTerminalControls(*resp.Error))
 			}
 			if resp.ForwardedToGithub {
-				A.out.Printf("✓ Forwarded to GitHub: %s", orDash(deref(resp.GithubDiscussionURL)))
+				A.out.PrintfSafe("✓ Forwarded to GitHub: %s", orDash(deref(resp.GithubDiscussionURL)))
 			} else {
-				A.out.Printf("✓ Submission %s processed (no GitHub forwarding)", resp.SubmissionID)
+				A.out.PrintfSafe("✓ Submission %s processed (no GitHub forwarding)", resp.SubmissionID)
 			}
 			return nil
 		},

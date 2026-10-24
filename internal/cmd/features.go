@@ -279,7 +279,7 @@ func newFeaturesCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Created feature request %s", resp.ID)
+			A.out.PrintfSafe("✓ Created feature request %s", resp.ID)
 			return nil
 		},
 	}
@@ -332,7 +332,7 @@ func newFeaturesUpdateCmd() *cobra.Command {
 			if A.structured() {
 				return A.emitMutationResult("updated", r.ID)
 			}
-			A.out.Printf("✓ Updated feature request %s", r.ID)
+			A.out.PrintfSafe("✓ Updated feature request %s", r.ID)
 			return nil
 		},
 	}
@@ -364,7 +364,7 @@ func newFeaturesApproveCmd() *cobra.Command {
 			if A.structured() {
 				return A.emitMutationResult("approved", r.ID)
 			}
-			A.out.Printf("✓ Approved %s", r.ID)
+			A.out.PrintfSafe("✓ Approved %s", r.ID)
 			return nil
 		},
 	}
@@ -399,7 +399,7 @@ non-interactive callers (scripts, agents) must pass --yes.`,
 			if A.structured() {
 				return A.emitMutationResult("deleted", r.ID)
 			}
-			A.out.Printf("✓ Deleted %s", r.ID)
+			A.out.PrintfSafe("✓ Deleted %s", r.ID)
 			return nil
 		},
 	}
@@ -455,7 +455,7 @@ func newFeaturesForwardCmd() *cobra.Command {
 				return A.out.Structured(resp)
 			}
 			if resp.Success {
-				A.out.Printf("✓ Forwarded to GitHub %s: %s", resp.TargetType, resp.URL)
+				A.out.PrintfSafe("✓ Forwarded to GitHub %s: %s", resp.TargetType, resp.URL)
 			} else {
 				return errors.New("forwarding failed (see API response with --json)")
 			}

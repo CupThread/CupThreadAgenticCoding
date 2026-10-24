@@ -273,7 +273,7 @@ URL in a browser and finish the OAuth flow in the Console.`,
 			if A.structured() {
 				return A.out.Structured(resp.Integration)
 			}
-			A.out.Printf("✓ Connected GitHub as %s", orDash(deref(resp.Integration.AccountLogin)))
+			A.out.PrintfSafe("✓ Connected GitHub as %s", orDash(deref(resp.Integration.AccountLogin)))
 			return nil
 		},
 	}
@@ -308,7 +308,7 @@ func newGitHubCategoriesCmd() *cobra.Command {
 				rows = append(rows, []string{c.ID, c.Name, c.Slug})
 			}
 			A.out.Table([]string{"Category ID", "Name", "Slug"}, rows)
-			A.out.Printf("repositoryId: %s", resp.RepositoryID)
+			A.out.PrintfSafe("repositoryId: %s", resp.RepositoryID)
 			return nil
 		},
 	}
@@ -381,7 +381,7 @@ func newGitHubConfigCmd() *cobra.Command {
 			if A.structured() {
 				return A.emitMutationResult("config_updated", appRec.AppID)
 			}
-			A.out.Printf("✓ GitHub config updated for %s", appRec.AppID)
+			A.out.PrintfSafe("✓ GitHub config updated for %s", appRec.AppID)
 			return nil
 		},
 	}
@@ -422,7 +422,7 @@ func newGitHubSyncCmd() *cobra.Command {
 			}
 			A.out.Printf("✓ Synced %d requests", resp.SyncedCount)
 			for _, e := range resp.Errors {
-				A.out.Printf("  error: %s", e)
+				A.out.PrintfSafe("  error: %s", e)
 			}
 			return nil
 		},
@@ -493,7 +493,7 @@ func newIntegrationsProviderCmd(prov string) *cobra.Command {
 				}
 				A.out.Printf("Connected: %s", boolYesNo(resp.Integration != nil))
 				if resp.Integration != nil {
-					A.out.Printf("Account:   %s", orDash(deref(resp.Integration.AccountLogin)))
+					A.out.PrintfSafe("Account:   %s", orDash(deref(resp.Integration.AccountLogin)))
 				}
 				A.out.Printf("OAuth configured: %s", boolYesNo(resp.OAuthConfigured))
 				return nil
@@ -537,7 +537,7 @@ the secret.`, prov, strings.ToUpper(prov), prov, integrationEnvToken(prov)),
 			if A.structured() {
 				return A.out.Structured(resp.Integration)
 			}
-			A.out.Printf("✓ Connected %s as %s", prov, orDash(deref(resp.Integration.AccountLogin)))
+			A.out.PrintfSafe("✓ Connected %s as %s", prov, orDash(deref(resp.Integration.AccountLogin)))
 			return nil
 		},
 	}

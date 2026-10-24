@@ -126,13 +126,13 @@ include that value in bug reports and support requests.`,
 				if A.structured() {
 					return A.out.Structured(json.RawMessage("null"))
 				}
-				A.out.Printf("✓ %s %s succeeded (no response body, request-id %s)", method, path, requestID)
+				A.out.PrintfSafe("✓ %s %s succeeded (no response body, request-id %s)", method, path, requestID)
 				return nil
 			}
 			if A.structured() {
 				return A.out.Structured(raw)
 			}
-			A.out.Printf("✓ %s %s (request-id %s)", method, path, requestID)
+			A.out.PrintfSafe("✓ %s %s (request-id %s)", method, path, requestID)
 			// The body is server-derived: display it through the sanitized
 			// human-line path so raw control bytes cannot reach the terminal
 			// (--json/-o yaml above stay byte-faithful).

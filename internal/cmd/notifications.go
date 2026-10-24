@@ -231,7 +231,7 @@ switch the channel on or off.`,
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ %s notifications: %s", resp.Channel, boolYesNo(resp.Enabled))
+			A.out.PrintfSafe("✓ %s notifications: %s", resp.Channel, boolYesNo(resp.Enabled))
 			return nil
 		},
 	}
