@@ -182,7 +182,7 @@ func resolveBody(bodyText, bodyFile string) (string, error) {
 	if bodyFile != "" {
 		data, err := readInputFile(bodyFile, maxConsoleBodyBytes)
 		if err != nil {
-			return "", err
+			return "", flagInputError("body-file", err)
 		}
 		return string(data), nil
 	}

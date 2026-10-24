@@ -62,7 +62,7 @@ include that value in bug reports and support requests.`,
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
 					}
-					return err
+					return flagInputError("input", err)
 				}
 				body, err = decodeStrictRawJSON(data)
 				if err != nil {
@@ -282,7 +282,7 @@ to the body without changing the signed values.`,
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
 				}
-				return err
+				return flagInputError("input", err)
 			}
 			raw, err := api.DecodeSDKAttributeBody(body)
 			if err != nil {

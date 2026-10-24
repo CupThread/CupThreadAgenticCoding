@@ -57,27 +57,25 @@ func humanBytes(n int64) string {
 // followed by more characters means the file named by the rest (the curl-style
 // @path spelling the help texts, the apps settings set error and SKILL.md
 // already teach — issue #188), and anything else a filesystem path, buffering
-// at most max bytes. It reads exactly one byte past the cap to detect
-// overflow, so an unbounded pipe or sparse file is cut off instead of being
-// read into memory to exhaustion; the error is returned before any request is
-// built or sent. A file whose literal name starts with "@" is referenced via
-// the plain-path branch, e.g. ./@name.
+// at most max bytes. The file forms go through the same regular-file
+// discipline as --icon (issues #192 and #269): the open is O_NONBLOCK so a
+// writer-less FIFO cannot park open(2) past SIGTERM, and the descriptor's own
+// kind is verified before the first read, so a FIFO, character device, or
+// other non-regular source fails fast with NotRegularFileError instead of
+// hanging. Stdin stays a plain bounded read — a blocking stdin read is
+// conventional and signal-interruptible. Every form reads exactly one byte
+// past the cap to detect overflow, so an unbounded source is cut off instead
+// of being read into memory to exhaustion; the error is returned before any
+// request is built or sent. A file whose literal name starts with "@" is
+// referenced via the plain-path branch, e.g. ./@name.
 func readInputFile(path string, max int64) ([]byte, error) {
-	var r io.Reader
 	if path == "@" || path == "-" {
-		r = os.Stdin
-	} else {
-		if strings.HasPrefix(path, "@") {
-			path = path[1:]
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		r = f
+		return readBounded(os.Stdin, max)
 	}
-	return readBounded(r, max)
+	if strings.HasPrefix(path, "@") {
+		path = path[1:]
+	}
+	return readRegularFile(path, max)
 }
 
 // readBounded is readInputFile's core, split out so tests can drive it with
@@ -97,7 +95,8 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 // other than a regular file — a FIFO, character device, socket, or similar.
 // Such a source is unbounded or not yet written, so reading it could hang the
 // command forever (a writer-less FIFO) or buffer until memory is exhausted
-// (/dev/zero); it is rejected before the first read instead (issue #192).
+// (/dev/zero); it is rejected before the first read instead (issues #192 and
+// #269).
 type NotRegularFileError struct {
 	Path string
 	Mode os.FileMode
@@ -128,6 +127,20 @@ func readRegularFile(path string, max int64) ([]byte, error) {
 		return nil, &NotRegularFileError{Path: path, Mode: fi.Mode()}
 	}
 	return readBounded(f, max)
+}
+
+// flagInputError names the flag behind a readInputFile failure the way the
+// --icon reader does: NotRegularFileError alone says which path was rejected,
+// and "invalid --input %q: not a regular file" says which flag to change
+// (issue #269). Every other failure already identifies itself — a missing
+// path names itself and InputTooLargeError renders the structured
+// input_too_large document — so they pass through unchanged.
+func flagInputError(flag string, err error) error {
+	var nrf *NotRegularFileError
+	if errors.As(err, &nrf) {
+		return fmt.Errorf("invalid --%s %w", flag, nrf)
+	}
+	return err
 }
 
 // reportInputTooLarge renders an InputTooLargeError as the command's single

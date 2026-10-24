@@ -18,8 +18,9 @@ import (
 
 // runWithDeadline fails the test if fn does not return within d: a regression
 // here is a command hanging forever on a FIFO, and a hung test is the failure
-// mode this contract forbids.
-func runIconWithDeadline(t *testing.T, d time.Duration, fn func() (string, error)) (string, error) {
+// mode this contract forbids. Shared by the FIFO suites for --icon (issue
+// #192) and the shared flag-input reader (issue #269).
+func runWithDeadline(t *testing.T, d time.Duration, fn func() (string, error)) (string, error) {
 	t.Helper()
 	type result struct {
 		out string
@@ -50,7 +51,7 @@ func TestAppsUpdateIconFIFORejectedBeforeAnyRequest(t *testing.T) {
 		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
-	out, err := runIconWithDeadline(t, 10*time.Second, func() (string, error) {
+	out, err := runWithDeadline(t, 10*time.Second, func() (string, error) {
 		return runRoot(t, server.URL, "apps", "update", "app_1", "--icon", fifo, "--workspace", "ws_1", "--json")
 	})
 	if err == nil {

@@ -135,7 +135,7 @@ raw ImportOptions JSON instead of the per-source flags.`,
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
 					}
-					return err
+					return flagInputError("options", err)
 				}
 				if err := json.Unmarshal(data, &options); err != nil {
 					return fmt.Errorf("parse options JSON: %w", err)
