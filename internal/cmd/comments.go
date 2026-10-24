@@ -114,7 +114,7 @@ func newCommentsModerationListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := wsPath(ws, "/feature-requests/"+args[0]+"/comments")
+			path := wsPath(ws, "/feature-requests/"+pathID(args[0])+"/comments")
 			resp, err := fetchCommentThread(func(cursor string) (*api.ListCommentsResponse, error) {
 				// Page 1 keeps the historic nil query; later pages echo
 				// the server's nextCursor back as the cursor parameter.
@@ -163,7 +163,7 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 			}
 			var resp api.SuccessResponse
 			body := api.HideCommentInput{IsHidden: hidden}
-			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+args[0]+"/hide"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+pathID(args[0])+"/hide"), nil, body, &resp); err != nil {
 				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
 					return notFoundErr("comment", args[0], ws)
 				}
@@ -201,7 +201,7 @@ before anything is sent; non-interactive callers must pass --yes.`,
 				return err
 			}
 			var resp api.SuccessResponse
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+args[0]), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+pathID(args[0])), nil, nil, &resp); err != nil {
 				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
 					return notFoundErr("comment", args[0], ws)
 				}
@@ -233,7 +233,7 @@ bearer here, since it cannot satisfy a sign-in-only board either. Pass
 disabled answer 401.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path := "/api/v1/feature-requests/" + args[0] + "/comments"
+			path := "/api/v1/feature-requests/" + pathID(args[0]) + "/comments"
 			headers := map[string]string{}
 			if appKey != "" {
 				headers["X-App-Key"] = appKey

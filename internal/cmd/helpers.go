@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 
@@ -37,6 +38,20 @@ func nonBlankArg(index int, what string) cobra.PositionalArgs {
 // positional argument, which must not be blank.
 func exactNonBlankArg(what string) cobra.PositionalArgs {
 	return cobra.MatchAll(cobra.ExactArgs(1), nonBlankArg(0, what))
+}
+
+// pathID percent-encodes a user-supplied resource reference for interpolation
+// as a single request-path segment. The API client hands the concatenated
+// path to http.NewRequest, which parses it as a full URL, so a raw id pasted
+// from untrusted content silently reshaped the request: '#' dropped the
+// whole /suffix route (an authenticated mutation fired against the truncated
+// prefix), '?' became a query string, and '/'/'../' added or traversed path
+// segments — all with the bearer token attached and no local error (issue
+// #175). Escaped, the route simply fails to match and the server's 404 is
+// the command's error — the honest outcome. The same encoding the app-key
+// sites already use (apps.go url.PathEscape).
+func pathID(ref string) string {
+	return url.PathEscape(ref)
 }
 
 // Client-side request-body caps, mirroring the server's SEC-36 intake limits

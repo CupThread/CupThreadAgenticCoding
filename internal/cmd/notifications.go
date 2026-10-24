@@ -108,7 +108,7 @@ func newNotificationsReadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/"+args[0]+"/read"), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/"+pathID(args[0])+"/read"), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {

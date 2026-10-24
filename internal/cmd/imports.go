@@ -245,7 +245,7 @@ func newImportsGetCmd() *cobra.Command {
 				return err
 			}
 			var resp api.GetImportJobResponse
-			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/imports/"+args[0]), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/imports/"+pathID(args[0])), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -289,7 +289,7 @@ sent; non-interactive callers must pass --yes.`,
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+args[0]+"/cancel"), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(args[0])+"/cancel"), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -323,7 +323,7 @@ func newImportsRerunCmd() *cobra.Command {
 				body["includeDuplicates"] = includeDuplicates
 			}
 			var resp api.GetImportJobResponse
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+args[0]+"/rerun"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(args[0])+"/rerun"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
