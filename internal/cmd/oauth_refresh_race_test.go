@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -369,5 +370,121 @@ func TestTokenProviderNoRefreshWhenTokenValid(t *testing.T) {
 	}
 	if got := tokenPosts.Load(); got != 0 {
 		t.Errorf("token endpoint POSTs = %d, want 0", got)
+	}
+}
+
+// TestAdoptedDiskPairAcknowledgeSurvivesSave is the issue #285 regression:
+// the disk-pair adoption must acknowledge the adopted pair in the baseline,
+// so a later saveConfig in the same process does not diff adopted-vs-load-
+// time as a pending change and re-apply the stale pair over a newer
+// credential another process persisted in between — replaying an
+// already-consumed single-use refresh token (revoked chain) or clobbering a
+// concurrent credential.
+func TestAdoptedDiskPairAcknowledgeSurvivesSave(t *testing.T) {
+	var tokenPosts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			tokenPosts.Add(1)
+			_, _ = w.Write([]byte(tokenSetBody))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withRaceTestEnv(t, server.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	a := raceTestApp(t, cfgPath, server.URL)
+	// Another process rotated and persisted P2 after our process started.
+	seedOAuthConfig(t, cfgPath, server.URL, "cpt_adopted_access", "cpt_adopted_refresh", time.Now().Add(time.Hour))
+
+	if _, err := a.client.Token(context.Background()); err != nil {
+		t.Fatalf("token provider: %v", err)
+	}
+	if got := tokenPosts.Load(); got != 0 {
+		t.Errorf("token endpoint POSTs = %d, want 0 (disk pair must be adopted)", got)
+	}
+	if a.cfg.Auth == nil || a.cfg.Auth.RefreshToken != "cpt_adopted_refresh" {
+		t.Fatalf("in-memory auth = %+v, want the adopted disk pair", a.cfg.Auth)
+	}
+	// In-process invariant pin (issue #285): the adopted pair must be
+	// acknowledged — baseline equals in-memory by content — or any later
+	// saveConfig re-applies it.
+	if !reflect.DeepEqual(a.cfgBaseline.Auth, a.cfg.Auth) {
+		t.Errorf("baseline auth = %+v, want it acknowledged to the adopted pair %+v", a.cfgBaseline.Auth, a.cfg.Auth)
+	}
+
+	// Between the adoption and the save, a third process rotates P2→P3.
+	seedOAuthConfig(t, cfgPath, server.URL, "cpt_newer_access", "cpt_newer_refresh", time.Now().Add(2*time.Hour))
+	if err := a.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	disk := readDiskAuth(t, cfgPath)
+	if disk == nil || disk.RefreshToken != "cpt_newer_refresh" || disk.AccessToken != "cpt_newer_access" {
+		t.Errorf("on-disk auth = %+v, want the newer P3 pair untouched (saveConfig must not re-apply the adopted pair)", disk)
+	}
+}
+
+// TestAdoptedInvalidGrantRecoveryAcknowledgeSurvivesSave pins the same
+// baseline acknowledgment on the invalid_grant recovery adoption path
+// (issue #285): the recovered winner pair must not be re-applied by a later
+// saveConfig over a PAT a concurrent `auth login --token` stored in between
+// — the exact clobber saveAuthUnderLock skips saves to prevent.
+func TestAdoptedInvalidGrantRecoveryAcknowledgeSurvivesSave(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	var tokenPosts atomic.Int32
+	var issuerURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			tokenPosts.Add(1)
+			// The winning process persisted its fresh pair while our
+			// refresh was in flight, then the server rejected our replay.
+			seedOAuthConfig(t, cfgPath, issuerURL, "cpt_winner_access", "cpt_winner_refresh", time.Now().Add(time.Hour))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(invalidGrantBd))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	issuerURL = server.URL
+	withRaceTestEnv(t, server.URL)
+
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	a := raceTestApp(t, cfgPath, server.URL)
+
+	if _, err := a.client.Token(context.Background()); err != nil {
+		t.Fatalf("token provider: %v", err)
+	}
+	if got := tokenPosts.Load(); got != 1 {
+		t.Errorf("token endpoint POSTs = %d, want 1", got)
+	}
+	if a.cfg.Auth == nil || a.cfg.Auth.RefreshToken != "cpt_winner_refresh" {
+		t.Fatalf("in-memory auth = %+v, want the adopted winner pair", a.cfg.Auth)
+	}
+	// In-process invariant pin (issue #285): the recovered pair must be
+	// acknowledged in the baseline.
+	if !reflect.DeepEqual(a.cfgBaseline.Auth, a.cfg.Auth) {
+		t.Errorf("baseline auth = %+v, want it acknowledged to the recovered pair %+v", a.cfgBaseline.Auth, a.cfg.Auth)
+	}
+
+	// A concurrent `auth login --token` stores a PAT after the adoption:
+	// the PAT wins, and this process's saveConfig must leave it on disk.
+	pat, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	pat.Auth = &config.Auth{Method: "token", AccessToken: "cpt_concurrent_pat"}
+	if err := pat.Save(cfgPath); err != nil {
+		t.Fatalf("store concurrent PAT: %v", err)
+	}
+	if err := a.saveConfig(); err != nil {
+		t.Fatalf("saveConfig: %v", err)
+	}
+	disk := readDiskAuth(t, cfgPath)
+	if disk == nil || disk.Method != "token" || disk.AccessToken != "cpt_concurrent_pat" {
+		t.Errorf("on-disk auth = %+v, want the concurrent PAT untouched (saveConfig must not re-apply the recovered pair)", disk)
 	}
 }

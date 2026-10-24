@@ -350,6 +350,14 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 			return "", errors.New("stored OAuth credential has a refresh token but no access token; run 'cupthread auth login' again")
 		}
 		a.cfg.Auth = d
+		// Acknowledge the adopted pair (issue #285): with the baseline left
+		// at the load-time pair, the next saveConfig in this process would
+		// diff adopted-vs-baseline as a pending change and re-apply the
+		// possibly-stale pair over whatever newer credential another process
+		// persisted in between — replaying a consumed single-use refresh
+		// token (revoked chain) or clobbering a concurrent PAT, exactly what
+		// acknowledgeAuth exists to prevent.
+		a.acknowledgeAuth()
 		return d.AccessToken, nil
 	}
 	if d := disk.Auth; d != nil && d.RefreshToken != "" {
@@ -370,6 +378,10 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 			if d := disk2.Auth; d != nil && d.AccessToken != "" && d.RefreshToken != "" &&
 				d.RefreshToken != refreshToken {
 				a.cfg.Auth = d
+				// Same baseline acknowledgment as the disk-pair adoption
+				// above (issue #285): the recovered pair must not be
+				// re-applied by a later saveConfig over a newer credential.
+				a.acknowledgeAuth()
 				return d.AccessToken, nil
 			}
 		}
