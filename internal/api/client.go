@@ -244,13 +244,20 @@ func truncateRunes(s string, max int) string {
 
 func (e *APIError) Error() string {
 	suffix := e.detailsSuffix()
+	// Display copies only: Code drives control-flow comparisons and the
+	// structured payload stays byte-faithful, so the stored fields stay raw
+	// and the terminal-facing interpolation is sanitized (CodeRabbit review
+	// of #287). A Code/RequestID of only controls renders as absent instead
+	// of an empty code=/request-id= slot.
+	code := sanitizeErrorText(e.Code)
+	requestID := sanitizeErrorText(e.RequestID)
 	switch {
-	case e.Code != "" && e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)%s", e.Message, e.Status, e.Code, e.RequestID, suffix)
-	case e.Code != "":
-		return fmt.Sprintf("%s (HTTP %d, code=%s)%s", e.Message, e.Status, e.Code, suffix)
-	case e.RequestID != "":
-		return fmt.Sprintf("%s (HTTP %d, request-id=%s)%s", e.Message, e.Status, e.RequestID, suffix)
+	case code != "" && requestID != "":
+		return fmt.Sprintf("%s (HTTP %d, code=%s, request-id=%s)%s", e.Message, e.Status, code, requestID, suffix)
+	case code != "":
+		return fmt.Sprintf("%s (HTTP %d, code=%s)%s", e.Message, e.Status, code, suffix)
+	case requestID != "":
+		return fmt.Sprintf("%s (HTTP %d, request-id=%s)%s", e.Message, e.Status, requestID, suffix)
 	default:
 		return fmt.Sprintf("%s (HTTP %d)%s", e.Message, e.Status, suffix)
 	}

@@ -1085,6 +1085,35 @@ func TestServerErrorTextStripsBeforeTrim(t *testing.T) {
 	}
 }
 
+// TestAPIErrorSanitizesCodeAndRequestIDRendering pins the display-copy
+// sanitization (CodeRabbit review of #287): the decoders store server-derived
+// Code and RequestID raw, so Error() must render sanitized copies — while the
+// stored fields stay byte-faithful for control-flow comparisons and the
+// structured payload.
+func TestAPIErrorSanitizesCodeAndRequestIDRendering(t *testing.T) {
+	hostileCode := "invalid_grant\x1b]8;;http://evil.example\x07click"
+	hostileReqID := "cli-1\rFAKE-LINE\u009b31m"
+	e := &APIError{Status: 401, Message: "Unauthorized", Code: hostileCode, RequestID: hostileReqID}
+	want := "Unauthorized (HTTP 401, code=invalid_grant]8;;http://evil.exampleclick, request-id=cli-1FAKE-LINE31m)"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	for _, r := range e.Error() {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("Error() contains control rune %U: %q", r, e.Error())
+			break
+		}
+	}
+	if e.Code != hostileCode || e.RequestID != hostileReqID {
+		t.Errorf("stored fields mutated: Code=%q RequestID=%q, want byte-faithful", e.Code, e.RequestID)
+	}
+
+	// A code of only controls renders as absent, not as an empty code= slot.
+	if got := (&APIError{Status: 402, Message: "Payment required", Code: "\x07\x1b"}).Error(); got != "Payment required (HTTP 402)" {
+		t.Errorf("controls-only code rendered as %q, want the bare status line", got)
+	}
+}
+
 // TestUploadAppIconCapturesValidationDetails covers the multipart error path
 // (postMultipartFile): it must decode `details` the same as DoWithHeaders so
 // icon-upload 400s name the offending metadata.
