@@ -416,11 +416,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 			}
 			return nil, err
 		}
-		var set TokenSet
-		if err := json.Unmarshal(body, &set); err != nil {
-			return nil, fmt.Errorf("decode token response: %w", err)
-		}
-		return &set, nil
+		return decodeTokenResponse(body)
 	}
 }
 
@@ -463,6 +459,17 @@ func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet
 	if err != nil {
 		return nil, err
 	}
+	return decodeTokenResponse(body)
+}
+
+// decodeTokenResponse parses a 2xx token-endpoint body and demands an
+// access_token: a 200 without one (a nonconforming server behind --base-url,
+// a proxy, any dev/staging target) must fail the flow instead of yielding an
+// empty TokenSet that the caller would store over a working credential and
+// celebrate as a successful login (issue #266). Every token grant — PKCE
+// exchange, refresh, device-flow poll — decodes through this one helper so
+// the success contract cannot drift between them.
+func decodeTokenResponse(body []byte) (*TokenSet, error) {
 	var set TokenSet
 	if err := json.Unmarshal(body, &set); err != nil {
 		return nil, fmt.Errorf("decode token response: %w", err)

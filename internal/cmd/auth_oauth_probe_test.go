@@ -52,7 +52,7 @@ func deviceFlowServer(t *testing.T, probeStatus int) *httptest.Server {
 		switch r.URL.Path {
 		case auth.DeviceAuthorizePath:
 			_, _ = w.Write([]byte(`{"device_code":"dev_code_1","user_code":"ABCD-EFGH","verification_uri":"` + r.Host + `/verify","expires_in":600,"interval":1}`))
-		case auth.TokenPath:
+		case auth.DeviceTokenPath:
 			_, _ = w.Write([]byte(`{"access_token":"cpt_dev_access_tok","refresh_token":"cpr_dev_refresh_tok","token_type":"bearer","expires_in":3600}`))
 		case "/api/v1/console/me":
 			w.WriteHeader(probeStatus)

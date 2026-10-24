@@ -188,7 +188,7 @@ func TestAuthLoginDeviceJSON(t *testing.T) {
 		switch {
 		case r.URL.Path == "/api/v1/oauth/device/authorize":
 			_, _ = w.Write([]byte(`{"device_code":"dev_code_1","user_code":"ABCD-EFGH","verification_uri":"` + verifyURI + `","interval":1,"expires_in":120}`))
-		case r.URL.Path == "/api/v1/oauth/token":
+		case r.URL.Path == "/api/v1/oauth/device/token":
 			_, _ = w.Write([]byte(`{"access_token":"cpt_device_tok_0000","refresh_token":"cpt_device_refresh","token_type":"bearer","expires_in":3600,"scope":"console"}`))
 		default:
 			_, _ = w.Write([]byte(meFixture))
