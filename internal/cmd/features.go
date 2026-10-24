@@ -163,7 +163,16 @@ const maxFeatureRequestPages = 50
 // requests; with no app resolved it stays workspace-wide. The not-found
 // error names the app the scan actually covered and points at --app as the
 // escape hatch, so an ID copied from the wrong scope is diagnosable.
+//
+// An empty (or whitespace-only) reference is rejected before any lookup:
+// strings.HasPrefix(id, "") is true for every id, so with a single request
+// in scope an empty ref — the canonical unset-shell-variable accident —
+// would silently resolve to it and the mutation commands would act on a
+// resource the caller never named (issue #289).
 func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureRequest, error) {
+	if strings.TrimSpace(ref) == "" {
+		return nil, errors.New("feature request reference is empty — pass a request id or non-empty id prefix (see 'cupthread features list')")
+	}
 	ws, err := workspaceClient(ctx)
 	if err != nil {
 		return nil, err

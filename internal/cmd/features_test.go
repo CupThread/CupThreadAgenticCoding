@@ -625,6 +625,106 @@ func TestFeaturesListClampsLimitToServerPageCap(t *testing.T) {
 	}
 }
 
+// singleRequestFixture is the dangerous shape of issue #289: a workspace
+// where exactly one request is in scope. An empty reference prefix-matches
+// every id (strings.HasPrefix(id, "") is always true), and with a single
+// match the ambiguity guard does not fire — before the guard, the empty ref
+// silently resolved to this request.
+const singleRequestFixture = `{
+	"requests": [{
+		"id": "fr_solo",
+		"appId": "app_a",
+		"title": "The only request",
+		"description": "single",
+		"status": "open",
+		"voteCount": 0,
+		"createdAt": "2026-09-01T12:00:00.000Z",
+		"updatedAt": "2026-09-01T12:00:00.000Z"
+	}],
+	"total": 1
+}`
+
+// TestFeaturesEmptyReferenceRejectedBeforeAnyRequest pins the issue #289
+// guard: every ID-taking feature command with an empty or whitespace-only
+// reference fails locally with the self-diagnosing error and never contacts
+// the server — no lookup, no mutation, no round trip.
+func TestFeaturesEmptyReferenceRejectedBeforeAnyRequest(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(singleRequestFixture))
+	}))
+	t.Cleanup(server.Close)
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"get empty ref", []string{"features", "get", ""}},
+		{"get whitespace ref", []string{"features", "get", " "}},
+		{"update empty ref", []string{"features", "update", "", "--approved"}},
+		{"update whitespace ref", []string{"features", "update", " \t", "--approved"}},
+		{"approve empty ref", []string{"features", "approve", ""}},
+		{"approve whitespace ref", []string{"features", "approve", "\n"}},
+		{"delete empty ref", []string{"features", "delete", "", "--yes"}},
+		{"delete whitespace ref", []string{"features", "delete", " ", "--yes"}},
+		{"forward empty ref", []string{"features", "forward", ""}},
+		{"forward whitespace ref", []string{"features", "forward", " "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits = 0
+			_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, tc.args...)
+			if err == nil || !strings.Contains(err.Error(), "feature request reference is empty") {
+				t.Fatalf("%v error = %v, want the local empty-reference error", tc.args, err)
+			}
+			if hits != 0 {
+				t.Errorf("%v issued %d HTTP requests, want 0 (rejected before any round trip)", tc.args, hits)
+			}
+		})
+	}
+}
+
+// TestFeaturesEmptyRefGuardKeepsNonEmptyResolution pins that the issue #289
+// guard changes nothing for non-empty references: exact ids and unique
+// prefixes keep resolving (including in a one-request workspace, where the
+// empty ref used to resolve), and an ambiguous prefix still errors.
+func TestFeaturesEmptyRefGuardKeepsNonEmptyResolution(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var mutations int
+	server := httptest.NewServer(requestsHandler(t, &mutations, nil))
+	t.Cleanup(server.Close)
+
+	// One-request workspace under the saved default app: a non-empty unique
+	// prefix must still resolve — prefix matching is untouched.
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_a")
+	if err != nil {
+		t.Fatalf("features get fr_a: %v", err)
+	}
+	if !strings.Contains(out, "App A request") {
+		t.Errorf("unique prefix output missing request title:\n%s", out)
+	}
+
+	// Exact id keeps resolving and the mutation still happens.
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "approve", "fr_a_1"); err != nil {
+		t.Fatalf("features approve fr_a_1: %v", err)
+	}
+	if mutations != 1 {
+		t.Errorf("mutations = %d, want 1 (exact-id approve)", mutations)
+	}
+
+	// Ambiguous prefix across the workspace-wide listing (no default app so
+	// both apps' requests are in scope) still errors as before.
+	_, err = runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "get", "fr_")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous request prefix") {
+		t.Fatalf("features get fr_ error = %v, want ambiguous-prefix error", err)
+	}
+}
+
 // TestFeaturesListClampsOffsetToConsoleCap pins the client-side clamp of
 // 'features list --offset' (issue #178): the console listing's server-side
 // parseListPagination silently degrades an offset above the shared console
