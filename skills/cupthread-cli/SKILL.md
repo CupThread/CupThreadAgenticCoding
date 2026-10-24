@@ -199,14 +199,16 @@ cupthread apps public-config <app-key>     # Show the public portal config (no l
                                            # private apps fail with 404 like unknown keys (fail-closed);
                                            # rate limited per client IP (60/min, 429) before lookup
 cupthread apps public-changelog <app-key>  # Fetch the public changelog feed (no login required);
-                                           # cursor-paginated: follow --cursor <nextCursor> until hasMore=false.
+                                           # cursor-paginated: follow --cursor <nextCursor> until hasMore=false;
+                                           # --limit clamps into 1-100 locally (a ⚠ notice announces a rewrite).
                                            # Anonymous 200s may be up to 30s stale (shared cache); a 429
                                            # is retried with the other body-less GETs.
 cupthread apps public-feature-requests <app-key>  # Fetch the public feature-request feed (no login required);
                                            # keyset-cursor-paginated (DATA-01): follow --cursor <nextCursor> until
                                            # hasMore=false; --offset is ignored when --cursor is set, and an offset
-                                           # above 10000 is clamped to 10000 (still 200, not an error); --q filters.
-                                           # Plain listings are rate limited per client IP (60/min, 429 JSON)
+                                           # above 10000 is clamped to 10000 locally (still 200, not an error);
+                                           # --limit clamps into 1-200 locally; both rewrites carry a ⚠ notice.
+                                           # --q filters. Plain listings are rate limited per client IP (60/min, 429 JSON)
 ```
 The management commands above are `[token-safe]`; `apps create`/`update`
 need the workspace `app.configure` capability (admin/owner).
@@ -325,7 +327,11 @@ up after 50 pages (≈10k requests) with a clear error. To walk the
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back
 until the table reports no more pages. `hasMore`/`nextCursor` are always
 present in the `--json` output (`nextCursor` is `null` on the last page), and
-`--offset` is ignored whenever `--cursor` is set.
+`--offset` is ignored whenever `--cursor` is set. The feed clamps `--limit`
+into 1–200 and `--offset` at the shared 10,000 cap **locally** — an
+out-of-range value is rewritten with a `⚠` notice before the request — so an
+offset walk steps by the served page size (200 rows at most) instead of
+silently skipping every row past it.
 
 ### Imports (GitHub / Linear / Notion / Slack)
 ```sh
@@ -444,7 +450,9 @@ page size. `--offset` itself caps at the server's shared console cap of
 notice — once a page starts at the cap, the printed next offset re-serves
 the same final page, so treat that as the end of the listing rather than
 walking it forever.
-The public feed (`apps public-changelog`) instead uses opaque keyset cursors.
+The public feed (`apps public-changelog`) instead uses opaque keyset cursors,
+and it clamps `--limit` into 1–100 locally with the same `⚠` notice before
+the request (the server would silently degrade 0 to the default 100).
 
 Drafts (create/edit/delete without publishing) work for every workspace role
 and with `cpt_` API tokens. Publishing, `--publish-now`, and setting a

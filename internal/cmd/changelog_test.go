@@ -534,3 +534,55 @@ func TestChangelogListClampsOffset(t *testing.T) {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
 }
+
+// TestAppsPublicChangelogClampsLimit pins the local --limit clamp on the
+// public changelog feed (issue #271, the #201 discipline): the PROD-28 route
+// clamps ?limit= to 1-100 and silently degrades 0 to the default 100, so the
+// CLI clamps first — over-cap to 100, 0/negative to 1 — and announces the
+// rewrite: stdout in table mode, stderr in --json mode, and nothing at all on
+// the verbatim 100 boundary.
+func TestAppsPublicChangelogClampsLimit(t *testing.T) {
+	server, _, gotQuery := changelogServer(t, publicChangelogFixture)
+
+	for _, tc := range []struct{ requested, sent string }{
+		{"500", "100"},
+		{"101", "100"},
+		{"0", "1"},
+		{"-5", "1"},
+	} {
+		out, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1",
+			"--limit", tc.requested)
+		if err != nil {
+			t.Fatalf("public-changelog --limit %s: %v", tc.requested, err)
+		}
+		if got := gotQuery.Get("limit"); got != tc.sent {
+			t.Errorf("--limit %s sent limit = %q, want %q", tc.requested, got, tc.sent)
+		}
+		if !strings.Contains(out, "⚠ --limit "+tc.requested+" is outside the server's 1-100 page range") {
+			t.Errorf("--limit %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1", "--limit", "100")
+	if err != nil {
+		t.Fatalf("public-changelog --limit 100: %v", err)
+	}
+	if got := gotQuery.Get("limit"); got != "100" {
+		t.Errorf("boundary --limit 100 sent limit = %q, want 100", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --limit 100 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"apps", "public-changelog", "key_live_1", "--limit", "500", "--json")
+	if err != nil {
+		t.Fatalf("public-changelog --json --limit 500: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --limit 500 is outside the server's 1-100 page range; requesting 100 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}
