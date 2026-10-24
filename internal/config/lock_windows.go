@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"unsafe"
 )
@@ -40,8 +41,14 @@ const (
 // processes — the Windows counterpart of the unix flock LOCK_EX path in
 // lock_unix.go (issue #193). The lock file is created next to the config if
 // missing and is never removed, so concurrent openers always open the same
-// file.
+// file. The config directory is created if missing (mode 0700, matching
+// Save): the lock file's O_CREATE cannot create parent directories, and
+// every caller locks before the first Save can run, so without this a
+// pristine machine fails every credential write with ENOENT (issue #268).
 func LockConfig(path string) (*FileLock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create config directory: %w", err)
+	}
 	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open config lock %s.lock: %w", path, err)

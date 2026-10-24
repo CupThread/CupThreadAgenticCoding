@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -95,5 +96,31 @@ func TestLockConfigCloseIsIdempotent(t *testing.T) {
 	}
 	if err := reacquired.Close(); err != nil {
 		t.Errorf("close re-acquired lock: %v", err)
+	}
+}
+
+// TestLockConfigCreatesMissingConfigDir pins the issue #268 fix at the lock
+// layer: O_CREATE cannot create parent directories, so LockConfig must
+// create the config directory itself — every caller (config.Update and the
+// refresh path alike) locks before the first Save can run, so without this
+// a pristine machine fails every credential write with ENOENT. The created
+// directory must carry Save's 0700 mode.
+func TestLockConfigCreatesMissingConfigDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "brand", "new", "config.json")
+
+	lock, err := LockConfig(path)
+	if err != nil {
+		t.Fatalf("LockConfig into a missing directory: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Errorf("close lock: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Errorf("lock file not created next to the config: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := mustMode(t, filepath.Dir(path)); perm != 0o700 {
+			t.Errorf("config directory perms = %o, want 700", perm)
+		}
 	}
 }
