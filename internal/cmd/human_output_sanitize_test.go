@@ -3,6 +3,10 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/auth"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
 )
 
 // hostileOSC8URL is the issue #183 attack payload: a protocol-legal JSON
@@ -711,43 +718,311 @@ func TestInboxRetryServerErrorSanitizedOnStderr(t *testing.T) {
 	}
 }
 
-// TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
-// human-output contract keeps every server-derived value out of the raw Printf
-// path. Grep the command sources for Printf call sites interpolating the
-// server-derived expressions this sweep converted; a new call site cannot
-// reintroduce the gap silently. (The substring "A.out.Printf(" does not match
-// PrintfSafe lines, so converted sites are invisible to the guard.)
-func TestNoResidualServerTextThroughPrintf(t *testing.T) {
-	banned := []string{
-		"appRec.Name", "appRec.AppID", "updated.AppID", "entry.Name", "entry.AppID",
-		"resp.Name", "resp.Label", "resp.ID", "resp.Status", "resp.Channel",
-		"resp.RepositoryID", "resp.NextCursor", "resp.Errors", "resp.Error", "resp.URL",
-		"resp.TargetType", "resp.GithubDiscussionURL", "resp.UpdatedIds", "resp.SubmissionID",
-		"resp.Job.", "resp.Member.ID", "resp.Workspace.", "resp.Integration.AccountLogin",
-		"me.Email", "me.ClerkUserID", "ws.Name", "requestID",
-	}
-	entries, err := os.ReadDir(".")
+// bannedPrintfExpressions names the server-derived expressions the
+// #183/#275/#280 sweeps converted off the raw Printf path. The regression
+// guard fails on any raw Printf call site that interpolates one again; new
+// call sites must use PrintfSafe.
+var bannedPrintfExpressions = []string{
+	"appRec.Name", "appRec.AppID", "updated.AppID", "entry.Name", "entry.AppID",
+	"resp.Name", "resp.Label", "resp.ID", "resp.Status", "resp.Channel",
+	"resp.RepositoryID", "resp.NextCursor", "resp.Errors", "resp.Error", "resp.URL",
+	"resp.TargetType", "resp.GithubDiscussionURL", "resp.UpdatedIds", "resp.SubmissionID",
+	"resp.Job.", "resp.Member.ID", "resp.Workspace.", "resp.Integration.AccountLogin",
+	"me.Email", "me.ClerkUserID", "ws.Name", "requestID",
+	// Issue #280 additions: the login/logout success lines interpolate the
+	// echoed account email, the prefix of a server-issued access token and
+	// the persisted workspace context cleared at logout.
+	"res.Email", "res.TokenPrefix", "A.cfg.Auth.TokenPrefix", "A.cfg.DefaultWorkspace",
+}
+
+// scanRawPrintfInterpolations scans dir's non-test Go sources for raw
+// .out.Printf call sites interpolating any banned expression and returns one
+// violation string per hit. It parses each file and inspects complete call
+// expressions rather than individual lines, so a call whose format string and
+// banned argument sit on separate lines is still caught (CodeRabbit review of
+// #283). It matches every receiver casing (both A.out and a.out — the
+// lowercase receiver slipped past the #275 sweep, issue #280) and never
+// matches PrintfSafe: the safe call is a different selector, invisible to the
+// guard by construction, not by luck.
+func scanRawPrintfInterpolations(dir string, banned []string) ([]string, error) {
+	var violations []string
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatalf("read command sources: %v", err)
+		return nil, err
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		lines, err := os.ReadFile(e.Name())
+		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
+			return nil, err
 		}
-		for i, line := range strings.Split(string(lines), "\n") {
-			if !strings.Contains(line, "A.out.Printf(") {
-				continue
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, e.Name(), src, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", e.Name(), err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
 			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Printf" {
+				return true
+			}
+			recv, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || recv.Sel.Name != "out" {
+				return true
+			}
+			callText := string(src[fset.Position(call.Lparen).Offset : fset.Position(call.Rparen).Offset+1])
 			for _, b := range banned {
-				if strings.Contains(line, b) {
-					t.Errorf("%s:%d interpolates server-derived %s through Printf; use A.out.PrintfSafe (issues #183/#275):\n%s",
-						e.Name(), i+1, b, strings.TrimSpace(line))
+				if strings.Contains(callText, b) {
+					violations = append(violations, fmt.Sprintf(
+						"%s:%d interpolates server-derived %s through Printf; use PrintfSafe (issues #183/#275/#280):\n%s",
+						e.Name(), fset.Position(call.Pos()).Line, b, strings.TrimSpace(callText)))
+					break
 				}
 			}
+			return true
+		})
+	}
+	return violations, nil
+}
+
+// TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
+// human-output contract keeps every server-derived value out of the raw Printf
+// path. Scan the command sources for Printf call sites interpolating the
+// server-derived expressions these sweeps converted; a new call site cannot
+// reintroduce the gap silently.
+func TestNoResidualServerTextThroughPrintf(t *testing.T) {
+	violations, err := scanRawPrintfInterpolations(".", bannedPrintfExpressions)
+	if err != nil {
+		t.Fatalf("scan command sources: %v", err)
+	}
+	for _, v := range violations {
+		t.Error(v)
+	}
+}
+
+// TestPrintfScanHelperCatchesPlantedViolations keeps the guard's scanner
+// itself from rotting (issue #280): the scanner must flag raw Printf call
+// sites on both receiver casings — including a call whose banned argument
+// sits on a continuation line — skip PrintfSafe call sites (single- and
+// multi-line) and skip raw calls that carry no banned expression.
+func TestPrintfScanHelperCatchesPlantedViolations(t *testing.T) {
+	dir := t.TempDir()
+	src := `package cmd
+
+import "fmt"
+
+func planted() {
+	fmt.Println("outside the guard")
+	A.out.Printf("ok %s", resp.Name)
+	a.out.Printf("ok %s", res.TokenPrefix)
+	A.out.PrintfSafe("ok %s", resp.Name)
+	A.out.PrintfSafe("ok %s",
+		resp.Name)
+	A.out.Printf("hello %s",
+		me.Email)
+	A.out.Printf("benign %d", 3)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "planted.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write planted source: %v", err)
+	}
+	violations, err := scanRawPrintfInterpolations(dir, bannedPrintfExpressions)
+	if err != nil {
+		t.Fatalf("scan planted dir: %v", err)
+	}
+	if len(violations) != 3 {
+		t.Fatalf("violations = %v, want exactly the three raw banned call sites", violations)
+	}
+	for _, want := range []string{
+		"planted.go:7 interpolates server-derived resp.Name",
+		"planted.go:8 interpolates server-derived res.TokenPrefix",
+		"planted.go:12 interpolates server-derived me.Email",
+	} {
+		found := false
+		for _, v := range violations {
+			if strings.Contains(v, want) {
+				found = true
+				break
+			}
 		}
+		if !found {
+			t.Errorf("violations missing %q:\n%v", want, violations)
+		}
+	}
+}
+
+// hostileLoginEmail is the issue #280 attack payload: a /console/me email that
+// renders an OSC 8 phishing link (BEL-terminated), forges a success line via
+// CR, and repeats the sequence in the C1 (ESC-free) form — everything a
+// hostile API can smuggle through the login confirmation line.
+const hostileLoginEmail = "dev\x1b]8;;http://evil.example\x07click\x1b]8;;\x07@example.com\rFAKE-LINE\u009b31mC1 SGR\u009b0m"
+
+// hostileLoginEmailVisible is the strict-stripped remnant: the visible payload
+// text survives (so the human still sees what the server sent), every control
+// byte is gone.
+const hostileLoginEmailVisible = "dev]8;;http://evil.exampleclick]8;;@example.comFAKE-LINE31mC1 SGR0m"
+
+// hostileWorkspaceID is the logout counterpart: a persisted defaultWorkspace
+// id carrying the same OSC 8 + CR payload, echoed by the "Cleared saved
+// context" logout line (issue #280).
+const hostileWorkspaceID = "ws_\x1b]8;;http://evil.example\x07click\x1b]8;;\x07ws\rFAKE-LINE"
+
+// hostileWorkspaceIDVisible is the strict-stripped remnant of the hostile
+// workspace id.
+const hostileWorkspaceIDVisible = "ws_]8;;http://evil.exampleclick]8;;wsFAKE-LINE"
+
+// hostileMEServer serves the issue #280 hostile /console/me payload: the
+// account email decodes into the OSC 8 + CR attack string.
+func hostileMEServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/console/me" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"email":` + mustQuoteJSON(t, hostileLoginEmail) + `,"emailVerified":true,"workspaces":[]}`))
+	}))
+}
+
+// TestAuthLoginTokenSuccessLineSanitized pins the issue #280 contract for the
+// most security-sensitive line the CLI renders: `auth login --token` echoes
+// the server-provided account email through PrintfSafe, so the hostile email
+// reaches the terminal with zero control bytes instead of an OSC 8 link and a
+// CR-forged success line. The same value printed by `me` was stripped in
+// #275; the two commands must agree on identical server data. --json output
+// stays byte-faithful for programmatic consumers.
+func TestAuthLoginTokenSuccessLineSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	server := hostileMEServer(t)
+	defer server.Close()
+
+	stdout, _, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"auth", "login", "--token", "cpt_issue280token0")
+	if err != nil {
+		t.Fatalf("auth login --token: %v\nstdout:\n%s", err, stdout)
+	}
+	assertNoControlBytesStrict(t, stdout)
+	if !strings.Contains(stdout, "Logged in as "+hostileLoginEmailVisible) {
+		t.Errorf("human line lost the visible email remnant:\n%q", stdout)
+	}
+	if !strings.Contains(stdout, "cpt_issue280") {
+		t.Errorf("human line lost the token prefix:\n%q", stdout)
+	}
+
+	stdout, _, err = runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"auth", "login", "--token", "cpt_issue280token0", "--json")
+	if err != nil {
+		t.Fatalf("auth login --token --json: %v\nstdout:\n%s", err, stdout)
+	}
+	doc := unmarshalOneJSON(t, stdout)
+	if doc["email"] != hostileLoginEmail {
+		t.Errorf("--json email = %q, want the payload byte-faithful", doc["email"])
+	}
+}
+
+// TestAuthLoginDeviceSuccessLineSanitized pins the same contract for the
+// device flow: both the device-authorization response (verification URI,
+// user code — progress on stderr) and the /console/me probe (email — the
+// final confirmation line on stdout) come from the API, so every human-mode
+// rendering of them must carry zero control bytes, while --json echoes the
+// verification URI byte-faithfully.
+func TestAuthLoginDeviceSuccessLineSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case auth.DeviceAuthorizePath:
+			_, _ = w.Write([]byte(`{"device_code":"dev_code_280","user_code":"ISSUE-2800","verification_uri":` + mustQuoteJSON(t, hostileLoginEmail) + `,"interval":1,"expires_in":120}`))
+		case auth.DeviceTokenPath:
+			_, _ = w.Write([]byte(`{"access_token":"cpt_device_280_ok","refresh_token":"cpt_device_280_re","token_type":"bearer","expires_in":3600,"scope":"console"}`))
+		case "/api/v1/console/me":
+			_, _ = w.Write([]byte(`{"email":` + mustQuoteJSON(t, hostileLoginEmail) + `,"emailVerified":true,"workspaces":[]}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	stdout, stderr, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"auth", "login", "--device")
+	if err != nil {
+		t.Fatalf("auth login --device: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	assertNoControlBytesStrict(t, stdout)
+	assertNoControlBytesStrict(t, stderr)
+	if !strings.Contains(stdout, "Logged in as "+hostileLoginEmailVisible) {
+		t.Errorf("device login line lost the visible email remnant:\n%q", stdout)
+	}
+	if !strings.Contains(stderr, "First, open:  "+hostileLoginEmailVisible) {
+		t.Errorf("device progress lost the visible URI remnant:\n%q", stderr)
+	}
+
+	stdout, _, err = runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"auth", "login", "--device", "--json")
+	if err != nil {
+		t.Fatalf("auth login --device --json: %v\nstdout:\n%s", err, stdout)
+	}
+	doc := unmarshalOneJSON(t, stdout)
+	if doc["verificationUri"] != hostileLoginEmail {
+		t.Errorf("--json verificationUri = %q, want the payload byte-faithful", doc["verificationUri"])
+	}
+	if doc["email"] != hostileLoginEmail {
+		t.Errorf("--json email = %q, want the payload byte-faithful", doc["email"])
+	}
+}
+
+// TestAuthLogoutClearedContextLineSanitized pins the logout side of issue
+// #280: the "Cleared saved context" line echoes the persisted
+// defaultWorkspace id, which a hostile API wrote into the config at an
+// earlier login, so the human line must render its stripped remnant only;
+// --json keeps the hostile value byte-faithful in the cleared array. Logout
+// performs no network I/O without --revoke, so the base URL points at an
+// unroutable address to prove the contract is local.
+func TestAuthLogoutClearedContextLineSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+
+	seed := func(t *testing.T) string {
+		t.Helper()
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		pre := &config.Config{
+			DefaultWorkspace: hostileWorkspaceID,
+			Auth:             &config.Auth{Method: "token", AccessToken: "cpt_pat_280", TokenPrefix: "cpt_pat_280"},
+		}
+		if err := pre.Save(cfgPath); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return cfgPath
+	}
+
+	stdout, _, err := runRootCapture(t, seed(t), "http://127.0.0.1:1", "auth", "logout")
+	if err != nil {
+		t.Fatalf("auth logout: %v\nstdout:\n%s", err, stdout)
+	}
+	assertNoControlBytesStrict(t, stdout)
+	if !strings.Contains(stdout, "Cleared saved context from the previous login: default workspace "+hostileWorkspaceIDVisible) {
+		t.Errorf("logout line lost the visible cleared-context remnant:\n%q", stdout)
+	}
+
+	stdout, _, err = runRootCapture(t, seed(t), "http://127.0.0.1:1", "auth", "logout", "--json")
+	if err != nil {
+		t.Fatalf("auth logout --json: %v\nstdout:\n%s", err, stdout)
+	}
+	doc := unmarshalOneJSON(t, stdout)
+	cleared, ok := doc["cleared"].([]any)
+	if !ok || len(cleared) == 0 {
+		t.Fatalf("--json cleared = %v, want one entry naming the hostile workspace", doc["cleared"])
+	}
+	if cleared[0] != "default workspace "+hostileWorkspaceID {
+		t.Errorf("--json cleared[0] = %q, want the payload byte-faithful", cleared[0])
 	}
 }

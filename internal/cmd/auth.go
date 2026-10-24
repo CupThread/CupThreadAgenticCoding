@@ -130,9 +130,9 @@ func (a *app) reportLogin(res loginResult) error {
 		email = "<unknown email>"
 	}
 	if res.Method == "token" {
-		a.out.Printf("✓ Logged in as %s (token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+		a.out.PrintfSafe("✓ Logged in as %s (token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
 	} else {
-		a.out.Printf("✓ Logged in as %s (OAuth, token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
+		a.out.PrintfSafe("✓ Logged in as %s (OAuth, token %s…) at %s", email, res.TokenPrefix, res.BaseURL)
 	}
 	return nil
 }
@@ -279,7 +279,7 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 			A.warnEnvTokenOverride("the freshly saved login stays inactive until it is unset")
 			return A.out.Structured(res)
 		}
-		A.out.Printf("✓ Logged in (OAuth, token %s…) at %s", A.cfg.Auth.TokenPrefix, A.baseURL())
+		A.out.PrintfSafe("✓ Logged in (OAuth, token %s…) at %s", A.cfg.Auth.TokenPrefix, A.baseURL())
 		A.warnEnvTokenOverride("the freshly saved login stays inactive until it is unset")
 		return nil
 	}
@@ -402,7 +402,7 @@ notices and warnings go to stderr so scripts can parse stdout directly.`,
 			}
 			A.out.Printf("✓ Credentials removed from %s", A.cfgPath)
 			if len(cleared) > 0 {
-				A.out.Printf("  Cleared saved context from the previous login: %s", strings.Join(cleared, ", "))
+				A.out.PrintfSafe("  Cleared saved context from the previous login: %s", strings.Join(cleared, ", "))
 			}
 			return nil
 		},
