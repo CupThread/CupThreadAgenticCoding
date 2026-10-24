@@ -344,6 +344,22 @@ notices and warnings go to stderr so scripts can parse stdout directly.`,
 			if revoke {
 				revokeStoredCredential(cmd.Context(), A)
 			}
+			if _, statErr := os.Stat(A.cfgPath); errors.Is(statErr, os.ErrNotExist) {
+				// Pristine machine (issue #268): nothing has ever been
+				// persisted, so there is nothing to clear and nothing to
+				// save — logout succeeds without creating a config file
+				// (or its directory) just to wipe it.
+				A.warnEnvTokenOverride("unset it to fully de-provision this machine")
+				if A.structured() {
+					return A.out.Structured(logoutResult{
+						LoggedOut:   true,
+						ConfigPath:  A.cfgPath,
+						EnvOverride: envTokenOverrideName(),
+					})
+				}
+				A.out.Printf("✓ Already logged out: no stored credentials at %s", A.cfgPath)
+				return nil
+			}
 			var cleared []string
 			if A.cfg.DefaultWorkspace != "" {
 				cleared = append(cleared, "default workspace "+A.cfg.DefaultWorkspace)

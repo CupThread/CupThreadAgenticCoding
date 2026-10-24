@@ -270,9 +270,19 @@ func TestAuthLogoutJSON(t *testing.T) {
 	}
 }
 
-// TestAuthLogoutTableByteIdentical pins criterion 7 for logout.
+// TestAuthLogoutTableByteIdentical pins criterion 7 for logout: table mode
+// keeps the pre-#68 wording when a stored logout actually clears state. A
+// seeded config is required — since issue #268 a logout on a pristine tree
+// (no config file) is a clean no-op with its own no-op line, pinned by
+// TestLogoutOnPristineConfigTreeIsCleanNoOp.
 func TestAuthLogoutTableByteIdentical(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	pre := &config.Config{
+		Auth: &config.Auth{Method: "token", AccessToken: "cpt_tok", TokenPrefix: "cpt_tok"},
+	}
+	if err := pre.Save(cfgPath); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
 
 	out, _, err := runRootCapture(t, cfgPath, "http://127.0.0.1:1", "auth", "logout")
 	if err != nil {

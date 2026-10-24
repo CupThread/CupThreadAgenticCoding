@@ -396,3 +396,44 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 		t.Errorf("original followed the snapshot mutation: %+v", snap2.Workspaces["ws_a"])
 	}
 }
+
+// TestUpdateCreatesMissingConfigDir pins the first-run fix (issue #268):
+// Update takes the cross-process lock before Save's MkdirAll can run, so it
+// must create the config directory itself — on a pristine machine no
+// ~/.config/cupthread exists yet, and the lock file's O_CREATE cannot
+// create parent directories. The nested parent here mirrors that pristine
+// state; before the fix this Update failed with the lock ENOENT.
+func TestUpdateCreatesMissingConfigDir(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "first", "run", "config.json")
+	baseline := &Config{}
+	updated := &Config{
+		DefaultWorkspace: "ws_a",
+		Auth:             &Auth{Method: "token", AccessToken: "cpt_new", TokenPrefix: "cpt_new"},
+	}
+
+	merged, err := Update(path, baseline, updated)
+	if err != nil {
+		t.Fatalf("Update into a missing directory: %v", err)
+	}
+	if merged.DefaultWorkspace != "ws_a" {
+		t.Errorf("merged DefaultWorkspace = %q, want ws_a", merged.DefaultWorkspace)
+	}
+	if merged.Auth == nil || merged.Auth.AccessToken != "cpt_new" {
+		t.Errorf("merged Auth = %+v, want cpt_new", merged.Auth)
+	}
+	if got := readConfig(t, path); got.Auth == nil || got.Auth.AccessToken != "cpt_new" {
+		t.Errorf("on-disk config = %+v, want the persisted credential", got)
+	}
+	if runtime.GOOS != "windows" {
+		// Windows maps the modes to the read-only bit (see
+		// TestSaveLeavesNoTempFilesAndKeepsMode); the restrictive-perms
+		// guarantee is unix-only.
+		if perm := mustMode(t, filepath.Dir(path)); perm != 0o700 {
+			t.Errorf("config directory perms = %o, want 700", perm)
+		}
+		if perm := mustMode(t, path); perm != 0o600 {
+			t.Errorf("config perms = %o, want 600", perm)
+		}
+	}
+	assertNoTempFiles(t, path)
+}
