@@ -183,6 +183,99 @@ func TestProviderConnectEmptyStdin(t *testing.T) {
 	}
 }
 
+// statusMockServer answers the four GET /integrations endpoints that
+// `integrations status` queries with a per-provider envelope: github and
+// notion disconnected ({"integration":null}), linear connected, slack
+// disconnected without OAuth configured.
+func statusMockServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/console/workspaces/ws_1/integrations/github":
+			fmt.Fprintf(w, `{"integration":null}`)
+		case "/api/v1/console/workspaces/ws_1/integrations/linear":
+			fmt.Fprintf(w, `{"integration":{"id":"int_l","provider":"linear","accountLogin":"acme-linear"},"oauthConfigured":true}`)
+		case "/api/v1/console/workspaces/ws_1/integrations/notion":
+			fmt.Fprintf(w, `{"integration":null,"oauthConfigured":true}`)
+		case "/api/v1/console/workspaces/ws_1/integrations/slack":
+			fmt.Fprintf(w, `{"integration":null,"oauthConfigured":false}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			fmt.Fprintf(w, `{}`)
+		}
+	}))
+}
+
+// tableLines returns each non-empty rendered table line with runs of
+// whitespace collapsed to single spaces (tabwriter pads cells with spaces),
+// so row assertions don't depend on column widths.
+func tableLines(t *testing.T, table string) map[string]string {
+	t.Helper()
+	lines := map[string]string{}
+	for _, line := range strings.Split(table, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			lines[fields[0]] = strings.Join(fields, " ")
+		}
+	}
+	return lines
+}
+
+// TestIntegrationsStatusDisconnectedGitHub covers issue #264: a disconnected
+// GitHub integration answers {"integration":null} and the human-mode row used
+// to deref the nil Integration inline (its nil check guarded only one of the
+// eagerly evaluated arguments) and SIGSEGV'd. The table must render the
+// github row as not connected with the dash account, the sibling providers
+// keep their shapes (connected row, OAuth notes included), and --json keeps
+// reporting "github": null.
+func TestIntegrationsStatusDisconnectedGitHub(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	server := statusMockServer(t)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "integrations", "status", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("integrations status against a disconnected github: %v", err)
+	}
+	rows := tableLines(t, out)
+	for provider, want := range map[string]string{
+		"github": "github no —",
+		"linear": "linear yes acme-linear",
+		"notion": "notion no —",
+		"slack":  "slack no — (OAuth not configured: use manual token)",
+	} {
+		if got := rows[provider]; got != want {
+			t.Errorf("%s row = %q, want %q", provider, got, want)
+		}
+	}
+
+	stdout, err := runRoot(t, server.URL, "integrations", "status", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("integrations status --json: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &payload); err != nil {
+		t.Fatalf("decode --json output %q: %v", stdout, err)
+	}
+	// Distinguish "key present with a JSON null" from "key omitted": a plain
+	// payload["github"] != nil check would pass both.
+	github, present := payload["github"]
+	if !present {
+		t.Errorf("--json output omits the github key: %v", payload)
+	}
+	if github != nil {
+		t.Errorf("--json github = %v, want null", github)
+	}
+	linear, _ := payload["linear"].(map[string]any)
+	if linear == nil || linear["accountLogin"] != "acme-linear" {
+		t.Errorf("--json linear = %v, want the connected integration", payload["linear"])
+	}
+	if payload["slack_oauthConfigured"] != false {
+		t.Errorf("--json slack_oauthConfigured = %v, want false", payload["slack_oauthConfigured"])
+	}
+}
+
 // configMockServer serves the app listing lookupApp resolves against and
 // captures the per-app github config PATCH body. requests counts every HTTP
 // request (so tests can assert a failure preceded the app lookup), patches
