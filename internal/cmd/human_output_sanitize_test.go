@@ -21,10 +21,12 @@ import (
 
 // hostileOSC8URL is the issue #183 attack payload: a protocol-legal JSON
 // string value that decodes into an OSC 8 hyperlink to evil.example labeled
-// "CupThread Security" followed by red SGR text, a forged success line via CR,
-// and the C1 (ESC-free) form of the same sequences.
+// "CupThread Security" followed by red SGR text, a forged success line via
+// CR+LF (the CR rewrites the line, the LF starts a new one — a sanitizer that
+// strips only one of the pair still forges output), and the C1 (ESC-free)
+// form of the same sequences.
 const hostileOSC8URL = "\x1b]8;;https://evil.example/verify\x1b\\CupThread Security\x1b]8;;\x1b\\" +
-	" \x1b[31mACCOUNT COMPROMISED\x1b[0m\r✓ Forged success line\u009b31mC1 SGR\u009b0m"
+	" \x1b[31mACCOUNT COMPROMISED\x1b[0m\r\n✓ Forged success line\u009b31mC1 SGR\u009b0m"
 
 // assertNoControlBytesStrict fails when s contains any C0 control (tab and
 // newline included — the strict human-line contract), DEL, or C1 control
@@ -162,6 +164,12 @@ func TestBillingUnconfiguredMessageSanitizedOnStderr(t *testing.T) {
 				t.Fatal("billing without a URL in the response should fail")
 			}
 			assertNoControlBytesStrict(t, stderr)
+			// assertNoControlBytesStrict tolerates the LF separators the CLI
+			// itself appends, so it alone cannot catch a forged extra line:
+			// pin the sanitized error to exactly one line plus its newline.
+			if !strings.HasSuffix(stderr, "\n") || strings.Contains(strings.TrimSuffix(stderr, "\n"), "\n") {
+				t.Errorf("stderr must carry exactly one error line and its final newline:\n%q", stderr)
+			}
 			if !strings.Contains(stderr, "Error: ]8;;https://evil.example/verify\\CupThread Security") {
 				t.Errorf("stderr lost the sanitized message text:\n%q", stderr)
 			}
