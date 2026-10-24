@@ -26,6 +26,12 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+      # Runners use umask 0022, so a permission fixture that silently depends
+      # on it would only fail on contributor machines (issue #281). Re-run the
+      # config-permission suite with a hostile umask to keep that class gated.
+      - run: |
+          umask 0077
+          go test ./internal/cmd/ -run TestWorldReadable
       # The GOOS-specific source files (lock_windows.go, the !unix && !windows
       # config-lock stub, the confirm_tty variants) are invisible to the
       # linux-only steps above; compile every supported target so a break to
