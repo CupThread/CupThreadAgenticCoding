@@ -102,7 +102,7 @@ func newNotificationsReadCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "read <notification-id>",
 		Short: "Mark one notification as read",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("notification id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {

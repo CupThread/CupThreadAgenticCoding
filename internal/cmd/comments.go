@@ -155,7 +155,7 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 	return &cobra.Command{
 		Use:   use + " <comment-id>",
 		Short: short,
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("comment id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -191,7 +191,7 @@ func newCommentsModerationDeleteCmd() *cobra.Command {
 The server hard-deletes the comment and it cannot be restored (hide is the
 reversible alternative). On an interactive terminal you are asked to confirm
 before anything is sent; non-interactive callers must pass --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("comment id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete comment %q", args[0])); err != nil {
 				return err

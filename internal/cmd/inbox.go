@@ -146,7 +146,7 @@ func newInboxGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <submission-id>",
 		Short: "Show one submission's triage detail and activity log",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("submission id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -232,7 +232,7 @@ func newInboxPriorityCmd() *cobra.Command {
 	priority := &cobra.Command{
 		Use:   "priority <submission-id> <!!!|!!|!>",
 		Short: "Raise or reset a submission's priority",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.MatchAll(cobra.ExactArgs(2), nonBlankArg(0, "submission id")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p := args[1]
 			switch p {
@@ -271,7 +271,7 @@ func newInboxTriageCmd() *cobra.Command {
 Triage status (open, in_progress, resolved, archived) is separate from the
 delivery status (received/forwarded/forward_failed), which is managed by the
 platform and only changeable via 'cupthread inbox retry'.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.MatchAll(cobra.ExactArgs(2), nonBlankArg(0, "submission id")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, status := args[0], args[1]
 			if !isValidTriageStatus(status) {
@@ -305,7 +305,7 @@ func newInboxAssignCmd() *cobra.Command {
 
 The assignee must be a member of the workspace. Assigning an open submission
 also moves it to in_progress. Omitting the user ID unassigns it.`,
-		Args:                  cobra.RangeArgs(1, 2),
+		Args:                  cobra.MatchAll(cobra.RangeArgs(1, 2), nonBlankArg(0, "submission id")),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
@@ -405,7 +405,7 @@ func newInboxRetryCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "retry <submission-id>",
 		Short: "Retry GitHub forwarding for a failed submission",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("submission id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {

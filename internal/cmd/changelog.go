@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -126,7 +127,7 @@ func newChangelogCreateCmd() *cobra.Command {
 			if title == "" {
 				return errors.New("--title is required")
 			}
-			text, err := resolveBody(bodyText, bodyFile)
+			text, err := resolveBody(cmd, bodyText, bodyFile)
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
@@ -177,9 +178,17 @@ func newChangelogCreateCmd() *cobra.Command {
 }
 
 // resolveBody returns the markdown body from --body or --body-file. The file
-// form is capped at the console route's 1 MB request-body limit.
-func resolveBody(bodyText, bodyFile string) (string, error) {
-	if bodyFile != "" {
+// form is capped at the console route's 1 MB request-body limit. An
+// explicitly passed blank --body-file fails locally instead of falling
+// through to --body (issue #293): the fall-through turned `--body-file
+// "$UNSET_VAR"` into body "" — a silent wipe of the entry body on update, an
+// empty-bodied entry on create — while "" is documented as a deliberate clear
+// only for --version-label and --schedule-at, never for the body.
+func resolveBody(cmd *cobra.Command, bodyText, bodyFile string) (string, error) {
+	if cmd.Flags().Changed("body-file") {
+		if strings.TrimSpace(bodyFile) == "" {
+			return "", errors.New(`--body-file is empty — pass a file path, "@path", or "-" for stdin`)
+		}
 		data, err := readInputFile(bodyFile, maxConsoleBodyBytes)
 		if err != nil {
 			return "", flagInputError("body-file", err)
@@ -195,7 +204,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <entry-id>",
 		Short: "Update a changelog entry",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -206,7 +215,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 				body["title"] = title
 			}
 			if cmd.Flags().Changed("body") || cmd.Flags().Changed("body-file") {
-				text, err := resolveBody(bodyText, bodyFile)
+				text, err := resolveBody(cmd, bodyText, bodyFile)
 				if err != nil {
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
@@ -261,7 +270,7 @@ func newChangelogDeleteCmd() *cobra.Command {
 The server hard-deletes the entry and it cannot be restored (unpublish is
 the reversible alternative). On an interactive terminal you are asked to
 confirm before anything is sent; non-interactive callers must pass --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete changelog entry %q", args[0])); err != nil {
 				return err
@@ -288,7 +297,7 @@ func newChangelogPublishCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "publish <entry-id>",
 		Short: "Publish a changelog entry now",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -311,7 +320,7 @@ func newChangelogUnpublishCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "unpublish <entry-id>",
 		Short: "Revert a changelog entry to draft",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {

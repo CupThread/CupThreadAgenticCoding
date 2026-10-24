@@ -238,7 +238,7 @@ func newImportsGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <job-id>",
 		Short: "Show one import job (including preview candidates)",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("import job id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -280,7 +280,7 @@ func newImportsCancelCmd() *cobra.Command {
 A canceled job cannot be resumed; re-run the import from scratch instead.
 On an interactive terminal you are asked to confirm before anything is
 sent; non-interactive callers must pass --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("import job id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("cancel import job %q", args[0])); err != nil {
 				return err
@@ -309,7 +309,7 @@ func newImportsRerunCmd() *cobra.Command {
 	rerun := &cobra.Command{
 		Use:   "rerun <job-id>",
 		Short: "Re-run an import job",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("import job id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {

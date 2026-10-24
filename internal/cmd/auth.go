@@ -78,7 +78,15 @@ effectiveCredential is set to "env ($CUPTHREAD_TOKEN)" when the
 environment token is overriding the saved login.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if token != "" {
+			// Dispatch on the flag being present, not on a non-empty value
+			// (issue #293): `--token ""` — the unset-shell-variable accident —
+			// used to be indistinguishable from "flag not passed" and fell
+			// through to the PKCE browser flow, which binds a callback
+			// listener, opens a browser and blocks for up to 120 s before
+			// failing with a misleading --device hint. With an explicit blank
+			// value loginWithToken's own validation answers "empty token"
+			// immediately.
+			if cmd.Flags().Changed("token") {
 				return loginWithToken(cmd.Context(), token)
 			}
 			if useDevice {
