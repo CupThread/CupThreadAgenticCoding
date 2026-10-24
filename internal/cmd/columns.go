@@ -115,7 +115,7 @@ func newColumnsUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <column-id>",
 		Short: "Update a roadmap column",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("column id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -165,7 +165,7 @@ The server hard-deletes the column (its feature requests move back to the
 review queue) and it cannot be restored. On an interactive terminal you are
 asked to confirm before anything is sent; non-interactive callers must pass
 --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("column id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete roadmap column %q", args[0])); err != nil {
 				return err
@@ -275,7 +275,7 @@ func newVersionsUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <version-id>",
 		Short: "Update a version",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("version id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -337,7 +337,7 @@ current label (cupthread versions list) to delete it and unlink the
 linked requests, or pass --reassign-to <version-id> to move them to a
 sibling version of the same app first (the target must not be the
 version being deleted).`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("version id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete version %q", args[0])); err != nil {
 				return err

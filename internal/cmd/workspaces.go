@@ -297,7 +297,7 @@ func newMembersSetRoleCmd() *cobra.Command {
 	setRole := &cobra.Command{
 		Use:   "set-role <member-id>",
 		Short: "Change a member's role",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("member id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -330,7 +330,7 @@ func newMembersRemoveCmd() *cobra.Command {
 Their access is revoked immediately and must be re-granted by a new
 invitation to regain it. On an interactive terminal you are asked to
 confirm before anything is sent; non-interactive callers must pass --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("member id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently remove member %q from the workspace", args[0])); err != nil {
 				return err
@@ -394,7 +394,7 @@ the Console web UI (Workspace → Members).`,
 			Use:     "revoke <invitation-id>",
 			Aliases: []string{"rm"},
 			Short:   "Revoke a pending invitation",
-			Args:    cobra.ExactArgs(1),
+			Args:    exactNonBlankArg("invitation id"),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ws, err := workspaceClient(cmd.Context())
 				if err != nil {

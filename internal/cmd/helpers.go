@@ -10,7 +10,34 @@ import (
 	"strings"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
+	"github.com/spf13/cobra"
 )
+
+// nonBlankArg rejects a blank positional argument (empty or whitespace-only,
+// per strings.TrimSpace). cobra.ExactArgs alone passes the empty string
+// through, and every single-ID command interpolates the value straight into
+// the request path, so the canonical unset-shell-variable accident used to
+// reach the wire as a collection-route DELETE (or a // path) — aimed even by
+// confirm-guarded commands after --yes — and the ✓ success lines embedded the
+// blank id (issue #293, the workspace-wide extension of the #289 features
+// guard). Arity stays the command's own validator; compose with
+// cobra.MatchAll, e.g. cobra.MatchAll(cobra.ExactArgs(2), nonBlankArg(0, …)).
+// The error fires before RunE, so a destructive command refuses before its
+// confirmDestructive prompt and no HTTP request is built at all.
+func nonBlankArg(index int, what string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if index >= len(args) || strings.TrimSpace(args[index]) != "" {
+			return nil
+		}
+		return fmt.Errorf("%s is empty — pass a non-blank %s (see '%s --help')", what, what, cmd.CommandPath())
+	}
+}
+
+// exactNonBlankArg is the Args: drop-in for single-ID commands: exactly one
+// positional argument, which must not be blank.
+func exactNonBlankArg(what string) cobra.PositionalArgs {
+	return cobra.MatchAll(cobra.ExactArgs(1), nonBlankArg(0, what))
+}
 
 // Client-side request-body caps, mirroring the server's SEC-36 intake limits
 // (see skills/cupthread-api/SKILL.md). Oversized local input must fail here —
