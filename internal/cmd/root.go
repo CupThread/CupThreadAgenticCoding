@@ -3,10 +3,15 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -314,12 +319,11 @@ func (a *app) unauthenticatedClient() *api.Client {
 // already-rotated refresh token; the server treats the replay as theft and
 // revokes the entire descendant rotation chain, permanently bricking every
 // future invocation (issue #62). It holds an exclusive lock on
-// <config>.lock, re-reads the on-disk pair under the lock so a rotation
-// another process already committed is adopted instead of replayed, and
-// persists the rotated pair merged onto the latest on-disk config. The token
-// endpoint is resolved from the credential's issuing server, never from the
-// effective --base-url override: the refresh token must only ever travel to
-// the server that minted it (issue #191).
+// <config>.lock for the whole rotation — including the persistence of the
+// rotated pair and the recovery paths below — and resolves the token
+// endpoint from the credential's issuing server, never from the effective
+// --base-url override: the refresh token must only ever travel to the
+// server that minted it (issue #191).
 func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (string, error) {
 	lock, err := config.LockConfig(a.cfgPath)
 	if err != nil {
@@ -335,7 +339,17 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 			fmt.Fprintf(os.Stderr, "warning: this platform has no cross-process config lock; concurrent cupthread invocations could race a token refresh — avoid running them simultaneously\n")
 		}
 	}
+	return a.refreshLocked(ctx, snap, map[string]struct{}{})
+}
 
+// refreshLocked is the refresh body proper; the config lock is already held
+// by refreshAcrossProcesses (or the recovery-adoption recursion below, which
+// must not re-lock a lock it holds — flock on a second descriptor of the
+// same file would deadlock against itself). attempted carries every refresh
+// token this refresh has already tried a recovery adoption of, so the
+// recursion can never revisit a candidate: each level must consume one
+// previously-untried recovery file or terminate.
+func (a *app) refreshLocked(ctx context.Context, snap *config.Auth, attempted map[string]struct{}) (string, error) {
 	// Cross-process double-check: another CLI process may have rotated the
 	// pair between this process's start and now. Adopting the disk pair
 	// skips the token endpoint entirely — the disk-level analogue of the
@@ -345,23 +359,32 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 		return "", fmt.Errorf("re-read config before token refresh: %w", err)
 	}
 	refreshToken := snap.RefreshToken
-	if d := disk.Auth; d != nil && d.RefreshToken != "" && d.RefreshToken != snap.RefreshToken {
-		if d.AccessToken == "" {
-			return "", errors.New("stored OAuth credential has a refresh token but no access token; run 'cupthread auth login' again")
-		}
-		a.cfg.Auth = d
-		// Acknowledge the adopted pair (issue #285): with the baseline left
-		// at the load-time pair, the next saveConfig in this process would
-		// diff adopted-vs-baseline as a pending change and re-apply the
-		// possibly-stale pair over whatever newer credential another process
-		// persisted in between — replaying a consumed single-use refresh
-		// token (revoked chain) or clobbering a concurrent PAT, exactly what
-		// acknowledgeAuth exists to prevent.
-		a.acknowledgeAuth()
-		return d.AccessToken, nil
-	}
 	if d := disk.Auth; d != nil && d.RefreshToken != "" {
-		refreshToken = d.RefreshToken
+		switch {
+		case d.RefreshToken == snap.RefreshToken:
+			refreshToken = d.RefreshToken
+		case diskAuthAtLeastAsFresh(d, snap):
+			if d.AccessToken == "" {
+				return "", errors.New("stored OAuth credential has a refresh token but no access token; run 'cupthread auth login' again")
+			}
+			a.cfg.Auth = d
+			// Acknowledge the adopted pair (issue #285): with the baseline left
+			// at the load-time pair, the next saveConfig in this process would
+			// diff adopted-vs-baseline as a pending change and re-apply the
+			// possibly-stale pair over whatever newer credential another process
+			// persisted in between — replaying a consumed single-use refresh
+			// token (revoked chain) or clobbering a concurrent PAT, exactly what
+			// acknowledgeAuth exists to prevent.
+			a.acknowledgeAuth()
+			return d.AccessToken, nil
+		default:
+			// The on-disk pair is staler than the in-memory snapshot — the
+			// shape a recovered rotation leaves behind (issue #299): the
+			// recovered pair lives in this process (and in its recovery
+			// file) while the disk still holds the consumed predecessor.
+			// Adopting the stale disk pair would resurrect a dead access
+			// token, so the refresh below uses the snapshot's token.
+		}
 	}
 
 	_, tokenURL, _, _ := auth.Endpoints(snap.IssuerBaseURL(a.cfg.BaseURL))
@@ -376,7 +399,7 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 		// (now misleading) re-login demand.
 		if disk2, lerr := config.Load(a.cfgPath); lerr == nil {
 			if d := disk2.Auth; d != nil && d.AccessToken != "" && d.RefreshToken != "" &&
-				d.RefreshToken != refreshToken {
+				d.RefreshToken != refreshToken && diskAuthAtLeastAsFresh(d, snap) {
 				a.cfg.Auth = d
 				// Same baseline acknowledgment as the disk-pair adoption
 				// above (issue #285): the recovered pair must not be
@@ -387,17 +410,272 @@ func (a *app) refreshAcrossProcesses(ctx context.Context, snap *config.Auth) (st
 		}
 		var apiErr *auth.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == "invalid_grant" {
+			if adopted, recPath := newestAdoptableRecovery(a.cfgPath, refreshToken, snap.IssuerBaseURL(a.cfg.BaseURL), attempted); adopted != nil {
+				a.cfg.Auth = adopted
+				// Same baseline acknowledgment as the disk adoptions above
+				// (issue #285): the adopted pair must never be re-applied by
+				// a later saveConfig over a newer concurrent credential.
+				a.acknowledgeAuth()
+				// A recovered pair whose access token has already expired
+				// cannot serve this request; rotate it right now under the
+				// still-held lock (issue #299). The recursion is bounded:
+				// the adopted token joins attempted before the retry, and
+				// newestAdoptableRecovery excludes the whole set, so every
+				// level consumes one previously-untried recovery file — a
+				// rejected candidate can never come back around (CodeRabbit
+				// review of #299), and when the files run out the flow falls
+				// through to the revoked-chain error.
+				attempted[adopted.RefreshToken] = struct{}{}
+				if !authAccessUsable(adopted, time.Now()) {
+					return a.refreshLocked(ctx, adopted, attempted)
+				}
+				if serr := a.saveAuthWithRetry(); serr != nil {
+					a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(recPath))
+					warnStderrLine("warning: recovered the OAuth credential pair from %s, but it could not be saved to %s (%v) — the pair stays in the recovery file until a save succeeds", recPath, a.cfgPath, serr)
+					return adopted.AccessToken, nil
+				}
+				a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(""))
+				return adopted.AccessToken, nil
+			}
 			return "", fmt.Errorf("refresh OAuth token: the OAuth credential chain was revoked server-side (likely a concurrent refresh race or replay detection); run 'cupthread auth login' again: %w", err)
 		}
 		return "", fmt.Errorf("refresh OAuth token (run 'cupthread auth login' again): %w", err)
 	}
 	a.applyTokenSet(set)
-	// Merge-save so the refresh only claims the auth section and never
-	// reverts defaults another process wrote meanwhile.
-	if err := a.saveAuthUnderLock(); err != nil {
-		return set.AccessToken, fmt.Errorf("save refreshed tokens: %w", err)
+	if err := a.persistRotatedPair(); err != nil {
+		return "", err
 	}
 	return set.AccessToken, nil
+}
+
+// authSaveRetryDelays bounds the merge-save retry: transient local I/O
+// failures (EIO, ENOSPC pressure easing, a Windows rename budget) usually
+// clear in milliseconds, and retrying under the still-held config lock
+// cannot collide with another writer. A var so tests run without the sleeps.
+var authSaveRetryDelays = []time.Duration{50 * time.Millisecond, 150 * time.Millisecond}
+
+// persistAuthPair is the seam persistRotatedPair saves through; a var so
+// tests can force deterministic persistence failures without chmod games.
+var persistAuthPair = (*app).saveAuthUnderLock
+
+// persistRotatedPair persists the just-rotated pair (issue #299). The
+// rotation is single-use server-side — the moment auth.Refresh succeeded,
+// the on-disk refresh token was invalidated — so persistence is the only
+// thing standing between a working credential chain and a bricked one, and
+// a transient local disk error must not be fatal: the merge-save is retried
+// under the still-held lock, and if the disk genuinely cannot take the
+// write, the pair is recorded in a 0600 recovery file next to the config
+// for the next invocation to adopt. The command itself still completes with
+// the minted access token — a usable token and a warning, never the
+// incoherent half-state of handing the caller a token behind an error.
+func (a *app) persistRotatedPair() error {
+	saveErr := a.saveAuthWithRetry()
+	if saveErr == nil {
+		// Persisted: every recovery copy predates this rotation and holds a
+		// strictly staler pair of the chain — dead weight to clean up.
+		a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(""))
+		return nil
+	}
+	// Acknowledge the rotated pair (issue #285): the baseline must not treat
+	// it as pending, or a later saveConfig in this process would re-apply it
+	// over a concurrent credential — the recovery file is the record now.
+	a.acknowledgeAuth()
+	recPath, rerr := writeRecoveryCredential(a.cfgPath, a.cfg.Auth)
+	if rerr != nil {
+		return fmt.Errorf("save refreshed tokens: %w; recovery copy failed too (%v) — the rotated pair is lost and 'cupthread auth login' will be needed", saveErr, rerr)
+	}
+	a.warnRecoveryCleanupFailure(a.removeRecoveryFiles(recPath))
+	warnStderrLine("warning: the refreshed OAuth credentials could not be saved to %s (%v); a recovery copy carrying the rotated pair was written to %s — the next command adopts it automatically, and it can be deleted once the config saves cleanly", a.cfgPath, saveErr, recPath)
+	return nil
+}
+
+// saveAuthWithRetry persists the auth pair with a bounded retry (issue
+// #299); the config lock stays held across every attempt, so no other
+// writer can slip in between them.
+func (a *app) saveAuthWithRetry() error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = persistAuthPair(a); err == nil {
+			return nil
+		}
+		if attempt >= len(authSaveRetryDelays) {
+			return err
+		}
+		time.Sleep(authSaveRetryDelays[attempt])
+	}
+}
+
+// diskAuthAtLeastAsFresh reports whether the on-disk pair is at least as new
+// as the in-memory snapshot, compared on ExpiresAt (a later mint means a
+// later expiry). The disk-adoption branches exist to pick up a rotation
+// another process persisted, whose pair is strictly newer; since recovery
+// adoption (issue #299) the in-memory pair can itself be newer than a stale
+// on-disk one, and adopting the stale pair would resurrect a consumed
+// access token. Same-second rotations degenerate to equal timestamps, which
+// still adopt — the honest tie-break for the cross-process race, at the
+// cost of a one-second ambiguity for a same-second recovery pair.
+// Unparseable timestamps fall back to adopting, preserving the pre-recovery
+// behavior for hand-edited configs.
+func diskAuthAtLeastAsFresh(d, snap *config.Auth) bool {
+	dAt, derr := time.Parse(time.RFC3339, d.ExpiresAt)
+	sAt, serr := time.Parse(time.RFC3339, snap.ExpiresAt)
+	if derr != nil || serr != nil {
+		return true
+	}
+	return !dAt.Before(sAt)
+}
+
+// authAccessUsable reports whether an access token is still worth handing to
+// the current request: it parses ExpiresAt and finds more than the
+// provider's own refresh margin (one minute, mirroring buildClient) left.
+// An empty or unparseable expiry counts as usable — the server rejects a
+// dead token with a plain 401, and there is nothing local to decide from.
+func authAccessUsable(authState *config.Auth, now time.Time) bool {
+	if authState == nil || authState.AccessToken == "" {
+		return false
+	}
+	if authState.ExpiresAt == "" {
+		return true
+	}
+	exp, err := time.Parse(time.RFC3339, authState.ExpiresAt)
+	if err != nil {
+		return true
+	}
+	return exp.Sub(now) > time.Minute
+}
+
+// writeRecoveryCredential records a rotated pair that the config file could
+// not take, in <cfgPath>.recovery-<unix-nano> next to the config (issue
+// #299). The file is created O_EXCL with 0600 — the same hygiene Save
+// applies, since it holds a full bearer+refresh pair — and its JSON payload
+// is the config.Auth struct verbatim, so adoption restores every field the
+// credential protocol needs (client id, pinned issuer, expiry).
+func writeRecoveryCredential(cfgPath string, authState *config.Auth) (string, error) {
+	if authState == nil {
+		return "", errors.New("no in-memory credential to recover")
+	}
+	data, err := json.Marshal(authState)
+	if err != nil {
+		return "", fmt.Errorf("encode recovery credential: %w", err)
+	}
+	path := fmt.Sprintf("%s.recovery-%d", cfgPath, time.Now().UnixNano())
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("create recovery credential file %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write recovery credential %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("sync recovery credential %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close recovery credential %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// newestAdoptableRecovery returns the newest recovery file next to cfgPath
+// that holds a plausible pair to adopt: parseable JSON, an OAuth method with
+// both tokens present, a refresh token different from triedRefresh (the
+// token whose refresh just failed with invalid_grant — a recovery file
+// carrying it is the stale record of an older rotation) and not in attempted
+// (every token an earlier level of this same refresh already tried — without
+// the set, two rejected candidates could alternate forever while the config
+// lock is held, CodeRabbit review of #299), and an issuer resolving to the
+// same server as issuer (the failed credential's issuer: a recovery file
+// from another server's chain must never be adopted, the same cross-identity
+// hazard the login/logout purges close for accounts). Candidates written
+// before issuer pinning existed carry no IssuedBaseURL; they resolve against
+// issuer itself, so a legacy record still recovers on the server it was
+// saved for instead of dead-ending on the default base URL. Files with an
+// unparseable timestamp suffix or unreadable/invalid content are skipped;
+// the newest surviving candidate wins, because every older recovery file
+// describes an earlier, already-superseded rotation of the same chain.
+func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string, attempted map[string]struct{}) (*config.Auth, string) {
+	matches, _ := filepath.Glob(cfgPath + ".recovery-*")
+	prefix := filepath.Base(cfgPath) + ".recovery-"
+	type candidate struct {
+		ts   int64
+		path string
+	}
+	var cands []candidate
+	for _, m := range matches {
+		ts, err := strconv.ParseInt(strings.TrimPrefix(filepath.Base(m), prefix), 10, 64)
+		if err != nil {
+			continue
+		}
+		cands = append(cands, candidate{ts: ts, path: m})
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].ts > cands[j].ts })
+	for _, c := range cands {
+		data, err := os.ReadFile(c.path)
+		if err != nil {
+			continue
+		}
+		var authState config.Auth
+		if json.Unmarshal(data, &authState) != nil {
+			continue
+		}
+		if authState.Method != "oauth" || authState.AccessToken == "" ||
+			authState.RefreshToken == "" || authState.RefreshToken == triedRefresh {
+			continue
+		}
+		if _, tried := attempted[authState.RefreshToken]; tried {
+			continue
+		}
+		if authState.IssuerBaseURL(issuer) != issuer {
+			continue
+		}
+		return &authState, c.path
+	}
+	return nil, ""
+}
+
+// removeRecoveryFiles deletes the recovery files next to the config, except
+// keep when non-empty (the file whose pair is still the only record of a
+// live rotation), and reports every removal that failed so callers can
+// surface a surviving credential file instead of reporting success while a
+// bearer-and-refresh pair stays on disk (CodeRabbit review of #299). A file
+// that vanished between the glob and the remove is not a failure — that
+// race is another caller's successful cleanup.
+func (a *app) removeRecoveryFiles(keep string) error {
+	matches, _ := filepath.Glob(a.cfgPath + ".recovery-*")
+	var errs []error
+	for _, m := range matches {
+		if m == keep {
+			continue
+		}
+		if err := os.Remove(m); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// warnRecoveryCleanupFailure reports a failed recovery-file cleanup the way
+// every warning of the #299 recovery machinery is reported: one sanitized
+// line on stderr in every output mode, never failing the command — the
+// credential operation itself already succeeded.
+func (a *app) warnRecoveryCleanupFailure(err error) {
+	if err != nil {
+		warnStderrLine("warning: some stale OAuth recovery files next to %s could not be removed (%v) — they stay adoptable until removed manually", a.cfgPath, err)
+	}
+}
+
+// warnStderrLine writes one sanitized warning line to stderr in every output
+// mode. It sits beside app.warnf for warnings emitted from the token
+// provider mid-request: warnf's table-mode branch prints on stdout, which
+// would split the human stream around a table and break the
+// single-stdout-document contract, so these warnings go straight to stderr
+// through the same strict stripper (issue #286).
+func warnStderrLine(format string, args ...any) {
+	fmt.Fprintln(os.Stderr, output.StripTerminalControls(fmt.Sprintf(format, args...)))
 }
 
 // saveAuthUnderLock persists the in-memory auth pair onto a fresh read of
