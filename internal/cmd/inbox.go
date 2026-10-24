@@ -153,7 +153,7 @@ func newInboxGetCmd() *cobra.Command {
 				return err
 			}
 			var resp api.SubmissionDetail
-			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/submissions/"+args[0]), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/submissions/"+pathID(args[0])), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -246,7 +246,7 @@ func newInboxPriorityCmd() *cobra.Command {
 			}
 			body := map[string]string{"priority": p}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+args[0]+"/priority"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(args[0])+"/priority"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -283,7 +283,7 @@ platform and only changeable via 'cupthread inbox retry'.`,
 			}
 			body := map[string]string{"triageStatus": status}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/submissions/"+id+"/triage"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/submissions/"+pathID(id)+"/triage"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -320,7 +320,7 @@ also moves it to in_progress. Omitting the user ID unassigns it.`,
 				return err
 			}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+id+"/assign"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(id)+"/assign"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -412,7 +412,7 @@ func newInboxRetryCmd() *cobra.Command {
 				return err
 			}
 			var resp api.RetrySubmissionResponse
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/submissions/"+args[0]+"/retry"), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/submissions/"+pathID(args[0])+"/retry"), nil, nil, &resp); err != nil {
 				// 502 carries a structured partial-failure payload; surface it.
 				return err
 			}

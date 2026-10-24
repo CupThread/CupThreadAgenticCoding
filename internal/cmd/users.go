@@ -43,7 +43,7 @@ func newUsersProfileCmd() *cobra.Command {
 			if scopedUserIDRe.MatchString(userID) && appKey == "" {
 				return fmt.Errorf("user id %s is app-scoped (u_*); pass --app-key so it can be resolved within its app", userID)
 			}
-			path := "/api/v1/users/" + userID + "/profile"
+			path := "/api/v1/users/" + pathID(userID) + "/profile"
 			var q url.Values
 			if appKey != "" {
 				q = url.Values{"appKey": {appKey}}

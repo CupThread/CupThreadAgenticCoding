@@ -164,7 +164,10 @@ func workspaceClient(ctx context.Context) (string, error) {
 }
 
 func wsPath(ws, suffix string) string {
-	return "/api/v1/console/workspaces/" + ws + suffix
+	// The workspace id is interpolated as one path segment like any other
+	// user-supplied reference (issue #175); it normally comes from the saved
+	// config, but --workspace accepts arbitrary strings.
+	return "/api/v1/console/workspaces/" + pathID(ws) + suffix
 }
 
 func newWorkspaceMembersCmd() *cobra.Command {
@@ -304,7 +307,7 @@ func newMembersSetRoleCmd() *cobra.Command {
 				return err
 			}
 			body := map[string]string{"role": role}
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/members/"+args[0]), nil, body, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/members/"+pathID(args[0])), nil, body, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -339,7 +342,7 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/members/"+args[0]), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/members/"+pathID(args[0])), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -400,7 +403,7 @@ the Console web UI (Workspace → Members).`,
 				if err != nil {
 					return err
 				}
-				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/invitations/"+args[0]), nil, nil, nil); err != nil {
+				if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/invitations/"+pathID(args[0])), nil, nil, nil); err != nil {
 					return err
 				}
 				if A.structured() {

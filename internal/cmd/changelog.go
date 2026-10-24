@@ -240,7 +240,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 				return errors.New("nothing to update: pass at least one flag")
 			}
 			var resp api.ChangelogEntry
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+args[0]), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+pathID(args[0])), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -279,7 +279,7 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+args[0]), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+pathID(args[0])), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -304,7 +304,7 @@ func newChangelogPublishCmd() *cobra.Command {
 				return err
 			}
 			var resp api.ChangelogEntry
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/publish"), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(args[0])+"/publish"), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -326,7 +326,7 @@ func newChangelogUnpublishCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+args[0]+"/unpublish"), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(args[0])+"/unpublish"), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {

@@ -137,7 +137,7 @@ func newColumnsUpdateCmd() *cobra.Command {
 			if len(body) == 0 {
 				return errors.New("nothing to update: pass at least one flag")
 			}
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/columns/"+args[0]), nil, body, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/columns/"+pathID(args[0])), nil, body, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -174,7 +174,7 @@ asked to confirm before anything is sent; non-interactive callers must pass
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/columns/"+args[0]), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/columns/"+pathID(args[0])), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -300,7 +300,7 @@ func newVersionsUpdateCmd() *cobra.Command {
 			if len(body) == 0 {
 				return errors.New("nothing to update: pass at least one flag")
 			}
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/versions/"+args[0]), nil, body, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/versions/"+pathID(args[0])), nil, body, nil); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -357,7 +357,7 @@ version being deleted).`,
 				}
 				body = fields
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/versions/"+args[0]), nil, body, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/versions/"+pathID(args[0])), nil, body, nil); err != nil {
 				var apiErr *api.APIError
 				if errors.As(err, &apiErr) {
 					if versionHasFeatureRequests(apiErr) {
