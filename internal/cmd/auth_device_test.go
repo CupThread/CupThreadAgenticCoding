@@ -124,14 +124,18 @@ func TestFinishOAuthLoginRefusesEmptyAccessToken(t *testing.T) {
 
 	oldA := A
 	defer func() { A = oldA }()
-	A = &app{out: output.New(os.Stdout, output.FormatTable), cfg: loaded, cfgPath: cfgPath}
-	A.client = A.buildClient()
 
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	// A.out must write into the pipe: output.New stores the writer it is
+	// given, so building it from the original os.Stdout would send any
+	// regression's "✓ Logged in" to the real stdout and the silence
+	// assertion below would read an always-empty pipe.
+	A = &app{out: output.New(w, output.FormatTable), cfg: loaded, cfgPath: cfgPath}
+	A.client = A.buildClient()
 	os.Stdout = w
 	loginErr := finishOAuthLogin(context.Background(), &auth.TokenSet{}, loginResult{Method: "device"})
 	os.Stdout = oldStdout
