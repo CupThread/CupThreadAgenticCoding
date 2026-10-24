@@ -213,8 +213,13 @@ func printDeviceProgress(verificationURI, userCode string) {
 }
 
 func loginWithDevice(ctx context.Context) error {
-	_, tokenURL, deviceAuthorizeURL, _ := auth.Endpoints(A.baseURL())
-	start, err := auth.StartDevice(ctx, deviceAuthorizeURL, tokenURL, auth.FirstPartyClientID)
+	// The device grant polls the dedicated device token endpoint, not the
+	// regular token endpoint: /api/v1/oauth/token answers 400
+	// unsupported_grant_type for grant_type=urn:ietf:params:oauth:grant-type:
+	// device_code, so wiring the poll there made every --device login fail
+	// (issue #266).
+	_, _, deviceAuthorizeURL, deviceTokenURL := auth.Endpoints(A.baseURL())
+	start, err := auth.StartDevice(ctx, deviceAuthorizeURL, deviceTokenURL, auth.FirstPartyClientID)
 	if err != nil {
 		return err
 	}
@@ -235,6 +240,15 @@ func loginWithDevice(ctx context.Context) error {
 }
 
 func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) error {
+	// Defense in depth (issue #266): a TokenSet without an access token must
+	// never be persisted or celebrated — storing it would overwrite a
+	// working credential with an unusable one and print "✓ Logged in" for a
+	// login that failed. The auth package already refuses such token
+	// responses; this guard covers both interactive flows at the single
+	// point where they converge.
+	if set == nil || set.AccessToken == "" {
+		return errors.New("login flow returned no access token; the stored credential was left unchanged")
+	}
 	A.applyTokenSet(set)
 	A.rememberLoginBaseURL()
 	// Persist the freshly issued pair BEFORE the session check: the pair was

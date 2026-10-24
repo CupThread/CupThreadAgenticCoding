@@ -351,6 +351,24 @@ func TestDeviceWaitReturnsTokenSet(t *testing.T) {
 	}
 }
 
+// TestDeviceWaitRejectsTokenResponseWithoutAccessToken pins the issue #266
+// success contract: a 2xx poll answer without an access_token (a
+// nonconforming server behind --base-url, a proxy) is a failed login, not an
+// empty TokenSet — Wait must surface an error naming access_token instead of
+// returning a set the caller would store over a working credential.
+func TestDeviceWaitRejectsTokenResponseWithoutAccessToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	d := newDeviceStart(server.URL)
+	d.Interval = time.Millisecond
+	if _, err := d.Wait(context.Background()); err == nil || !strings.Contains(err.Error(), "access_token") {
+		t.Fatalf("Wait error = %v, want it to name the missing access_token", err)
+	}
+}
+
 // captureStderr swaps os.Stderr for a pipe and returns a stop function that
 // restores it and yields everything written in between. The swap is also
 // restored if the test fails before the stop function runs (same pattern as
