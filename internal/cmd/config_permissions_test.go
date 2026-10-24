@@ -14,6 +14,20 @@ import (
 // credentialedConfig is the stored-token config `auth login` leaves behind.
 const credentialedConfig = `{"auth":{"method":"token","accessToken":"cpt_secret","tokenPrefix":"cpt_secret"},"defaultWorkspace":"ws_1"}`
 
+// writeFileMode seeds a fixture whose mode survives the process umask:
+// os.WriteFile applies umask at create time, so a 0644 seed under umask 0077
+// lands at 0600 and the permission contract under test never holds (issue
+// #281). The follow-up os.Chmod is not umask-filtered.
+func writeFileMode(t *testing.T, path string, data []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, data, mode); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("seed mode %04o on %s: %v", mode, path, err)
+	}
+}
+
 // runPermissionCheckRun executes `skills list` (a local, network-free
 // command) against a config at cfgPath so PersistentPreRunE runs the
 // permission check; the server is never contacted. It returns the captured
@@ -45,9 +59,7 @@ func TestWorldReadableCredentialConfigWarnsAndRepairs(t *testing.T) {
 	for _, mode := range []string{"table", "json"} {
 		t.Run(mode, func(t *testing.T) {
 			cfgPath := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(cfgPath, []byte(credentialedConfig), 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
+			writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o644)
 			var args []string
 			if mode == "json" {
 				args = []string{"--json"}
@@ -77,9 +89,7 @@ func TestWorldReadableCredentialConfigWarnsAndRepairs(t *testing.T) {
 // exactly as it was.
 func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfgPath, []byte(credentialedConfig), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o644)
 	orig := repairConfigPermissions
 	repairConfigPermissions = func(string) error { return errors.New("permission denied") }
 	defer func() { repairConfigPermissions = orig }()
@@ -107,9 +117,7 @@ func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.
 // and must not be warned about or rewritten.
 func TestWorldReadableConfigWithoutCredentialsIsSilent(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"defaultWorkspace":"ws_1"}`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	writeFileMode(t, cfgPath, []byte(`{"defaultWorkspace":"ws_1"}`), 0o644)
 	stdout, stderr, perm := runPermissionCheckRun(t, cfgPath)
 
 	if strings.Contains(stderr, "group/world-readable") || strings.Contains(stdout, "group/world-readable") {
@@ -124,9 +132,7 @@ func TestWorldReadableConfigWithoutCredentialsIsSilent(t *testing.T) {
 // configs the CLI itself created (already 0600) stay warning-free.
 func TestOwnerOnlyCredentialConfigIsSilent(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfgPath, []byte(credentialedConfig), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
 	stdout, stderr, perm := runPermissionCheckRun(t, cfgPath)
 
 	if strings.Contains(stderr, "group/world-readable") || strings.Contains(stdout, "group/world-readable") {
