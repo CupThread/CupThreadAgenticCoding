@@ -487,6 +487,106 @@ func TestStaleDiskPairNotAdoptedOverRecoveredMemory(t *testing.T) {
 	}
 }
 
+// TestLoginPurgesStaleRecoveryFiles and TestLogoutPurgesStaleRecoveryFiles
+// pin the cross-identity guard from the #299 review: a recovery file left by
+// a previous chain must not survive a deliberate credential replacement
+// (login) or de-provisioning (logout), or a later invalid_grant could adopt
+// the wrong account's tokens.
+func TestLoginPurgesStaleRecoveryFiles(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	server := meServer(t)
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	writeRecoveryFile(t, cfgPath, &config.Auth{
+		Method:        "oauth",
+		AccessToken:   recoveredAccess,
+		RefreshToken:  recoveredRefresh,
+		ExpiresAt:     time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		ClientID:      auth.FirstPartyClientID,
+		IssuedBaseURL: server.URL,
+	})
+
+	if _, _, err := runRootCapture(t, cfgPath, server.URL, "auth", "login", "--token", "cpt_new_tok_12345", "--json"); err != nil {
+		t.Fatalf("auth login: %v", err)
+	}
+	if files := listRecoveryFiles(t, cfgPath); len(files) != 0 {
+		t.Errorf("recovery files = %v, want none after a successful login replaced the credential", files)
+	}
+}
+
+func TestLogoutPurgesStaleRecoveryFiles(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, "https://api.cupthread.com", staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	writeRecoveryFile(t, cfgPath, &config.Auth{
+		Method:        "oauth",
+		AccessToken:   recoveredAccess,
+		RefreshToken:  recoveredRefresh,
+		ExpiresAt:     time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		ClientID:      auth.FirstPartyClientID,
+		IssuedBaseURL: "https://api.cupthread.com",
+	})
+
+	if _, _, err := runRootCapture(t, cfgPath, "http://127.0.0.1:1", "auth", "logout", "--json"); err != nil {
+		t.Fatalf("auth logout: %v", err)
+	}
+	if files := listRecoveryFiles(t, cfgPath); len(files) != 0 {
+		t.Errorf("recovery files = %v, want none after logout de-provisioned the credential", files)
+	}
+}
+
+// TestRecoveryAdoptionSkipsOtherIssuer pins the issuer guard: a recovery
+// file whose credential resolves to a different server than the one the
+// failed refresh targeted must never be adopted, even when it is the newest
+// candidate (issue #299 review).
+func TestRecoveryAdoptionSkipsOtherIssuer(t *testing.T) {
+	var tokenPosts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			tokenPosts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(invalidGrantBd))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withRaceTestEnv(t, server.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Minute))
+	// Newest recovery file, but for a credential issued by another server.
+	writeRecoveryFile(t, cfgPath, &config.Auth{
+		Method:        "oauth",
+		AccessToken:   recoveredAccess,
+		RefreshToken:  recoveredRefresh,
+		ExpiresAt:     time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		ClientID:      auth.FirstPartyClientID,
+		IssuedBaseURL: "https://other-server.example.com",
+	})
+
+	a := raceTestApp(t, cfgPath, server.URL)
+	_, err := a.client.Token(context.Background())
+	if err == nil {
+		t.Fatal("expected an error when the only recovery file belongs to another issuer")
+	}
+	if !strings.Contains(err.Error(), "revoked server-side") {
+		t.Errorf("error = %v, want the revoked-chain diagnosis (no cross-issuer adoption)", err)
+	}
+	if got := tokenPosts.Load(); got != 1 {
+		t.Errorf("token endpoint POSTs = %d, want 1", got)
+	}
+	if a.cfg.Auth == nil || a.cfg.Auth.RefreshToken != staleRefresh {
+		t.Errorf("in-memory auth = %+v, want the on-disk pair untouched (no cross-issuer adoption)", a.cfg.Auth)
+	}
+}
 // TestRefreshRecoveryWriteFailureFailsWithoutToken covers the point where
 // nothing can be persisted: when both the merge-save and the recovery file
 // fail (a full, read-only or unwritable config directory), the provider must

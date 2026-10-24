@@ -406,7 +406,7 @@ func (a *app) refreshLocked(ctx context.Context, snap *config.Auth) (string, err
 		}
 		var apiErr *auth.APIError
 		if errors.As(err, &apiErr) && apiErr.Code == "invalid_grant" {
-			if adopted, recPath := newestAdoptableRecovery(a.cfgPath, refreshToken); adopted != nil {
+			if adopted, recPath := newestAdoptableRecovery(a.cfgPath, refreshToken, snap.IssuerBaseURL(a.cfg.BaseURL)); adopted != nil {
 				a.cfg.Auth = adopted
 				// Same baseline acknowledgment as the disk adoptions above
 				// (issue #285): the adopted pair must never be re-applied by
@@ -574,13 +574,17 @@ func writeRecoveryCredential(cfgPath string, authState *config.Auth) (string, er
 
 // newestAdoptableRecovery returns the newest recovery file next to cfgPath
 // that holds a plausible pair to adopt: parseable JSON, an OAuth method with
-// both tokens present, and a refresh token different from triedRefresh (the
+// both tokens present, a refresh token different from triedRefresh (the
 // token whose refresh just failed with invalid_grant — a recovery file
-// carrying it is the stale record of an older rotation). Files with an
-// unparseable timestamp suffix or unreadable/invalid content are skipped;
-// the newest surviving candidate wins, because every older recovery file
-// describes an earlier, already-superseded rotation of the same chain.
-func newestAdoptableRecovery(cfgPath, triedRefresh string) (*config.Auth, string) {
+// carrying it is the stale record of an older rotation), and an issuer
+// resolving to the same server as issuer (the failed credential's issuer:
+// a recovery file from another server's chain must never be adopted, the
+// same cross-identity hazard the login/logout purges close for accounts).
+// Files with an unparseable timestamp suffix or unreadable/invalid content
+// are skipped; the newest surviving candidate wins, because every older
+// recovery file describes an earlier, already-superseded rotation of the
+// same chain.
+func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string) (*config.Auth, string) {
 	matches, _ := filepath.Glob(cfgPath + ".recovery-*")
 	prefix := filepath.Base(cfgPath) + ".recovery-"
 	type candidate struct {
@@ -607,6 +611,9 @@ func newestAdoptableRecovery(cfgPath, triedRefresh string) (*config.Auth, string
 		}
 		if authState.Method != "oauth" || authState.AccessToken == "" ||
 			authState.RefreshToken == "" || authState.RefreshToken == triedRefresh {
+			continue
+		}
+		if authState.IssuerBaseURL("") != issuer {
 			continue
 		}
 		return &authState, c.path
