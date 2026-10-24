@@ -653,3 +653,40 @@ func TestDeviceWaitProgressLineStripsTerminalControls(t *testing.T) {
 		t.Errorf("stderr lost the visible code text:\n%q", stderr)
 	}
 }
+
+// TestAPIErrorSanitizedRendering pins the issue #286 contract: a non-2xx
+// token/revocation response whose body has no parseable error field (a
+// captive-portal HTML page) is embedded verbatim in Error() and interpolated
+// into CLI warnings, so both the body and the parsed code must reach the
+// caller as inert visible text — the same strip treatment internal/api
+// applies to its APIError.Message, with the same 200-rune cap.
+func TestAPIErrorSanitizedRendering(t *testing.T) {
+	hostile := "<html>\x1b]8;;http://evil.example\x07click\x1b]8;;\x07\rFAKE-LINE\u009b31mC1 SGR\u009b0m</html>"
+	got := (&APIError{Body: hostile}).Error()
+	want := "oauth error: <html>]8;;http://evil.exampleclick]8;;FAKE-LINE31mC1 SGR0m</html>"
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	for _, r := range got {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("Error() contains control rune %U: %q", r, got)
+			break
+		}
+	}
+
+	got = (&APIError{Code: "invalid_grant\x1b]8;;http://evil.example\x07", Body: hostile}).Error()
+	want = "oauth error invalid_grant]8;;http://evil.example"
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+
+	if got := (&APIError{Code: "invalid_grant"}).Error(); got != "oauth error invalid_grant" {
+		t.Errorf("clean code rendered as %q, want byte-identical", got)
+	}
+
+	// A body beyond the cap truncates instead of flooding the error line.
+	got = (&APIError{Body: strings.Repeat("a", 300)}).Error()
+	if runeCount := len([]rune(got)); runeCount != len("oauth error: ")+200+1 {
+		t.Errorf("capped Error() = %d runes, want the 200-rune cap plus ellipsis", runeCount)
+	}
+}

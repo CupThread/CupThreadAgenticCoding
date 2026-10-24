@@ -447,11 +447,34 @@ type APIError struct {
 	Body string
 }
 
+// apiErrorTextMaxRunes caps the server-supplied body kept in Error(): an
+// HTML error page from a captive portal or a hostile megabyte body must not
+// flood the single error line (internal/api caps its APIError.Message the
+// same way).
+const apiErrorTextMaxRunes = 200
+
+// serverErrorText normalizes a server-supplied error string for APIError
+// rendering: surrounding whitespace is dropped, terminal controls are
+// stripped, and the result is capped — the same treatment internal/api's
+// serverErrorText applies to APIError.Message. A non-2xx token/revocation
+// response whose body has no parseable error field (a captive-portal HTML
+// page, any nonconforming --base-url target) is embedded in Error() and
+// interpolated into warnings, so the raw body must reach the terminal as
+// inert visible text instead of escape sequences or forged lines (issue
+// #286).
+func serverErrorText(s string) string {
+	r := []rune(output.StripTerminalControls(strings.TrimSpace(s)))
+	if len(r) > apiErrorTextMaxRunes {
+		return string(r[:apiErrorTextMaxRunes]) + "…"
+	}
+	return string(r)
+}
+
 func (e *APIError) Error() string {
 	if e.Code != "" {
-		return fmt.Sprintf("oauth error %s", e.Code)
+		return fmt.Sprintf("oauth error %s", serverErrorText(e.Code))
 	}
-	return fmt.Sprintf("oauth error: %s", e.Body)
+	return fmt.Sprintf("oauth error: %s", serverErrorText(e.Body))
 }
 
 func postToken(ctx context.Context, tokenURL string, form url.Values) (*TokenSet, error) {

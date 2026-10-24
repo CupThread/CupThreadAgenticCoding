@@ -791,11 +791,84 @@ func scanRawPrintfInterpolations(dir string, banned []string) ([]string, error) 
 	return violations, nil
 }
 
+// scanRawStderrFprintfInterpolations is the stderr twin of
+// scanRawPrintfInterpolations (issue #286): the #286 residual reached the
+// terminal through raw fmt.Fprintf(os.Stderr, …) sites the Printf scanner
+// cannot see. It fails on any such call site that either interpolates a
+// banned server-derived expression through a literal format, or formats a
+// non-literal format string — the pass-through shape of the local raw-warnf
+// closure, which cannot be statically verified and is exactly how the leak
+// escaped. Verified stderr writers go through app.warnf (both branches
+// sanitized) or wrap the argument in output.StripTerminalControls at the
+// call site.
+func scanRawStderrFprintfInterpolations(dir string, banned []string) ([]string, error) {
+	var violations []string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, e.Name(), src, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", e.Name(), err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Fprintf" {
+				return true
+			}
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok || pkg.Name != "fmt" || len(call.Args) < 2 {
+				return true
+			}
+			dst, ok := call.Args[0].(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			dstPkg, ok := dst.X.(*ast.Ident)
+			if !ok || dstPkg.Name != "os" || dst.Sel.Name != "Stderr" {
+				return true
+			}
+			callText := string(src[fset.Position(call.Lparen).Offset : fset.Position(call.Rparen).Offset+1])
+			if _, literal := call.Args[1].(*ast.BasicLit); !literal {
+				violations = append(violations, fmt.Sprintf(
+					"%s:%d formats a dynamic format string straight to stderr; route it through warnf (issue #286):\n%s",
+					e.Name(), fset.Position(call.Pos()).Line, strings.TrimSpace(callText)))
+				return true
+			}
+			for _, b := range banned {
+				if strings.Contains(callText, b) {
+					violations = append(violations, fmt.Sprintf(
+						"%s:%d interpolates server-derived %s through Fprintf(os.Stderr, …); sanitize it (issues #183/#275/#280/#286):\n%s",
+						e.Name(), fset.Position(call.Pos()).Line, b, strings.TrimSpace(callText)))
+					break
+				}
+			}
+			return true
+		})
+	}
+	return violations, nil
+}
+
 // TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
 // human-output contract keeps every server-derived value out of the raw Printf
 // path. Scan the command sources for Printf call sites interpolating the
 // server-derived expressions these sweeps converted; a new call site cannot
-// reintroduce the gap silently.
+// reintroduce the gap silently. The #286 residual escaped through raw
+// fmt.Fprintf(os.Stderr, …) sites the Printf scanner cannot see, so the
+// stderr twin runs in the same guard.
 func TestNoResidualServerTextThroughPrintf(t *testing.T) {
 	violations, err := scanRawPrintfInterpolations(".", bannedPrintfExpressions)
 	if err != nil {
@@ -804,13 +877,24 @@ func TestNoResidualServerTextThroughPrintf(t *testing.T) {
 	for _, v := range violations {
 		t.Error(v)
 	}
+	stderrViolations, err := scanRawStderrFprintfInterpolations(".", bannedPrintfExpressions)
+	if err != nil {
+		t.Fatalf("scan command sources for raw stderr writes: %v", err)
+	}
+	for _, v := range stderrViolations {
+		t.Error(v)
+	}
 }
 
-// TestPrintfScanHelperCatchesPlantedViolations keeps the guard's scanner
-// itself from rotting (issue #280): the scanner must flag raw Printf call
-// sites on both receiver casings — including a call whose banned argument
-// sits on a continuation line — skip PrintfSafe call sites (single- and
-// multi-line) and skip raw calls that carry no banned expression.
+// TestPrintfScanHelperCatchesPlantedViolations keeps the guard's scanners
+// themselves from rotting (issue #280): the Printf scanner must flag raw
+// Printf call sites on both receiver casings — including a call whose banned
+// argument sits on a continuation line — skip PrintfSafe call sites
+// (single- and multi-line) and skip raw calls that carry no banned
+// expression; the stderr scanner (issue #286) must flag a planted
+// fmt.Fprintf(os.Stderr, …) call interpolating a banned expression and the
+// dynamic-format pass-through closure shape, while skipping sanitized and
+// benign literal-format calls.
 func TestPrintfScanHelperCatchesPlantedViolations(t *testing.T) {
 	dir := t.TempDir()
 	src := `package cmd
@@ -853,6 +937,50 @@ func planted() {
 		}
 		if !found {
 			t.Errorf("violations missing %q:\n%v", want, violations)
+		}
+	}
+
+	stderrSrc := `package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
+)
+
+func plantedStderr() {
+	warnf := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+	fmt.Fprintf(os.Stderr, "bad default workspace %s\n", A.cfg.DefaultWorkspace)
+	fmt.Fprintf(os.Stderr, "ok %s\n", output.StripTerminalControls(verificationURI))
+	fmt.Fprintf(os.Stderr, "benign %d\n", 3)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "planted_stderr.go"), []byte(stderrSrc), 0o644); err != nil {
+		t.Fatalf("write planted stderr source: %v", err)
+	}
+	stderrViolations, err := scanRawStderrFprintfInterpolations(dir, bannedPrintfExpressions)
+	if err != nil {
+		t.Fatalf("scan planted stderr dir: %v", err)
+	}
+	if len(stderrViolations) != 2 {
+		t.Fatalf("stderr violations = %v, want exactly the dynamic-format closure and the banned-interpolation site", stderrViolations)
+	}
+	for _, want := range []string{
+		"planted_stderr.go:12 formats a dynamic format string straight to stderr",
+		"planted_stderr.go:14 interpolates server-derived A.cfg.DefaultWorkspace",
+	} {
+		found := false
+		for _, v := range stderrViolations {
+			if strings.Contains(v, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("stderr violations missing %q:\n%v", want, stderrViolations)
 		}
 	}
 }
@@ -1024,5 +1152,134 @@ func TestAuthLogoutClearedContextLineSanitized(t *testing.T) {
 	}
 	if cleared[0] != "default workspace "+hostileWorkspaceID {
 		t.Errorf("--json cleared[0] = %q, want the payload byte-faithful", cleared[0])
+	}
+}
+
+// hostileRevokeBody is the issue #286 attack payload for the revocation
+// path: a non-2xx response whose body has no parseable error field — the
+// captive-portal HTML page a proxy answers with — carrying the same OSC 8 +
+// CR + C1 sequence as the #280 fixtures. auth.APIError.Error() embeds it
+// verbatim, and revokeStoredCredential interpolates that error through
+// warnf.
+const hostileRevokeBody = "<html>revoke gate \x1b]8;;http://evil.example\x07click\x1b]8;;\x07\rFAKE-LINE\u009b31mC1 SGR\u009b0m</html>"
+
+// hostileRevokeBodyVisible is the strict-stripped remnant of
+// hostileRevokeBody.
+const hostileRevokeBodyVisible = "<html>revoke gate ]8;;http://evil.exampleclick]8;;FAKE-LINE31mC1 SGR0m</html>"
+
+// TestAuthLoginSessionCheckFailureClearedContextSanitized pins the issue #286
+// contract for the login session-check-failure path: the local raw-warnf
+// closure used to print the cleared-context warnings straight to stderr, so
+// a DefaultWorkspace a hostile API persisted at an earlier login rendered
+// its OSC 8 link and CR-forged line on every later failed-session login —
+// in human mode too. Both modes must now carry zero control bytes on stderr
+// with the visible remnant intact, agreeing on the same hostile value
+// (mirrors the #280 logout coverage), while structured stdout stays one
+// parseable document.
+func TestAuthLoginSessionCheckFailureClearedContextSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case auth.DeviceAuthorizePath:
+			_, _ = w.Write([]byte(`{"device_code":"dev_code_286","user_code":"ISSUE-2860","verification_uri":"https://cupthread.com/device","interval":1,"expires_in":120}`))
+		case auth.DeviceTokenPath:
+			_, _ = w.Write([]byte(`{"access_token":"cpt_device_286_ok","refresh_token":"cpt_device_286_re","token_type":"bearer","expires_in":3600,"scope":"console"}`))
+		case "/api/v1/console/me":
+			http.Error(w, `{"error":"server_error"}`, http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	seed := func(t *testing.T) string {
+		t.Helper()
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		pre := &config.Config{
+			DefaultWorkspace: hostileWorkspaceID,
+			Auth:             &config.Auth{Method: "token", AccessToken: "cpt_pat_286", TokenPrefix: "cpt_pat_286"},
+		}
+		if err := pre.Save(cfgPath); err != nil {
+			t.Fatalf("seed config: %v", err)
+		}
+		return cfgPath
+	}
+
+	stdout, stderr, err := runRootCapture(t, seed(t), server.URL, "auth", "login", "--device")
+	if err != nil {
+		t.Fatalf("auth login --device: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	assertNoControlBytesStrict(t, stdout)
+	assertNoControlBytesStrict(t, stderr)
+	// Human mode: warnf lands on stdout next to the login confirmation, so
+	// the hostile remnant is asserted on the stream it actually reaches.
+	if !strings.Contains(stdout, "Cleared saved default workspace "+hostileWorkspaceIDVisible) {
+		t.Errorf("human output lost the visible cleared-context remnant:\n%q", stdout)
+	}
+	if !strings.Contains(stdout, "✓ Logged in (OAuth, token cpt_device_2") {
+		t.Errorf("human stdout lost the login confirmation:\n%q", stdout)
+	}
+
+	stdout, stderr, err = runRootCapture(t, seed(t), server.URL, "auth", "login", "--device", "--json")
+	if err != nil {
+		t.Fatalf("auth login --device --json: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoControlBytesStrict(t, stderr)
+	if !strings.Contains(stderr, "Cleared saved default workspace "+hostileWorkspaceIDVisible) {
+		t.Errorf("structured stderr lost the visible cleared-context remnant:\n%q", stderr)
+	}
+}
+
+// TestAuthLogoutRevokeStructuredStderrSanitized pins the issue #286 contract
+// for warnf's structured branch: `auth logout --revoke --json` against a
+// revocation endpoint answering a hostile non-JSON 4xx body renders the
+// failure warning on stderr, which used to be a raw Fprintf — the only mode
+// where the body's escape sequences survived. The stripped remnant must
+// reach structured stderr with zero control bytes while the stdout document
+// stays one byte-faithful JSON payload (the logoutResult carries no hostile
+// value, so byte-faithful here means unchanged, not stripped).
+func TestAuthLogoutRevokeStructuredStderrSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "")
+	t.Setenv("CUPTHREAD_BASE_URL", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != auth.RevokePath {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(hostileRevokeBody))
+	}))
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	pre := &config.Config{
+		Auth: &config.Auth{
+			Method:        "oauth",
+			AccessToken:   "cpt_oauth_286_at",
+			RefreshToken:  "cpt_oauth_286_re",
+			IssuedBaseURL: server.URL,
+		},
+	}
+	if err := pre.Save(cfgPath); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "auth", "logout", "--revoke", "--json")
+	if err != nil {
+		t.Fatalf("auth logout --revoke --json: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	assertNoControlBytesStrict(t, stdout)
+	assertNoControlBytesStrict(t, stderr)
+	if !strings.Contains(stderr, "Server-side revocation failed") || !strings.Contains(stderr, hostileRevokeBodyVisible) {
+		t.Errorf("structured stderr lost the visible revocation-failure remnant:\n%q", stderr)
+	}
+	doc := unmarshalOneJSON(t, stdout)
+	if doc["loggedOut"] != true {
+		t.Errorf("--json loggedOut = %v, want true", doc["loggedOut"])
 	}
 }

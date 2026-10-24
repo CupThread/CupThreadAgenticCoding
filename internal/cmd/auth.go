@@ -263,11 +263,13 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 
 	var me api.MeResponse
 	if err := A.client.Do(ctx, "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
-		warnf := func(format string, args ...any) {
-			fmt.Fprintf(os.Stderr, format+"\n", args...)
-		}
-		warnf("warning: logged in, but could not verify the session yet: %v — check 'cupthread auth status'", err)
-		if clearUnverifiedWorkspaceContext(warnf) {
+		// The warnings interpolate server-derived text (the failure error and
+		// the persisted workspace context a previous login saved from the
+		// API), so they go through app.warnf like every other warning: a
+		// local raw-Fprintf closure bypasses the sanitization the success
+		// path gets via reconcileWorkspaceContext (issue #286).
+		A.warnf("warning: logged in, but could not verify the session yet: %v — check 'cupthread auth status'", err)
+		if clearUnverifiedWorkspaceContext(A.warnf) {
 			if err := A.saveConfig(); err != nil {
 				return err
 			}
