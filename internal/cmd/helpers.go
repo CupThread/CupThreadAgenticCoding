@@ -181,13 +181,17 @@ func (a *app) emitMutationResult(action, id string) error {
 }
 
 // warnf reports a non-fatal warning. In structured mode it goes to stderr so
-// stdout stays a single machine-parseable document.
+// stdout stays a single machine-parseable document. The human line passes
+// through PrintfSafe: warnings interpolate server-derived text (revoke
+// failures quote the server's error, the issuer URL and the stored token
+// prefix), so a hostile value cannot render escape sequences or forge extra
+// lines (issue #280).
 func (a *app) warnf(format string, args ...any) {
 	if a.structured() {
 		fmt.Fprintf(os.Stderr, format+"\n", args...)
 		return
 	}
-	a.out.Printf(format, args...)
+	a.out.PrintfSafe(format, args...)
 }
 
 // clampListLimit normalizes a console listing's --limit the way the server's
