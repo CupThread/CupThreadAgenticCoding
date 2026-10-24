@@ -587,6 +587,7 @@ func TestRecoveryAdoptionSkipsOtherIssuer(t *testing.T) {
 		t.Errorf("in-memory auth = %+v, want the on-disk pair untouched (no cross-issuer adoption)", a.cfg.Auth)
 	}
 }
+
 // TestRefreshRecoveryWriteFailureFailsWithoutToken covers the point where
 // nothing can be persisted: when both the merge-save and the recovery file
 // fail (a full, read-only or unwritable config directory), the provider must
