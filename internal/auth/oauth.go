@@ -454,16 +454,17 @@ type APIError struct {
 const apiErrorTextMaxRunes = 200
 
 // serverErrorText normalizes a server-supplied error string for APIError
-// rendering: surrounding whitespace is dropped, terminal controls are
-// stripped, and the result is capped — the same treatment internal/api's
-// serverErrorText applies to APIError.Message. A non-2xx token/revocation
-// response whose body has no parseable error field (a captive-portal HTML
-// page, any nonconforming --base-url target) is embedded in Error() and
-// interpolated into warnings, so the raw body must reach the terminal as
-// inert visible text instead of escape sequences or forged lines (issue
-// #286).
+// rendering: terminal controls are stripped first, then surrounding
+// whitespace dropped (trimming only before the strip would let a code like
+// "\x1b \x1b" sanitize to " " and pass as a code, hiding the body), and the
+// result is capped — the same treatment internal/api's serverErrorText
+// applies to APIError.Message. A non-2xx token/revocation response whose
+// body has no parseable error field (a captive-portal HTML page, any
+// nonconforming --base-url target) is embedded in Error() and interpolated
+// into warnings, so the raw body must reach the terminal as inert visible
+// text instead of escape sequences or forged lines (issue #286).
 func serverErrorText(s string) string {
-	r := []rune(output.StripTerminalControls(strings.TrimSpace(s)))
+	r := []rune(strings.TrimSpace(output.StripTerminalControls(s)))
 	if len(r) > apiErrorTextMaxRunes {
 		return string(r[:apiErrorTextMaxRunes]) + "…"
 	}

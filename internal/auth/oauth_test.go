@@ -694,6 +694,14 @@ func TestAPIErrorSanitizedRendering(t *testing.T) {
 		t.Errorf("empty-after-sanitize code = %q, want the body fallback %q", got, want)
 	}
 
+	// Controls hugging whitespace sanitize to empty only when trimming runs
+	// after the strip: "\x1b \x1b" must fall back to the body, not render as
+	// "oauth error  " (CodeRabbit review of #287).
+	got = (&APIError{Code: "\x1b \x1b", Body: hostile}).Error()
+	if got != want {
+		t.Errorf("controls-around-space code = %q, want the body fallback %q", got, want)
+	}
+
 	// A body beyond the cap truncates instead of flooding the error line.
 	got = (&APIError{Body: strings.Repeat("a", 300)}).Error()
 	if runeCount := len([]rune(got)); runeCount != len("oauth error: ")+200+1 {

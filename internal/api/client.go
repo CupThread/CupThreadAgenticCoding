@@ -222,13 +222,15 @@ func sanitizeErrorText(s string) string {
 const errorMessageMaxRunes = 200
 
 // serverErrorText normalizes a server-supplied error string for
-// APIError.Message: surrounding whitespace is dropped, terminal controls are
-// stripped (the same predicate as validation details and table cells), and
-// the result is capped. It runs at the two error-decode sites so both the
-// human Error() rendering and the structured error payload are covered, and
-// clean messages pass through byte-identical.
+// APIError.Message: terminal controls are stripped first, then surrounding
+// whitespace dropped (trimming only before the strip would let a string like
+// "\x1b \x1b" sanitize to " " and pass as a message), and the result is
+// capped (the same predicate as validation details and table cells). It runs
+// at the two error-decode sites so both the human Error() rendering and the
+// structured error payload are covered, and clean messages pass through
+// byte-identical.
 func serverErrorText(s string) string {
-	return truncateRunes(sanitizeErrorText(strings.TrimSpace(s)), errorMessageMaxRunes)
+	return truncateRunes(strings.TrimSpace(output.StripTerminalControls(s)), errorMessageMaxRunes)
 }
 
 // truncateRunes shortens s to max runes, marking the cut with an ellipsis.

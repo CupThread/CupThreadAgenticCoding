@@ -1073,6 +1073,18 @@ func TestSanitizeErrorText(t *testing.T) {
 	}
 }
 
+// TestServerErrorTextStripsBeforeTrim pins the strip-then-trim order
+// (CodeRabbit review of #287): controls hugging whitespace must sanitize to
+// empty, not to a bare space that would pass as a message.
+func TestServerErrorTextStripsBeforeTrim(t *testing.T) {
+	if got := serverErrorText("\x1b \x1b"); got != "" {
+		t.Errorf("serverErrorText(controls around space) = %q, want empty", got)
+	}
+	if got := serverErrorText("  \x1b[31mmsg\x1b[0m\t"); got != "[31mmsg[0m" {
+		t.Errorf("serverErrorText = %q, want stripped visible text without edge whitespace", got)
+	}
+}
+
 // TestUploadAppIconCapturesValidationDetails covers the multipart error path
 // (postMultipartFile): it must decode `details` the same as DoWithHeaders so
 // icon-upload 400s name the offending metadata.
