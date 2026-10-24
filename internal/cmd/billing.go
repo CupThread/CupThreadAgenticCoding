@@ -15,13 +15,16 @@ func newBillingCmd() *cobra.Command {
 		Short: "Show usage and manage the subscription (Polar)",
 		Long: `Show usage and manage the subscription (Polar).
 
-show works for every workspace role and with cpt_ API tokens. checkout,
-portal, and addons require an interactive Clerk session, and no CLI
-credential qualifies — personal access tokens and OAuth logins are both
-cpt_ tokens, so they fail with 403 interactive_session_required; perform
-these actions in the Console web UI (Console → Billing).`,
+show and intake-ledger work for every workspace role and with cpt_ API
+tokens. checkout, portal, and addons require an interactive Clerk
+session, and no CLI credential qualifies — personal access tokens and
+OAuth logins are both cpt_ tokens, so they fail with 403
+interactive_session_required; perform these actions in the Console web
+UI (Console → Billing). The intake-ledger reset endpoint needs the
+interactive privacy.manage capability, so it is likewise Console-only
+and has no CLI counterpart.`,
 	}
-	cmd.AddCommand(newBillingShowCmd(), newBillingCheckoutCmd(), newBillingPortalCmd(), newBillingAddonsCmd())
+	cmd.AddCommand(newBillingShowCmd(), newBillingIntakeLedgerCmd(), newBillingCheckoutCmd(), newBillingPortalCmd(), newBillingAddonsCmd())
 	return cmd
 }
 
@@ -50,6 +53,41 @@ func newBillingShowCmd() *cobra.Command {
 				{"Submissions this month", fmt.Sprintf("%d / %d", usage.Usage.SubmissionsThisMonth, usage.Limits.SubmissionsPerMonth)},
 				{"Extra apps", fmt.Sprintf("%d", usage.ExtraApps)},
 				{"Extra members", fmt.Sprintf("%d", usage.ExtraMembers)},
+			})
+			return nil
+		},
+	}
+}
+
+func newBillingIntakeLedgerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "intake-ledger",
+		Short: "Show the monthly intake ledger status (durable accepted count and reset budget)",
+		Long: `Show the monthly intake ledger status.
+
+Reports the current UTC month's durable ledger behind the
+"Submissions this month" quota in billing show: the accepted count of
+feedback submissions plus user-created feature requests (deleting rows
+never gives the month's intake back), the tier cap it is enforced
+against, and the audited per-month operator reset budget.`,
+		DisableFlagsInUseLine: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ws, err := workspaceClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			var status api.IntakeLedgerStatus
+			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/intake-ledger"), nil, nil, &status); err != nil {
+				return err
+			}
+			if A.structured() {
+				return A.out.Structured(status)
+			}
+			A.out.Table([]string{"Field", "Value"}, [][]string{
+				{"UTC month", status.UTCMonth},
+				{"Accepted intake", fmt.Sprintf("%d / %d", status.AcceptedCount, status.Cap)},
+				{"Resets used this month", fmt.Sprintf("%d", status.ResetsUsed)},
+				{"Resets remaining this month", fmt.Sprintf("%d", status.ResetsRemaining)},
 			})
 			return nil
 		},

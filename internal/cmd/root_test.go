@@ -45,7 +45,7 @@ func TestSubcommandTreesComplete(t *testing.T) {
 		"imports":       {"list", "history", "create", "get", "cancel", "rerun"},
 		"integrations":  {"status", "github", "linear", "notion", "slack"},
 		"notifications": {"list", "read", "read-all", "prefs"},
-		"billing":       {"show", "checkout", "portal", "addons"},
+		"billing":       {"show", "intake-ledger", "checkout", "portal", "addons"},
 		"users":         {"profile"},
 		"api":           {"request"},
 		"skills":        {"list", "link"},
@@ -136,7 +136,7 @@ func TestCLISkillDocumentsCommandTree(t *testing.T) {
 	documented := []string{
 		"auth login", "auth logout", "auth status",
 		"workspaces list", "workspaces use", "workspaces members list", "workspaces invitations list",
-		"billing show",
+		"billing show", "billing intake-ledger",
 		"apps list", "apps use", "apps get", "apps create", "apps update",
 		"apps settings show", "apps settings set",
 		"apps public-config", "apps public-changelog", "apps public-feature-requests",

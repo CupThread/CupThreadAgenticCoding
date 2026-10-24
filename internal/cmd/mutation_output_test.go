@@ -264,6 +264,7 @@ var guardReadonly = map[string]string{
 	"auth login":                     "interactive browser/device/token flows (#68 setup contract, auth_test.go)",
 	"auth logout":                    "local config only (#68 setup contract)",
 	"auth status":                    "GET probe plus local state (auth_status_test.go)",
+	"billing intake-ledger":          "GET (billing_test.go)",
 	"billing portal":                 "GET",
 	"billing show":                   "GET",
 	"changelog list":                 "GET",
