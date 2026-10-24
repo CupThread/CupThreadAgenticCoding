@@ -161,7 +161,7 @@ func newChangelogCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Created changelog entry %s", resp.ID)
+			A.out.PrintfSafe("✓ Created changelog entry %s", resp.ID)
 			return nil
 		},
 	}
@@ -237,7 +237,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Updated changelog entry %s", resp.ID)
+			A.out.PrintfSafe("✓ Updated changelog entry %s", resp.ID)
 			return nil
 		},
 	}
@@ -301,7 +301,7 @@ func newChangelogPublishCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Published %s", resp.ID)
+			A.out.PrintfSafe("✓ Published %s", resp.ID)
 			return nil
 		},
 	}

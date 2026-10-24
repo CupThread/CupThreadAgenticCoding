@@ -83,8 +83,8 @@ func newWorkspacesCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Created workspace %s (%s)", resp.Workspace.Name, resp.Workspace.ID)
-			A.out.Printf("  Make it the default with: cupthread workspaces use %s", resp.Workspace.ID)
+			A.out.PrintfSafe("✓ Created workspace %s (%s)", resp.Workspace.Name, resp.Workspace.ID)
+			A.out.PrintfSafe("  Make it the default with: cupthread workspaces use %s", resp.Workspace.ID)
 			return nil
 		},
 	}
@@ -134,7 +134,7 @@ func newWorkspacesUseCmd() *cobra.Command {
 					DefaultWorkspace: workspaceRef{ID: ws.ID, Name: ws.Name, Slug: ws.Slug},
 				})
 			}
-			A.out.Printf("✓ Default workspace: %s (%s)", ws.Name, ws.ID)
+			A.out.PrintfSafe("✓ Default workspace: %s (%s)", ws.Name, ws.ID)
 			return nil
 		},
 	}
@@ -279,9 +279,9 @@ func newMembersAddCmd() *cobra.Command {
 				return A.out.Structured(resp)
 			}
 			if resp.Member != nil {
-				A.out.Printf("✓ Added member %s (%s)", clerkUserID, resp.Member.ID)
+				A.out.PrintfSafe("✓ Added member %s (%s)", clerkUserID, resp.Member.ID)
 			} else {
-				A.out.Printf("✓ Member added (status: %s)", resp.Status)
+				A.out.PrintfSafe("✓ Member added (status: %s)", resp.Status)
 			}
 			return nil
 		},

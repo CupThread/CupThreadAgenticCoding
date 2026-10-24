@@ -25,7 +25,7 @@ func newMeCmd() *cobra.Command {
 			if !me.EmailVerified {
 				email += " (unverified)"
 			}
-			A.out.Printf("User: %s (%s)", orDash(email), me.ClerkUserID)
+			A.out.PrintfSafe("User: %s (%s)", orDash(email), me.ClerkUserID)
 			owned := 0
 			rows := make([][]string, 0, len(me.Workspaces))
 			for _, entry := range me.Workspaces {

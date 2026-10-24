@@ -294,3 +294,460 @@ func mustQuoteJSON(t *testing.T, s string) string {
 	}
 	return string(b)
 }
+
+// digJSONPath walks a decoded --json payload by keys (string) and array
+// indices (int) and returns the value at that path.
+func digJSONPath(t *testing.T, payload any, path ...any) any {
+	t.Helper()
+	cur := payload
+	for i, seg := range path {
+		switch k := seg.(type) {
+		case string:
+			m, ok := cur.(map[string]any)
+			if !ok {
+				t.Fatalf("--json dig segment %d (%q): value is %T, want object", i, k, cur)
+			}
+			cur, ok = m[k]
+			if !ok {
+				t.Fatalf("--json dig segment %d: key %q missing in %v", i, k, m)
+			}
+		case int:
+			l, ok := cur.([]any)
+			if !ok {
+				t.Fatalf("--json dig segment %d (%d): value is %T, want array", i, k, cur)
+			}
+			if k >= len(l) {
+				t.Fatalf("--json dig segment %d: index %d out of range (%d items)", i, k, len(l))
+			}
+			cur = l[k]
+		default:
+			t.Fatalf("--json dig segment %d: unsupported path element %v", i, seg)
+		}
+	}
+	return cur
+}
+
+// TestResidualServerTextSanitizedInHumanLines pins the issue #275 residual
+// sweep: every command that interpolates a server-derived value into a human
+// line outside a table renders it through PrintfSafe (or the per-value
+// stripper), so a hostile API payload reaches the terminal with zero control
+// bytes — while --json keeps the value byte-faithful for programmatic
+// consumers. One case per call site listed in the issue, plus the two
+// connect sites interpolating the same accountLogin value the issue flags.
+func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	hostile := mustQuoteJSON(t, hostileOSC8URL)
+	optionsFile := writeInputFile(t, `{"owner":"o","repo":"r"}`)
+	reply := func(t *testing.T, w http.ResponseWriter, body string) {
+		t.Helper()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}
+	appsWithHostileName := `{"apps":[{"appId":"app_1","appKey":"key_live_1","slug":"app","name":` + hostile + `}],"total":1}`
+	changelogEntry := `{"id":` + hostile + `,"appId":"app_1","title":"T","body":"B","linkedRequests":[],"subscriberCount":0,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}`
+
+	cases := []struct {
+		name    string
+		handler func(t *testing.T, w http.ResponseWriter, r *http.Request)
+		cmd     []string
+		dig     []any
+	}{
+		{
+			name: "apps create app name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/apps" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"appId":"app_1","appKey":"key_live_1","slug":"app","name":`+hostile+`}`)
+			},
+			cmd: []string{"apps", "create", "--name", "App", "--workspace", "ws_1"},
+			dig: []any{"name"},
+		},
+		{
+			name: "apps use app name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/workspaces/ws_1/apps" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, appsWithHostileName)
+			},
+			cmd: []string{"apps", "use", "app_1", "--workspace", "ws_1"},
+			dig: []any{"defaultApp", "name"},
+		},
+		{
+			name: "apps settings show app name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/workspaces/ws_1/settings" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"workspace":{"id":"ws_1","name":"W","slug":"w"},"apps":[{"appId":"app_1","name":`+hostile+`,"settings":{"appId":"app_1"}}]}`)
+			},
+			cmd: []string{"apps", "settings", "show", "--workspace", "ws_1"},
+			dig: []any{"apps", 0, "name"},
+		},
+		{
+			name: "apps public-changelog next cursor",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/public/apps/app_1/changelog" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"entries":[],"hasMore":true,"nextCursor":`+hostile+`}`)
+			},
+			cmd: []string{"apps", "public-changelog", "app_1"},
+			dig: []any{"nextCursor"},
+		},
+		{
+			name: "apps public-feature-requests next cursor",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/feature-requests" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"requests":[],"total":0,"hasMore":true,"nextCursor":`+hostile+`}`)
+			},
+			cmd: []string{"apps", "public-feature-requests", "app_1"},
+			dig: []any{"nextCursor"},
+		},
+		{
+			name: "workspaces create workspace name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"workspace":{"id":"ws_9","name":`+hostile+`,"slug":"w"},"membership":{"id":"m_1","role":"owner"}}`)
+			},
+			cmd: []string{"workspaces", "create", "--name", "Ws"},
+			dig: []any{"workspace", "name"},
+		},
+		{
+			name: "workspaces use workspace name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/me" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"clerkUserId":"u_1","email":"dev@example.com","emailVerified":true,"workspaces":[{"workspace":{"id":"ws_1","name":`+hostile+`,"slug":"w"},"membership":{"id":"m_1","clerkUserId":"u_1","role":"owner"}}]}`)
+			},
+			cmd: []string{"workspaces", "use", "ws_1"},
+			dig: []any{"defaultWorkspace", "name"},
+		},
+		{
+			name: "workspaces members add status",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/members" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"member":null,"invitation":null,"status":`+hostile+`}`)
+			},
+			cmd: []string{"workspaces", "members", "add", "--clerk-user-id", "user_1", "--workspace", "ws_1"},
+			dig: []any{"status"},
+		},
+		{
+			name: "columns create column name",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/apps/app_1/columns" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"id":"col_1","appId":"app_1","name":`+hostile+`}`)
+			},
+			cmd: []string{"columns", "create", "--name", "Col", "--app", "app_1", "--workspace", "ws_1"},
+			dig: []any{"name"},
+		},
+		{
+			name: "versions create version label",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/apps/app_1/versions" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"id":"ver_1","appId":"app_1","label":`+hostile+`}`)
+			},
+			cmd: []string{"versions", "create", "--label", "1.0", "--app", "app_1", "--workspace", "ws_1"},
+			dig: []any{"label"},
+		},
+		{
+			name: "me identity fields",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/me" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"clerkUserId":`+hostile+`,"email":"dev@example.com","emailVerified":true,"workspaces":[]}`)
+			},
+			cmd: []string{"me"},
+			dig: []any{"clerkUserId"},
+		},
+		{
+			name: "integrations github sync error strings",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+					reply(t, w, appsWithHostileName)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/github/sync":
+					reply(t, w, `{"syncedCount":0,"updatedRequests":[],"errors":[`+hostile+`]}`)
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			},
+			cmd: []string{"integrations", "github", "sync", "app_1", "--workspace", "ws_1"},
+			dig: []any{"errors", 0},
+		},
+		{
+			name: "integrations provider status account login",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/workspaces/ws_1/integrations/linear" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"integration":{"id":"int_1","workspaceId":"ws_1","provider":"linear","accountLogin":`+hostile+`},"oauthConfigured":true}`)
+			},
+			cmd: []string{"integrations", "linear", "status", "--workspace", "ws_1"},
+			dig: []any{"integration", "accountLogin"},
+		},
+		{
+			name: "integrations github connect account login",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/integrations/github/manual-token" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"integration":{"id":"int_1","workspaceId":"ws_1","provider":"github","accountLogin":`+hostile+`}}`)
+			},
+			cmd: []string{"integrations", "github", "connect", "--token", "ghp_fake", "--workspace", "ws_1"},
+			dig: []any{"accountLogin"},
+		},
+		{
+			name: "integrations linear connect account login",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/integrations/linear/manual-token" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"integration":{"id":"int_2","workspaceId":"ws_1","provider":"linear","accountLogin":`+hostile+`}}`)
+			},
+			cmd: []string{"integrations", "linear", "connect", "--token", "lini_fake", "--workspace", "ws_1"},
+			dig: []any{"accountLogin"},
+		},
+		{
+			name: "integrations github categories repository id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v1/console/workspaces/ws_1/integrations/github/repos/o/r/categories" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"repositoryId":`+hostile+`,"categories":[]}`)
+			},
+			cmd: []string{"integrations", "github", "categories", "--owner", "o", "--repo", "r", "--workspace", "ws_1"},
+			dig: []any{"repositoryId"},
+		},
+		{
+			name: "features forward target type and url",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/feature-requests":
+					reply(t, w, `{"requests":[{"id":"fr_1"}],"total":1,"hasMore":false}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/features/fr_1/github/forward":
+					reply(t, w, `{"success":true,"targetType":`+hostile+`,"id":"gh_1","url":`+hostile+`}`)
+				default:
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+			},
+			cmd: []string{"features", "forward", "fr_1", "--target", "discussion", "--app", "app_1", "--workspace", "ws_1"},
+			dig: []any{"url"},
+		},
+		{
+			name: "imports create job id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/apps/app_1/imports" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"job":{"id":`+hostile+`,"workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"completed","candidates":[{}],"attempts":0},"drain":{"processed":0,"succeeded":0,"failed":0}}`)
+			},
+			cmd: []string{"imports", "create", "--workspace", "ws_1", "--app", "app_1", "--source", "github_issues", "--options", optionsFile},
+			dig: []any{"job", "id"},
+		},
+		{
+			name: "imports rerun job id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/imports/job_1/rerun" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"job":{"id":`+hostile+`,"workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":1}}`)
+			},
+			cmd: []string{"imports", "rerun", "job_1", "--workspace", "ws_1"},
+			dig: []any{"job", "id"},
+		},
+		{
+			name: "changelog create entry id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, changelogEntry)
+			},
+			cmd: []string{"changelog", "create", "--title", "T", "--body", "B", "--workspace", "ws_1", "--app", "app_1"},
+			dig: []any{"id"},
+		},
+		{
+			name: "changelog update entry id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog/entry_1" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, changelogEntry)
+			},
+			cmd: []string{"changelog", "update", "entry_1", "--title", "T", "--workspace", "ws_1"},
+			dig: []any{"id"},
+		},
+		{
+			name: "changelog publish entry id",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog/entry_1/publish" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, changelogEntry)
+			},
+			cmd: []string{"changelog", "publish", "entry_1", "--workspace", "ws_1"},
+			dig: []any{"id"},
+		},
+		{
+			name: "notifications set channel",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || r.URL.Path != "/api/v1/console/workspaces/ws_1/notification-prefs" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"workspaceId":"ws_1","channel":`+hostile+`,"eventMask":["vote.created"],"enabled":true}`)
+			},
+			cmd: []string{"notifications", "prefs", "set", "--channel", "inbox", "--enable", "--workspace", "ws_1"},
+			dig: []any{"channel"},
+		},
+		{
+			name: "inbox bulk-triage updated ids",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/submissions/bulk-triage" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"updatedCount":1,"updatedIds":[`+hostile+`]}`)
+			},
+			cmd: []string{"inbox", "bulk-triage", "sub_1", "--triage-status", "resolved", "--workspace", "ws_1"},
+			dig: []any{"updatedIds", 0},
+		},
+		{
+			name: "inbox retry discussion url",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/submissions/sub_1/retry" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				reply(t, w, `{"submissionId":"sub_1","forwardedToGithub":true,"githubDiscussionUrl":`+hostile+`}`)
+			},
+			cmd: []string{"inbox", "retry", "sub_1", "--workspace", "ws_1"},
+			dig: []any{"githubDiscussionUrl"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tc.handler(t, w, r)
+			}))
+			defer server.Close()
+
+			out, err := runRoot(t, server.URL, tc.cmd...)
+			if err != nil {
+				t.Fatalf("%v: %v", tc.cmd, err)
+			}
+			assertNoControlBytesStrict(t, out)
+			if !strings.Contains(out, "]8;;https://evil.example/verify") || !strings.Contains(out, "CupThread Security") {
+				t.Errorf("human output lost the visible payload text:\n%q", out)
+			}
+
+			// Structured mode stays byte-faithful: the hostile value survives
+			// the round-trip exactly (encoding/json escapes the controls).
+			structured, err := runRoot(t, server.URL, append(append([]string{}, tc.cmd...), "--json")...)
+			if err != nil {
+				t.Fatalf("%v --json: %v", tc.cmd, err)
+			}
+			var payload any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(structured)), &payload); err != nil {
+				t.Fatalf("decode --json output %q: %v", structured, err)
+			}
+			if got, _ := digJSONPath(t, payload, tc.dig...).(string); got != hostileOSC8URL {
+				t.Errorf("--json at %v = %q, want the payload byte-faithful", tc.dig, got)
+			}
+		})
+	}
+}
+
+// TestInboxRetryServerErrorSanitizedOnStderr covers the inbox retry special
+// case (issue #275): the free-form server error is returned as the command
+// error, so cobra prints it to stderr raw — it must pass through the strict
+// stripper first. In --json mode the same response is a structured success
+// (the error is a field, not a failure), and the field stays byte-faithful.
+func TestInboxRetryServerErrorSanitizedOnStderr(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/submissions/sub_1/retry" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"submissionId":"sub_1","forwardedToGithub":false,"error":` + mustQuoteJSON(t, hostileOSC8URL) + `}`))
+	}))
+	defer server.Close()
+
+	_, stderr, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"inbox", "retry", "sub_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("inbox retry with a partial-failure payload should fail")
+	}
+	assertNoControlBytesStrict(t, stderr)
+	if !strings.Contains(stderr, "retry failed: ]8;;https://evil.example/verify\\CupThread Security") {
+		t.Errorf("stderr lost the sanitized error text:\n%q", stderr)
+	}
+
+	stdout, _, err := runRootCapture(t, filepath.Join(t.TempDir(), "config.json"), server.URL,
+		"inbox", "retry", "sub_1", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("inbox retry --json: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &payload); err != nil {
+		t.Fatalf("decode --json output %q: %v", stdout, err)
+	}
+	if got, _ := payload["error"].(string); got != hostileOSC8URL {
+		t.Errorf("--json error = %q, want the payload byte-faithful", got)
+	}
+}
+
+// TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
+// human-output contract keeps every server-derived value out of the raw Printf
+// path. Grep the command sources for Printf call sites interpolating the
+// server-derived expressions this sweep converted; a new call site cannot
+// reintroduce the gap silently. (The substring "A.out.Printf(" does not match
+// PrintfSafe lines, so converted sites are invisible to the guard.)
+func TestNoResidualServerTextThroughPrintf(t *testing.T) {
+	banned := []string{
+		"appRec.Name", "appRec.AppID", "updated.AppID", "entry.Name", "entry.AppID",
+		"resp.Name", "resp.Label", "resp.ID", "resp.Status", "resp.Channel",
+		"resp.RepositoryID", "resp.NextCursor", "resp.Errors", "resp.Error", "resp.URL",
+		"resp.TargetType", "resp.GithubDiscussionURL", "resp.UpdatedIds", "resp.SubmissionID",
+		"resp.Job.", "resp.Member.ID", "resp.Workspace.", "resp.Integration.AccountLogin",
+		"me.Email", "me.ClerkUserID", "ws.Name", "requestID",
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read command sources: %v", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		lines, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for i, line := range strings.Split(string(lines), "\n") {
+			if !strings.Contains(line, "A.out.Printf(") {
+				continue
+			}
+			for _, b := range banned {
+				if strings.Contains(line, b) {
+					t.Errorf("%s:%d interpolates server-derived %s through Printf; use A.out.PrintfSafe (issues #183/#275):\n%s",
+						e.Name(), i+1, b, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
+}

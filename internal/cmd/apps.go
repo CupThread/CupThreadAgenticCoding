@@ -83,7 +83,7 @@ page until the response reports hasMore=false:
 			}
 			A.out.Table([]string{"ID", "Title", "Version", "Published"}, rows)
 			if resp.NextCursor != nil {
-				A.out.Printf("More entries available. Next page: --cursor %s", *resp.NextCursor)
+				A.out.PrintfSafe("More entries available. Next page: --cursor %s", *resp.NextCursor)
 			}
 			return nil
 		},
@@ -156,7 +156,7 @@ unauthenticated feed with 401.`,
 			A.out.Table([]string{"ID", "Title", "Status", "Column", "Votes", "Comments", "Created"}, rows)
 			A.out.Printf("(%d shown, %d total)", len(resp.Requests), resp.Total)
 			if resp.NextCursor != nil {
-				A.out.Printf("More requests available. Next page: --cursor %s", *resp.NextCursor)
+				A.out.PrintfSafe("More requests available. Next page: --cursor %s", *resp.NextCursor)
 			}
 			return nil
 		},
@@ -312,9 +312,9 @@ func newAppsCreateCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(appRec)
 			}
-			A.out.Printf("✓ Created app %s (%s)", appRec.Name, appRec.AppID)
+			A.out.PrintfSafe("✓ Created app %s (%s)", appRec.Name, appRec.AppID)
 			A.out.PrintfSafe("  App key: %s", appRec.AppKey)
-			A.out.Printf("  Make it the default with: cupthread apps use %s", appRec.AppID)
+			A.out.PrintfSafe("  Make it the default with: cupthread apps use %s", appRec.AppID)
 			return nil
 		},
 	}
@@ -391,7 +391,7 @@ func newAppsUseCmd() *cobra.Command {
 					DefaultApp: appUseAppRef{AppID: appRec.AppID, Name: appRec.Name, Slug: appRec.Slug},
 				})
 			}
-			A.out.Printf("✓ Default app for %s: %s (%s)", ws, appRec.Name, appRec.AppID)
+			A.out.PrintfSafe("✓ Default app for %s: %s (%s)", ws, appRec.Name, appRec.AppID)
 			return nil
 		},
 	}
@@ -539,7 +539,7 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 			if A.structured() {
 				return A.out.Structured(*updated)
 			}
-			A.out.Printf("✓ Updated app %s", updated.AppID)
+			A.out.PrintfSafe("✓ Updated app %s", updated.AppID)
 			if iconRec != nil {
 				A.out.PrintfSafe("  Icon: %s", deref(iconRec.IconURL))
 			}
@@ -753,7 +753,7 @@ func newAppSettingsCmd() *cobra.Command {
 					return A.out.Structured(resp)
 				}
 				for _, entry := range resp.Apps {
-					A.out.Printf("App: %s (%s)", entry.Name, entry.AppID)
+					A.out.PrintfSafe("App: %s (%s)", entry.Name, entry.AppID)
 					printSettings(entry.Settings)
 					A.out.Printf("")
 				}
@@ -839,7 +839,7 @@ with input_too_large before any request is sent.`,
 			if A.structured() {
 				return A.out.Structured(updated)
 			}
-			A.out.Printf("✓ Settings updated for %s", appRec.AppID)
+			A.out.PrintfSafe("✓ Settings updated for %s", appRec.AppID)
 			return nil
 		},
 	}

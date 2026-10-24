@@ -206,10 +206,10 @@ raw ImportOptions JSON instead of the per-source flags.`,
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Import job %s (%s/%s, status %s)", resp.Job.ID, resp.Job.Source, resp.Job.Mode, resp.Job.Status)
+			A.out.PrintfSafe("✓ Import job %s (%s/%s, status %s)", resp.Job.ID, resp.Job.Source, resp.Job.Mode, resp.Job.Status)
 			A.out.Printf("  Drain: %d processed, %d succeeded, %d failed", resp.Drain.Processed, resp.Drain.Succeeded, resp.Drain.Failed)
 			if resp.Job.Status == "completed" && len(resp.Job.Candidates) > 0 {
-				A.out.Printf("  Preview candidates: cupthread imports get %s --json | jq .job.candidates", resp.Job.ID)
+				A.out.PrintfSafe("  Preview candidates: cupthread imports get %s --json | jq .job.candidates", resp.Job.ID)
 			}
 			return nil
 		},
@@ -329,7 +329,7 @@ func newImportsRerunCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Re-running import %s (status %s)", resp.Job.ID, resp.Job.Status)
+			A.out.PrintfSafe("✓ Re-running import %s (status %s)", resp.Job.ID, resp.Job.Status)
 			return nil
 		},
 	}
