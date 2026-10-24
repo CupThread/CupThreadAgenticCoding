@@ -117,12 +117,20 @@ include that value in bug reports and support requests.`,
 				return err
 			}
 
-			if A.structured() {
-				return A.out.Structured(raw)
-			}
 			if len(raw) == 0 {
+				// A 204 (or any empty 2xx body) is a success. The structured
+				// modes must answer with the single parseable document `null`
+				// and exit 0: an empty json.RawMessage cannot be JSON/YAML
+				// encoded, and reporting a successful (possibly destructive)
+				// mutation as an encoder failure would invite a retry.
+				if A.structured() {
+					return A.out.Structured(json.RawMessage("null"))
+				}
 				A.out.Printf("✓ %s %s succeeded (no response body, request-id %s)", method, path, requestID)
 				return nil
+			}
+			if A.structured() {
+				return A.out.Structured(raw)
 			}
 			A.out.Printf("✓ %s %s (request-id %s)", method, path, requestID)
 			// The body is server-derived: display it through the sanitized
