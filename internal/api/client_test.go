@@ -255,13 +255,14 @@ func TestSanitizeRequestID(t *testing.T) {
 }
 
 // TestNoRawRequestIDEchoAssignments is the planted-violation guard for issue
-// #288: every assignment to a RequestID field in client.go must wrap the
-// header read in sanitizeRequestID (the display-time sanitization Error()
+// #288: every assignment of a header read to a RequestID field in client.go
+// — as an assignment statement or a struct-literal value — must wrap it in
+// sanitizeRequestID (the display-time sanitization Error()
 // applies does not cover the structured `api request` payload, and cobra's
 // error printer is outside the cmd package's Printf scanners), so a future
 // decode site cannot reintroduce the raw echo silently. The checker itself
-// is pinned against planted sources: it must flag the raw assignment shape
-// and accept the sanitized one.
+// is pinned against planted sources: it must flag the raw assignment shapes
+// and accept the sanitized ones.
 func TestNoRawRequestIDEchoAssignments(t *testing.T) {
 	violations := scanRawRequestIDAssignments(t, "client.go", nil)
 	if len(violations) != 0 {
@@ -276,22 +277,33 @@ func plantedDecode(resp *http.Response) error {
 	var apiErr APIError
 	apiErr.RequestID = resp.Header.Get(requestIDHeader)
 	apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+	_ = APIError{RequestID: resp.Header.Get(requestIDHeader)}
+	_ = APIError{RequestID: sanitizeRequestID(resp.Header.Get(requestIDHeader))}
 	return nil
 }
 `
 	violations = scanRawRequestIDAssignments(t, "planted.go", []byte(planted))
-	if len(violations) != 1 {
-		t.Fatalf("planted violations = %v, want exactly the raw assignment", violations)
+	if len(violations) != 2 {
+		t.Fatalf("planted violations = %v, want exactly the two raw sites", violations)
 	}
-	if !strings.Contains(violations[0], "planted.go:7") {
-		t.Errorf("violation = %q, want it to name planted.go:7", violations[0])
+	for _, want := range []string{"planted.go:7", "assignment", "planted.go:9", "struct literal"} {
+		found := false
+		for _, v := range violations {
+			if strings.Contains(v, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("violations missing %q:\n%v", want, violations)
+		}
 	}
 }
 
 // scanRawRequestIDAssignments parses the named file (from src when given,
-// otherwise from the package directory) and reports every assignment to a
-// field named RequestID whose right-hand side is a raw .Get header read —
-// i.e. one not wrapped in sanitizeRequestID.
+// otherwise from the package directory) and reports every place a field
+// named RequestID receives a raw .Get header read — an assignment statement
+// or a struct-literal value — not wrapped in sanitizeRequestID.
 func scanRawRequestIDAssignments(t *testing.T, name string, src any) []string {
 	t.Helper()
 
@@ -301,23 +313,38 @@ func scanRawRequestIDAssignments(t *testing.T, name string, src any) []string {
 		t.Fatalf("parse %s: %v", name, err)
 	}
 	var violations []string
+	report := func(pos token.Pos, kind string) {
+		violations = append(violations,
+			fmt.Sprintf("%s:%d stores the raw X-Request-Id echo in a %s; wrap it in sanitizeRequestID",
+				name, fset.Position(pos).Line, kind))
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
-		assign, ok := n.(*ast.AssignStmt)
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for i, lhs := range assign.Lhs {
+				if i >= len(assign.Rhs) {
+					break
+				}
+				sel, ok := lhs.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "RequestID" {
+					continue
+				}
+				if isRawHeaderGetCall(assign.Rhs[i]) {
+					report(lhs.Pos(), "assignment")
+				}
+			}
+			return true
+		}
+		lit, ok := n.(*ast.CompositeLit)
 		if !ok {
 			return true
 		}
-		for i, lhs := range assign.Lhs {
-			if i >= len(assign.Rhs) {
-				break
-			}
-			sel, ok := lhs.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "RequestID" {
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
 				continue
 			}
-			if isRawHeaderGetCall(assign.Rhs[i]) {
-				violations = append(violations,
-					fmt.Sprintf("%s:%d stores the raw X-Request-Id echo; wrap it in sanitizeRequestID",
-						name, fset.Position(lhs.Pos()).Line))
+			if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "RequestID" && isRawHeaderGetCall(kv.Value) {
+				report(kv.Key.Pos(), "struct literal")
 			}
 		}
 		return true
