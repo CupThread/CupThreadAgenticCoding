@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"gopkg.in/yaml.v3"
 )
 
@@ -201,6 +203,112 @@ func TestAPIRequestJSONSuccessPassthrough(t *testing.T) {
 	}
 	if got := compact(out); got != body {
 		t.Errorf("stdout = %q, want the raw body compacted to %q", got, body)
+	}
+}
+
+// TestAPIRequestJSONNullOnEmptyBody covers issue #267: a successful request
+// answered with an empty 2xx body (a 204 No Content, or a 200 with an empty
+// body) must exit 0 with the single parseable document `null` on stdout in
+// --json mode. The empty json.RawMessage previously failed JSON encoding, so
+// a successful — possibly destructive — mutation surfaced as exit 1 with an
+// encoder error and an empty stdout.
+func TestAPIRequestJSONNullOnEmptyBody(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	for _, tc := range []struct {
+		name      string
+		status    int
+		setHeader func(http.Header)
+	}{
+		{name: "204 no content", status: http.StatusNoContent},
+		{name: "200 empty body", status: http.StatusOK, setHeader: func(h http.Header) { h.Set("Content-Length", "0") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.setHeader != nil {
+					tc.setHeader(w.Header())
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+
+			out, err := runRoot(t, server.URL, "api", "request", "DELETE", "/api/v1/console/workspaces/ws_1/feature-requests/fr_1", "--json")
+			if err != nil {
+				t.Fatalf("api request (%s): %v", tc.name, err)
+			}
+			if out != "null\n" {
+				t.Errorf("stdout = %q, want exactly %q", out, "null\n")
+			}
+			var payload any
+			if err := json.Unmarshal([]byte(out), &payload); err != nil {
+				t.Fatalf("stdout %q is not parseable JSON: %v", out, err)
+			}
+		})
+	}
+}
+
+// TestAPIRequestYAMLNullOnEmptyBody covers issue #267 for -o yaml: an empty
+// 2xx body must render as the parseable YAML document `null` and exit 0, not
+// fail inside encodeYAML's JSON round-trip.
+func TestAPIRequestYAMLNullOnEmptyBody(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "DELETE", "/api/v1/console/workspaces/ws_1/feature-requests/fr_1", "-o", "yaml")
+	if err != nil {
+		t.Fatalf("api request: %v", err)
+	}
+	if strings.TrimSpace(out) != "null" {
+		t.Errorf("stdout = %q, want %q", out, "null")
+	}
+	var payload any
+	if err := yaml.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("stdout %q is not parseable YAML: %v", out, err)
+	}
+}
+
+// TestAPIRequestTableModeEmptyBodyLine pins the human-mode behavior around
+// the issue #267 fix: table output for an empty 2xx body keeps the existing
+// success line (exit 0) instead of growing a null document.
+func TestAPIRequestTableModeEmptyBodyLine(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "api", "request", "DELETE", "/api/v1/console/workspaces/ws_1/feature-requests/fr_1")
+	if err != nil {
+		t.Fatalf("api request: %v", err)
+	}
+	if !strings.Contains(out, "succeeded (no response body") || strings.Contains(out, "null") {
+		t.Errorf("stdout = %q, want the human success line and no null document", out)
+	}
+}
+
+// TestAPIRequestJSONTooLargeStillErrors pins the other half of the issue #267
+// contract: the size-cap failure path keeps failing in structured mode — the
+// empty-body success shortcut must never swallow a *ResponseTooLargeError.
+func TestAPIRequestJSONTooLargeStillErrors(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, api.DefaultMaxResponseBytes+1))
+	}))
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "api", "request", "GET", "/api/v1/console/me", "--json")
+	if err == nil {
+		t.Fatal("api request exited 0 on an oversized response, want a non-nil error so the process exits 1")
+	}
+	var tooLarge *api.ResponseTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("err = %v, want *api.ResponseTooLargeError", err)
 	}
 }
 
