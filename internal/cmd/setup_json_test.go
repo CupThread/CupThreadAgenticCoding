@@ -47,6 +47,26 @@ func runRootCapture(t *testing.T, cfgPath, serverURL string, args ...string) (st
 	flagJSON = false
 	flagOutput = ""
 
+	// Drain both pipes WHILE the command runs: a large structured document
+	// (a 200-row public-feed page renders to ~60KB of JSON) fills the OS pipe
+	// buffer — small and blocking on Windows — so reading only after Execute
+	// returns deadlocks the writer. Closing the write ends after Execute
+	// signals EOF to the drains.
+	outDone := make(chan struct{})
+	var outBytes []byte
+	var outReadErr error
+	go func() {
+		outBytes, outReadErr = io.ReadAll(outR)
+		close(outDone)
+	}()
+	errDone := make(chan struct{})
+	var errBytes []byte
+	var errReadErr error
+	go func() {
+		errBytes, errReadErr = io.ReadAll(errR)
+		close(errDone)
+	}()
+
 	root := newRootCmd()
 	full := append(append([]string{}, args...), "--base-url", serverURL, "--config", cfgPath)
 	root.SetArgs(full)
@@ -56,14 +76,13 @@ func runRootCapture(t *testing.T, cfgPath, serverURL string, args ...string) (st
 	os.Stderr = oldStderr
 	_ = outW.Close()
 	_ = errW.Close()
-
-	outBytes, readErr := io.ReadAll(outR)
-	if readErr != nil {
-		t.Fatalf("read stdout pipe: %v", readErr)
+	<-outDone
+	<-errDone
+	if outReadErr != nil {
+		t.Fatalf("read stdout pipe: %v", outReadErr)
 	}
-	errBytes, readErr := io.ReadAll(errR)
-	if readErr != nil {
-		t.Fatalf("read stderr pipe: %v", readErr)
+	if errReadErr != nil {
+		t.Fatalf("read stderr pipe: %v", errReadErr)
 	}
 	return string(outBytes), string(errBytes), execErr
 }

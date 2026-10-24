@@ -15,6 +15,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// publicBoardPageSize mirrors the server's clamp on GET /api/v1/feature-requests
+// (DATA-01): ?limit= above 200 silently serves 200-row pages; the public feed
+// command clamps --limit to it (issue #271).
+const publicBoardPageSize = 200
+
 func newAppsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apps",
@@ -53,6 +58,11 @@ page until the response reports hasMore=false:
   cupthread apps public-changelog <app-key> --cursor <nextCursor>`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The public changelog feed clamps ?limit= to 1-100 server-side
+			// (silently degrading 0 to the default 100); clamp locally too so
+			// the rewrite is announced and a walk steps by the page actually
+			// served (issue #271, the #201 discipline).
+			limit = A.clampListLimit(limit, changelogPageSize)
 			q := url.Values{"limit": {strconv.Itoa(limit)}}
 			if cursor != "" {
 				q.Set("cursor", cursor)
@@ -109,6 +119,13 @@ Boards that require sign-in (anonymous roadmap view disabled) reject the
 unauthenticated feed with 401.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The public board feed clamps ?limit= to 1-200 and ?offset= at
+			// the shared 10,000 cap server-side (silently degrading 0 to the
+			// default 50). Clamp locally and announce the rewrite so an offset
+			// walk steps by the page size actually served instead of silently
+			// skipping rows (issue #271, the #201/#178 discipline).
+			limit = A.clampListLimit(limit, publicBoardPageSize)
+			offset = A.clampListOffset(offset)
 			q := url.Values{"appKey": {args[0]}, "limit": {strconv.Itoa(limit)}}
 			if cursor != "" {
 				q.Set("cursor", cursor)
