@@ -133,7 +133,15 @@ func newIntegrationsStatusCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/github"), nil, nil, &gh); err != nil {
 				return err
 			}
-			rows = append(rows, integrationRow("github", gh.Integration != nil, orDash(deref(gh.Integration.AccountLogin))))
+			// A disconnected GitHub integration answers {"integration":null};
+			// compute the account behind the nil guard — the arguments of the
+			// call below evaluate eagerly, so an inline deref would SIGSEGV
+			// before integrationRow ever runs (issue #264).
+			account := "—"
+			if gh.Integration != nil {
+				account = orDash(deref(gh.Integration.AccountLogin))
+			}
+			rows = append(rows, integrationRow("github", gh.Integration != nil, account))
 			for _, p := range importProviders {
 				var resp api.ImportIntegrationResponse
 				if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/integrations/"+p), nil, nil, &resp); err != nil {
