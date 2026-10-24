@@ -54,14 +54,16 @@ func runRootCapture(t *testing.T, cfgPath, serverURL string, args ...string) (st
 	// signals EOF to the drains.
 	outDone := make(chan struct{})
 	var outBytes []byte
+	var outReadErr error
 	go func() {
-		outBytes, _ = io.ReadAll(outR)
+		outBytes, outReadErr = io.ReadAll(outR)
 		close(outDone)
 	}()
 	errDone := make(chan struct{})
 	var errBytes []byte
+	var errReadErr error
 	go func() {
-		errBytes, _ = io.ReadAll(errR)
+		errBytes, errReadErr = io.ReadAll(errR)
 		close(errDone)
 	}()
 
@@ -76,6 +78,12 @@ func runRootCapture(t *testing.T, cfgPath, serverURL string, args ...string) (st
 	_ = errW.Close()
 	<-outDone
 	<-errDone
+	if outReadErr != nil {
+		t.Fatalf("read stdout pipe: %v", outReadErr)
+	}
+	if errReadErr != nil {
+		t.Fatalf("read stderr pipe: %v", errReadErr)
+	}
 	return string(outBytes), string(errBytes), execErr
 }
 
