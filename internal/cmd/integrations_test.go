@@ -258,8 +258,14 @@ func TestIntegrationsStatusDisconnectedGitHub(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &payload); err != nil {
 		t.Fatalf("decode --json output %q: %v", stdout, err)
 	}
-	if payload["github"] != nil {
-		t.Errorf("--json github = %v, want null", payload["github"])
+	// Distinguish "key present with a JSON null" from "key omitted": a plain
+	// payload["github"] != nil check would pass both.
+	github, present := payload["github"]
+	if !present {
+		t.Errorf("--json output omits the github key: %v", payload)
+	}
+	if github != nil {
+		t.Errorf("--json github = %v, want null", github)
 	}
 	linear, _ := payload["linear"].(map[string]any)
 	if linear == nil || linear["accountLogin"] != "acme-linear" {
