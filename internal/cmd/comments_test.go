@@ -143,7 +143,10 @@ func TestCommentsModerationHideNotFound(t *testing.T) {
 }
 
 // TestCommentsModerationDelete covers the permanent delete endpoint and its
-// 404 path.
+// 404 path. Both invocations pass --yes: under `go test` stdin is
+// non-interactive, so the issue #265 confirmDestructive guard refuses
+// without it before any request is sent (TestCommentsModerationDeleteRefusesWithoutYes
+// pins that path).
 func TestCommentsModerationDelete(t *testing.T) {
 	var gotMethod, gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +160,7 @@ func TestCommentsModerationDelete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1")
+	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1", "--yes")
 	if err != nil {
 		t.Fatalf("moderation delete: %v", err)
 	}
@@ -168,9 +171,129 @@ func TestCommentsModerationDelete(t *testing.T) {
 		t.Errorf("output missing confirmation:\n%s", out)
 	}
 
-	_, err = runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_gone", "--workspace", "ws_1")
+	_, err = runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_gone", "--workspace", "ws_1", "--yes")
 	if err == nil || !strings.Contains(err.Error(), `comment "cmt_gone" not found in workspace ws_1`) {
 		t.Fatalf("error = %v, want a not-found message naming the workspace", err)
+	}
+}
+
+// TestCommentsModerationDeleteRefusesWithoutYes is the issue #265 guard,
+// mirrored from TestFeaturesDeleteRefusesWithoutYes: a non-interactive
+// invocation without --yes fails before ANY request and the error names the
+// command and the --yes escape hatch — the last hard delete now honors the
+// #80 contract its six siblings already followed.
+func TestCommentsModerationDeleteRefusesWithoutYes(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	withConfirmHooks(t, strings.NewReader(""), false)
+
+	server, reqs := destructiveServer(t)
+	_, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("comments moderation delete without --yes must fail on non-interactive stdin")
+	}
+	for _, want := range []string{"--yes", "comments moderation delete"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must contain %q, got: %v", want, err)
+		}
+	}
+	if n := len(*reqs); n != 0 {
+		t.Errorf("refusal must cost zero requests, saw %d", n)
+	}
+}
+
+// successRecordingServer answers every request with 200 {"success":true} and
+// records them — the moderation-delete counterpart of confirm_test.go's
+// destructiveServer, whose bare-200 body starves the SuccessResponse decode.
+func successRecordingServer(t *testing.T) (*httptest.Server, *[]*http.Request) {
+	t.Helper()
+	var reqs []*http.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &reqs
+}
+
+// TestCommentsModerationDeleteYesSendsExactlyOneDelete mirrors
+// TestChangelogDeleteYesSendsExactlyOneDelete: the moderation delete
+// resolves nothing first, so --yes goes straight to a single DELETE.
+func TestCommentsModerationDeleteYesSendsExactlyOneDelete(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	withConfirmHooks(t, strings.NewReader(""), false)
+
+	server, reqs := successRecordingServer(t)
+	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1", "--yes")
+	if err != nil {
+		t.Fatalf("comments moderation delete --yes: %v", err)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_1 deleted") {
+		t.Errorf("output missing confirmation line:\n%s", out)
+	}
+	if n := len(*reqs); n != 1 {
+		t.Fatalf("want exactly one request, saw %d", n)
+	}
+	r := (*reqs)[0]
+	if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/console/workspaces/ws_1/comments/cmt_1" {
+		t.Errorf("request = %s %s", r.Method, r.URL.Path)
+	}
+}
+
+// TestCommentsModerationDeleteInteractivePrompt drives the TTY branch end to
+// end: the prompt names the raw comment id verbatim (nothing has been sent
+// or resolved yet), "y" proceeds to exactly one DELETE, and any other answer
+// aborts with zero requests.
+func TestCommentsModerationDeleteInteractivePrompt(t *testing.T) {
+	t.Run("y proceeds", func(t *testing.T) {
+		t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+		withConfirmHooks(t, strings.NewReader("y\n"), true)
+
+		server, reqs := successRecordingServer(t)
+		if _, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1"); err != nil {
+			t.Fatalf("confirm y: %v", err)
+		}
+		if n := len(*reqs); n != 1 {
+			t.Fatalf("want exactly one DELETE, saw %d", n)
+		}
+	})
+	t.Run("n aborts", func(t *testing.T) {
+		t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+		prompt := withConfirmHooks(t, strings.NewReader("n\n"), true)
+
+		server, reqs := destructiveServer(t)
+		_, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1")
+		if err == nil || !strings.Contains(err.Error(), "aborted") {
+			t.Fatalf("want abort error, got: %v", err)
+		}
+		if !strings.Contains(prompt.String(), `About to permanently delete comment "cmt_1"`) ||
+			!strings.Contains(prompt.String(), "Continue? [yN]") {
+			t.Errorf("prompt missing or wrong on captured stderr:\n%s", prompt.String())
+		}
+		if n := len(*reqs); n != 0 {
+			t.Errorf("abort must cost zero requests, saw %d", n)
+		}
+	})
+}
+
+// TestCommentsModerationDeleteJSONRefusalKeepsStdoutClean mirrors
+// TestJSONRefusalKeepsStdoutPromptFree for the #265 command: the structured
+// refusal is an ordinary error, so machine callers get an empty stdout and
+// the full message on the error channel.
+func TestCommentsModerationDeleteJSONRefusalKeepsStdoutClean(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	withConfirmHooks(t, strings.NewReader(""), false)
+
+	server, reqs := destructiveServer(t)
+	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "delete", "cmt_1", "--workspace", "ws_1", "--json")
+	if err == nil || !strings.Contains(err.Error(), "--yes") {
+		t.Fatalf("want --yes refusal, got: %v", err)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("structured stdout must stay empty on refusal, got:\n%s", out)
+	}
+	if n := len(*reqs); n != 0 {
+		t.Errorf("refusal must cost zero requests, saw %d", n)
 	}
 }
 

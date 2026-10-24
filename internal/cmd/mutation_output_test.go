@@ -207,7 +207,7 @@ var guardMutations = map[string][]string{
 	"columns create":                 {"--name", "Guard Col"},
 	"columns delete":                 {"col_1", "--yes"},
 	"columns update":                 {"col_1", "--name", "Guard Col"},
-	"comments moderation delete":     {"com_1"},
+	"comments moderation delete":     {"com_1", "--yes"},
 	"comments moderation hide":       {"com_1"},
 	"comments moderation unhide":     {"com_1"},
 	"features approve":               {"fr_1"},
