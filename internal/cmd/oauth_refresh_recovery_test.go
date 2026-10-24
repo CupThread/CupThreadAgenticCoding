@@ -493,6 +493,9 @@ func TestStaleDiskPairNotAdoptedOverRecoveredMemory(t *testing.T) {
 // fail the command honestly instead of handing back a token it cannot
 // preserve — the rotated pair is lost either way, and the error says so.
 func TestRefreshRecoveryWriteFailureFailsWithoutToken(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based failure injection is a POSIX technique: Windows ignores directory mode bits")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("chmod-based failure injection needs a non-root user")
 	}
