@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -732,12 +735,15 @@ var bannedPrintfExpressions = []string{
 	"res.Email", "res.TokenPrefix", "A.cfg.Auth.TokenPrefix", "A.cfg.DefaultWorkspace",
 }
 
-// scanRawPrintfInterpolations greps dir's non-test Go sources for raw
+// scanRawPrintfInterpolations scans dir's non-test Go sources for raw
 // .out.Printf call sites interpolating any banned expression and returns one
-// violation string per hit. It matches every receiver casing (both A.out and
-// a.out — the lowercase receiver slipped past the #275 sweep, issue #280) by
-// looking for ".out.Printf(" after first removing "PrintfSafe(" occurrences:
-// the safe call is invisible to the guard by construction, not by luck.
+// violation string per hit. It parses each file and inspects complete call
+// expressions rather than individual lines, so a call whose format string and
+// banned argument sit on separate lines is still caught (CodeRabbit review of
+// #283). It matches every receiver casing (both A.out and a.out — the
+// lowercase receiver slipped past the #275 sweep, issue #280) and never
+// matches PrintfSafe: the safe call is a different selector, invisible to the
+// guard by construction, not by luck.
 func scanRawPrintfInterpolations(dir string, banned []string) ([]string, error) {
 	var violations []string
 	entries, err := os.ReadDir(dir)
@@ -748,31 +754,46 @@ func scanRawPrintfInterpolations(dir string, banned []string) ([]string, error) 
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		lines, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		src, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, err
 		}
-		for i, line := range strings.Split(string(lines), "\n") {
-			withoutSafe := strings.ReplaceAll(line, "PrintfSafe(", "")
-			if !strings.Contains(withoutSafe, ".out.Printf(") {
-				continue
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, e.Name(), src, 0)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s: %w", e.Name(), err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
 			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Printf" {
+				return true
+			}
+			recv, ok := sel.X.(*ast.SelectorExpr)
+			if !ok || recv.Sel.Name != "out" {
+				return true
+			}
+			callText := string(src[fset.Position(call.Lparen).Offset : fset.Position(call.Rparen).Offset+1])
 			for _, b := range banned {
-				if strings.Contains(line, b) {
+				if strings.Contains(callText, b) {
 					violations = append(violations, fmt.Sprintf(
 						"%s:%d interpolates server-derived %s through Printf; use PrintfSafe (issues #183/#275/#280):\n%s",
-						e.Name(), i+1, b, strings.TrimSpace(line)))
+						e.Name(), fset.Position(call.Pos()).Line, b, strings.TrimSpace(callText)))
 					break
 				}
 			}
-		}
+			return true
+		})
 	}
 	return violations, nil
 }
 
 // TestNoResidualServerTextThroughPrintf is the regression guard: the #183/#275
 // human-output contract keeps every server-derived value out of the raw Printf
-// path. Grep the command sources for Printf call sites interpolating the
+// path. Scan the command sources for Printf call sites interpolating the
 // server-derived expressions these sweeps converted; a new call site cannot
 // reintroduce the gap silently.
 func TestNoResidualServerTextThroughPrintf(t *testing.T) {
@@ -785,10 +806,11 @@ func TestNoResidualServerTextThroughPrintf(t *testing.T) {
 	}
 }
 
-// TestPrintfScanHelperCatchesPlantedViolations keeps the guard's grep itself
-// from rotting (issue #280): the scanner must flag raw Printf call sites on
-// both receiver casings, skip PrintfSafe lines and skip raw lines that carry
-// no banned expression.
+// TestPrintfScanHelperCatchesPlantedViolations keeps the guard's scanner
+// itself from rotting (issue #280): the scanner must flag raw Printf call
+// sites on both receiver casings — including a call whose banned argument
+// sits on a continuation line — skip PrintfSafe call sites (single- and
+// multi-line) and skip raw calls that carry no banned expression.
 func TestPrintfScanHelperCatchesPlantedViolations(t *testing.T) {
 	dir := t.TempDir()
 	src := `package cmd
@@ -800,6 +822,10 @@ func planted() {
 	A.out.Printf("ok %s", resp.Name)
 	a.out.Printf("ok %s", res.TokenPrefix)
 	A.out.PrintfSafe("ok %s", resp.Name)
+	A.out.PrintfSafe("ok %s",
+		resp.Name)
+	A.out.Printf("hello %s",
+		me.Email)
 	A.out.Printf("benign %d", 3)
 }
 `
@@ -810,12 +836,13 @@ func planted() {
 	if err != nil {
 		t.Fatalf("scan planted dir: %v", err)
 	}
-	if len(violations) != 2 {
-		t.Fatalf("violations = %v, want exactly the two raw banned call sites", violations)
+	if len(violations) != 3 {
+		t.Fatalf("violations = %v, want exactly the three raw banned call sites", violations)
 	}
 	for _, want := range []string{
 		"planted.go:7 interpolates server-derived resp.Name",
 		"planted.go:8 interpolates server-derived res.TokenPrefix",
+		"planted.go:12 interpolates server-derived me.Email",
 	} {
 		found := false
 		for _, v := range violations {
