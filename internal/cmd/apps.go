@@ -779,7 +779,7 @@ with input_too_large before any request is sent.`,
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
 					}
-					return err
+					return flagInputError("input", err)
 				}
 				if err := json.Unmarshal(data, &body); err != nil {
 					return fmt.Errorf("parse settings JSON: %w", err)
