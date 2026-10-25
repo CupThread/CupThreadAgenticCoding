@@ -1526,6 +1526,23 @@ func TestSkillDocsCommandReferencesResolve(t *testing.T) {
 		t.Errorf("piped cupthread invocation not extracted: got %q, ok=%v", got, ok)
 	}
 
+	// A pipe inside a quoted flag value is not a pipeline separator, so the
+	// whole invocation must survive extraction and the flag after the quoted
+	// value must still be resolved — pin that a bogus flag there is caught.
+	quoted := `cupthread changelog create --title 'Alpha|Beta' --bad-flag`
+	if got, ok := fencedCupthreadInvocation(quoted); !ok || got != quoted {
+		t.Errorf("quoted-pipe invocation truncated: got %q, ok=%v", got, ok)
+	}
+	if err := resolveSkillCommandRef(root, quoted); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after quoted pipe not resolved: err=%v", err)
+	}
+	if err := resolveSkillCommandRef(root, `cupthread changelog create --title 'Alpha|Beta'`); err != nil {
+		t.Errorf("valid quoted-pipe reference rejected: %v", err)
+	}
+	if got := unquotedCommentIndex(`cupthread changelog create --title 'Issue #176' --body-file ./b.md`); got >= 0 {
+		t.Errorf("`#` inside single-quoted value treated as comment start: index %d", got)
+	}
+
 	minRefs := map[string]int{
 		"cupthread-android-sdk":      2,
 		"cupthread-api":              20,
@@ -1636,17 +1653,27 @@ func fencedCupthreadInvocation(line string) (string, bool) {
 }
 
 // splitUnquotedPipes splits a shell line at `|` separators that sit outside
-// double quotes.
+// single- or double-quoted arguments; a backslash-escaped character outside
+// quotes (notably `\|`) is not a separator.
 func splitUnquotedPipes(line string) []string {
 	var stages []string
-	inQuote := false
+	var quote rune
 	start := 0
 	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case '"':
-			inQuote = !inQuote
+		switch c := line[i]; c {
+		case '\\':
+			if quote == 0 {
+				i++
+			}
+		case '\'', '"':
+			switch {
+			case quote == 0:
+				quote = rune(c)
+			case quote == rune(c):
+				quote = 0
+			}
 		case '|':
-			if !inQuote {
+			if quote == 0 {
 				stages = append(stages, line[start:i])
 				start = i + 1
 			}
@@ -1655,16 +1682,21 @@ func splitUnquotedPipes(line string) []string {
 	return append(stages, line[start:])
 }
 
-// unquotedCommentIndex finds the start of a `#` comment outside double
-// quotes, or -1.
+// unquotedCommentIndex finds the start of a `#` comment outside single- or
+// double-quoted arguments, or -1.
 func unquotedCommentIndex(line string) int {
-	inQuote := false
+	var quote rune
 	for i := 0; i < len(line); i++ {
-		switch line[i] {
-		case '"':
-			inQuote = !inQuote
+		switch c := line[i]; c {
+		case '\'', '"':
+			switch {
+			case quote == 0:
+				quote = rune(c)
+			case quote == rune(c):
+				quote = 0
+			}
 		case '#':
-			if !inQuote && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
+			if quote == 0 && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
 				return i
 			}
 		}
