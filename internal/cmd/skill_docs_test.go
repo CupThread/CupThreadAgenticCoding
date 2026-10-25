@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1485,4 +1486,280 @@ func TestSkillDocsIssue262PublicFeatureRequestRemovedInternalFields(t *testing.T
 			}
 		})
 	}
+}
+
+// TestSkillDocsCommandReferencesResolve mechanically re-validates every
+// command and flag reference in the six skills/*/SKILL.md files against the
+// real cobra command tree (issue #176). Every other skill-doc test in this
+// file pins one specific claim somebody thought to check, which is how the
+// nonexistent `imports run --options` survived the doc-sync commits; this is
+// the general invariant. Two reference shapes are collected — inline
+// backtick spans (the absolute `cupthread …` form and the bare relative form
+// whose first token is a top-level command, the two shapes the offender
+// used) and fenced code-block lines that invoke `cupthread …` — and each is
+// resolved by walking the tree: a plain word under a command group must be a
+// registered subcommand or alias, and every `--flag` in a reference must
+// exist on the resolved command, persistent flags included. Alternatives
+// written `a/b` or `a|b` resolve to the union of matching branches, and a
+// documented flag must exist on every resolved branch. Placeholders
+// (`<id>`, `[flags]`, `…`), plain arguments of leaf commands, tokens
+// directly after a flag, and pipeline stages after `|` are not part of the
+// command path. Per-file canaries keep the extractor honest: a refactor
+// that stops matching references must fail here, not pass vacuously.
+func TestSkillDocsCommandReferencesResolve(t *testing.T) {
+	root := newRootCmd()
+	root.InitDefaultVersionFlag()
+	var initHelp func(c *cobra.Command)
+	initHelp = func(c *cobra.Command) {
+		c.InitDefaultHelpFlag()
+		for _, sub := range c.Commands() {
+			initHelp(sub)
+		}
+	}
+	initHelp(root)
+
+	minRefs := map[string]int{
+		"cupthread-android-sdk":      2,
+		"cupthread-api":              20,
+		"cupthread-cli":              120,
+		"cupthread-flutter-sdk":      2,
+		"cupthread-react-native-sdk": 2,
+		"cupthread-swift-sdk":        2,
+	}
+	skills := []string{
+		"cupthread-android-sdk",
+		"cupthread-api",
+		"cupthread-cli",
+		"cupthread-flutter-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-swift-sdk",
+	}
+	for _, skill := range skills {
+		refs := extractSkillCommandRefs(t, root, skill)
+		if len(refs) < minRefs[skill] {
+			t.Errorf("%s/SKILL.md: command-reference extractor found only %d references, want at least %d — the extraction rules drifted", skill, len(refs), minRefs[skill])
+		}
+		for _, r := range refs {
+			if err := resolveSkillCommandRef(root, r.text); err != nil {
+				t.Errorf("%s/SKILL.md:%d: %v", skill, r.line, err)
+			}
+		}
+	}
+}
+
+// skillCommandRef is one extracted command reference with its 1-based line
+// number in the SKILL.md file, for actionable failure messages.
+type skillCommandRef struct {
+	line int
+	text string
+}
+
+// extractSkillCommandRefs collects the command references of one SKILL.md:
+// inline backtick spans whose first token is `cupthread` or a top-level
+// command, and fenced code-block lines that invoke `cupthread …`.
+func extractSkillCommandRefs(t *testing.T, root *cobra.Command, skill string) []skillCommandRef {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	var refs []skillCommandRef
+	inFence := false
+	for i, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			if invocation, ok := fencedCupthreadInvocation(line); ok {
+				refs = append(refs, skillCommandRef{i + 1, invocation})
+			}
+			continue
+		}
+		for _, span := range inlineCodeSpans(line) {
+			toks := strings.Fields(span)
+			if len(toks) == 0 {
+				continue
+			}
+			if toks[0] == "cupthread" || findChildCommand(root, toks[0]) != nil {
+				refs = append(refs, skillCommandRef{i + 1, span})
+			}
+		}
+	}
+	return refs
+}
+
+// inlineCodeSpans returns the `…` inline code spans of one markdown line.
+func inlineCodeSpans(line string) []string {
+	var spans []string
+	for {
+		start := strings.Index(line, "`")
+		if start < 0 {
+			return spans
+		}
+		rest := line[start+1:]
+		end := strings.Index(rest, "`")
+		if end < 0 {
+			return spans
+		}
+		spans = append(spans, rest[:end])
+		line = rest[end+1:]
+	}
+}
+
+// fencedCupthreadInvocation strips shell decoration from a fenced code-block
+// line (a `$` prompt and an unquoted trailing `#` comment) and reports
+// whether what remains invokes the cupthread binary.
+func fencedCupthreadInvocation(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "$ "))
+	if i := unquotedCommentIndex(trimmed); i >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:i])
+	}
+	if trimmed == "cupthread" || strings.HasPrefix(trimmed, "cupthread ") {
+		return trimmed, true
+	}
+	return "", false
+}
+
+// unquotedCommentIndex finds the start of a `#` comment outside double
+// quotes, or -1.
+func unquotedCommentIndex(line string) int {
+	inQuote := false
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '"':
+			inQuote = !inQuote
+		case '#':
+			if !inQuote && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// resolveSkillCommandRef resolves one extracted reference against the cobra
+// tree. See TestSkillDocsCommandReferencesResolve for the grammar.
+func resolveSkillCommandRef(root *cobra.Command, reference string) error {
+	toks := strings.Fields(reference)
+	if len(toks) > 0 && toks[0] == "cupthread" {
+		toks = toks[1:]
+	}
+	cur := []*cobra.Command{root}
+	pathOpen := true
+	prevWasFlag := false
+	for _, tok := range toks {
+		if tok == "|" {
+			return nil // the rest of the line is another pipeline stage
+		}
+		if tok == "-" || tok == "--" { // stdin value / flag separator
+			prevWasFlag = false
+			pathOpen = false
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			if err := requireSkillRefFlag(cur, tok, reference); err != nil {
+				return err
+			}
+			prevWasFlag = true
+			continue
+		}
+		afterFlag := prevWasFlag
+		prevWasFlag = false
+		if afterFlag || !pathOpen {
+			continue // a token directly after a flag is that flag's value, not a path segment
+		}
+		if strings.ContainsAny(tok, "<>[{…") {
+			pathOpen = false // placeholder argument
+			continue
+		}
+		var next []*cobra.Command
+		hasGroup := false
+		for _, c := range cur {
+			if len(c.Commands()) > 0 {
+				hasGroup = true
+			}
+			for _, alt := range strings.FieldsFunc(tok, func(r rune) bool { return r == '/' || r == '|' }) {
+				if sub := findChildCommand(c, alt); sub != nil {
+					next = append(next, sub)
+				}
+			}
+		}
+		if len(next) == 0 {
+			if hasGroup {
+				return fmt.Errorf("command reference %q: %q does not resolve to a registered subcommand", reference, tok)
+			}
+			pathOpen = false // plain argument of a leaf command
+			continue
+		}
+		cur = next
+	}
+	return nil
+}
+
+// requireSkillRefFlag asserts that the flag token (`--name`, `--name=value`,
+// `-s`, or a combined shorthand) resolves on every current command branch,
+// walking up through persistent flags.
+func requireSkillRefFlag(cur []*cobra.Command, tok, reference string) error {
+	if strings.HasPrefix(tok, "--") {
+		name := strings.SplitN(tok[2:], "=", 2)[0]
+		for _, c := range cur {
+			if !commandHasLongFlag(c, name) {
+				return fmt.Errorf("command reference %q: flag --%s does not exist on %q", reference, name, skillRefCommandPath(c))
+			}
+		}
+		return nil
+	}
+	shorthand := strings.SplitN(tok[1:], "=", 2)[0]
+	if shorthand == "" {
+		return nil
+	}
+	for _, c := range cur {
+		if !commandHasShortFlag(c, shorthand[:1]) {
+			return fmt.Errorf("command reference %q: flag %s does not exist on %q", reference, tok, skillRefCommandPath(c))
+		}
+	}
+	return nil
+}
+
+func commandHasLongFlag(c *cobra.Command, name string) bool {
+	for x := c; x != nil; x = x.Parent() {
+		if x.Flags().Lookup(name) != nil || x.PersistentFlags().Lookup(name) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasShortFlag(c *cobra.Command, shorthand string) bool {
+	for x := c; x != nil; x = x.Parent() {
+		if x.Flags().ShorthandLookup(shorthand) != nil || x.PersistentFlags().ShorthandLookup(shorthand) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// findChildCommand returns the direct subcommand of c matching name,
+// aliases included.
+func findChildCommand(c *cobra.Command, name string) *cobra.Command {
+	for _, sub := range c.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+		for _, alias := range sub.Aliases {
+			if alias == name {
+				return sub
+			}
+		}
+	}
+	return nil
+}
+
+func skillRefCommandPath(c *cobra.Command) string {
+	if c.Parent() == nil {
+		return c.Name()
+	}
+	return skillRefCommandPath(c.Parent()) + " " + c.Name()
 }
