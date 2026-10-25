@@ -1386,9 +1386,21 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"the response is still the plain `200 {voted: true, voteCount}` with no warning field",
 		"no consent row is written and no confirmation email is sent",
 		"a client must never treat a `200` as proof the address was enrolled",
+		// CodeRabbit correction: the config cannot be used to detect the gate.
+		"`PublicAppConfig` exposes no Turnstile-enforcement field",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// PublicAppConfig carries no Turnstile field (issue #247's siteKey is
+		// not shipped), so the doc must not claim a caller can read the
+		// enforcement requirement off the public config.
+		"when the board's public config reports that verification is required",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api/SKILL.md still documents the incorrect public-config Turnstile signal %q", stale)
 		}
 	}
 
