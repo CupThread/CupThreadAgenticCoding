@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1485,4 +1486,397 @@ func TestSkillDocsIssue262PublicFeatureRequestRemovedInternalFields(t *testing.T
 			}
 		})
 	}
+}
+
+// TestSkillDocsCommandReferencesResolve mechanically re-validates every
+// command and flag reference in the six skills/*/SKILL.md files against the
+// real cobra command tree (issue #176). Every other skill-doc test in this
+// file pins one specific claim somebody thought to check, which is how the
+// nonexistent `imports run --options` survived the doc-sync commits; this is
+// the general invariant. Two reference shapes are collected — inline
+// backtick spans (the absolute `cupthread …` form and the bare relative form
+// whose first token is a top-level command, the two shapes the offender
+// used) and fenced code-block lines that invoke `cupthread …` — and each is
+// resolved by walking the tree: a plain word under a command group must be a
+// registered subcommand or alias, and every `--flag` in a reference must
+// exist on the resolved command, persistent flags included. Alternatives
+// written `a/b` or `a|b` resolve to the union of matching branches, and a
+// documented flag must exist on every resolved branch. Placeholders
+// (`<id>`, `[flags]`, `…`), plain arguments of leaf commands, tokens
+// directly after a flag, and pipeline stages after `|` are not part of the
+// command path. Per-file canaries keep the extractor honest: a refactor
+// that stops matching references must fail here, not pass vacuously.
+func TestSkillDocsCommandReferencesResolve(t *testing.T) {
+	root := newRootCmd()
+	root.InitDefaultVersionFlag()
+	var initHelp func(c *cobra.Command)
+	initHelp = func(c *cobra.Command) {
+		c.InitDefaultHelpFlag()
+		for _, sub := range c.Commands() {
+			initHelp(sub)
+		}
+	}
+	initHelp(root)
+
+	// The cli skill documents the piped signing form
+	// `printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs …`;
+	// pin that the extractor picks the cupthread stage out of the pipeline
+	// instead of skipping the line.
+	if got, ok := fencedCupthreadInvocation(`printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12345 \`); !ok || got != "cupthread api sign-user-attrs --app-key app_demo12345" {
+		t.Errorf("piped cupthread invocation not extracted: got %q, ok=%v", got, ok)
+	}
+
+	// A pipe inside a quoted flag value is not a pipeline separator, so the
+	// whole invocation must survive extraction and the flag after the quoted
+	// value must still be resolved — pin that a bogus flag there is caught.
+	quoted := `cupthread changelog create --title 'Alpha|Beta' --bad-flag`
+	if got, ok := fencedCupthreadInvocation(quoted); !ok || got != quoted {
+		t.Errorf("quoted-pipe invocation truncated: got %q, ok=%v", got, ok)
+	}
+	if err := resolveSkillCommandRef(root, quoted); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after quoted pipe not resolved: err=%v", err)
+	}
+	if err := resolveSkillCommandRef(root, `cupthread changelog create --title 'Alpha|Beta'`); err != nil {
+		t.Errorf("valid quoted-pipe reference rejected: %v", err)
+	}
+	if got := unquotedCommentIndex(`cupthread changelog create --title 'Issue #176' --body-file ./b.md`); got >= 0 {
+		t.Errorf("`#` inside single-quoted value treated as comment start: index %d", got)
+	}
+
+	// An escaped double quote does not close a double-quoted value, so the
+	// embedded pipe must not split and the trailing flag stays resolvable.
+	escaped := `cupthread changelog create --title "a\"b|c" --bad-flag`
+	if got, ok := fencedCupthreadInvocation(escaped); !ok || got != escaped {
+		t.Errorf("escaped-quote invocation truncated: got %q, ok=%v", got, ok)
+	}
+	if err := resolveSkillCommandRef(root, escaped); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after escaped-quote value not resolved: err=%v", err)
+	}
+	// A `#` after an escaped blank is a plain character mid-word, not a
+	// comment: the line must not be truncated at the `#`.
+	escComment := `cupthread changelog create --title hello\ #176 --bad-flag`
+	if got := unquotedCommentIndex(escComment); got >= 0 {
+		t.Errorf("`#` after escaped blank treated as comment start: index %d", got)
+	}
+	if err := resolveSkillCommandRef(root, escComment); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after escaped-blank value not resolved: err=%v", err)
+	}
+
+	minRefs := map[string]int{
+		"cupthread-android-sdk":      2,
+		"cupthread-api":              20,
+		"cupthread-cli":              120,
+		"cupthread-flutter-sdk":      2,
+		"cupthread-react-native-sdk": 2,
+		"cupthread-swift-sdk":        2,
+	}
+	skills := []string{
+		"cupthread-android-sdk",
+		"cupthread-api",
+		"cupthread-cli",
+		"cupthread-flutter-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-swift-sdk",
+	}
+	for _, skill := range skills {
+		refs := extractSkillCommandRefs(t, root, skill)
+		if len(refs) < minRefs[skill] {
+			t.Errorf("%s/SKILL.md: command-reference extractor found only %d references, want at least %d — the extraction rules drifted", skill, len(refs), minRefs[skill])
+		}
+		for _, r := range refs {
+			if err := resolveSkillCommandRef(root, r.text); err != nil {
+				t.Errorf("%s/SKILL.md:%d: %v", skill, r.line, err)
+			}
+		}
+	}
+}
+
+// skillCommandRef is one extracted command reference with its 1-based line
+// number in the SKILL.md file, for actionable failure messages.
+type skillCommandRef struct {
+	line int
+	text string
+}
+
+// extractSkillCommandRefs collects the command references of one SKILL.md:
+// inline backtick spans whose first token is `cupthread` or a top-level
+// command, and fenced code-block lines that invoke `cupthread …`.
+func extractSkillCommandRefs(t *testing.T, root *cobra.Command, skill string) []skillCommandRef {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read skill doc: %v", err)
+	}
+	var refs []skillCommandRef
+	inFence := false
+	for i, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			if invocation, ok := fencedCupthreadInvocation(line); ok {
+				refs = append(refs, skillCommandRef{i + 1, invocation})
+			}
+			continue
+		}
+		for _, span := range inlineCodeSpans(line) {
+			toks := strings.Fields(span)
+			if len(toks) == 0 {
+				continue
+			}
+			if toks[0] == "cupthread" || findChildCommand(root, toks[0]) != nil {
+				refs = append(refs, skillCommandRef{i + 1, span})
+			}
+		}
+	}
+	return refs
+}
+
+// inlineCodeSpans returns the `…` inline code spans of one markdown line.
+func inlineCodeSpans(line string) []string {
+	var spans []string
+	for {
+		start := strings.Index(line, "`")
+		if start < 0 {
+			return spans
+		}
+		rest := line[start+1:]
+		end := strings.Index(rest, "`")
+		if end < 0 {
+			return spans
+		}
+		spans = append(spans, rest[:end])
+		line = rest[end+1:]
+	}
+}
+
+// fencedCupthreadInvocation strips shell decoration from a fenced code-block
+// line (a `$` prompt and an unquoted trailing `#` comment), splits the rest
+// into pipeline stages at unquoted `|`, and returns the first stage that
+// invokes the cupthread binary, trailing `\` line-continuations removed — so
+// piped forms like `printf %s "$S" | cupthread api …` are validated too.
+func fencedCupthreadInvocation(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "$ "))
+	if i := unquotedCommentIndex(trimmed); i >= 0 {
+		trimmed = trimmed[:i]
+	}
+	for _, stage := range splitUnquotedPipes(trimmed) {
+		stage = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(stage), "\\"))
+		if stage == "cupthread" || strings.HasPrefix(stage, "cupthread ") {
+			return stage, true
+		}
+	}
+	return "", false
+}
+
+// shellLexer walks a shell command line byte by byte so both doc-lexer
+// consumers share one shell-semantics implementation. next classifies line[i]:
+// quoted is true when the byte sits inside a single- or double-quoted value
+// (single-quoted spans have no escape sequences; inside double quotes a
+// backslash escapes only `"` and `\`), escaped is true when the byte is made
+// literal by a backslash outside quotes.
+type shellLexer struct {
+	quote  rune // 0, '\'' or '"'
+	escape bool // the next byte is escaped
+}
+
+func (lx *shellLexer) next(line string, i int) (c byte, quoted, escaped bool) {
+	c = line[i]
+	escaped = lx.escape
+	lx.escape = false
+	switch {
+	case escaped:
+		// literal byte: quote state unchanged
+	case lx.quote == '\'':
+		quoted = true
+		if c == '\'' {
+			lx.quote = 0
+		}
+	case lx.quote == '"':
+		quoted = true
+		switch c {
+		case '\\':
+			if i+1 < len(line) && (line[i+1] == '"' || line[i+1] == '\\') {
+				lx.escape = true
+			}
+		case '"':
+			lx.quote = 0
+		}
+	case c == '\'' || c == '"':
+		lx.quote = rune(c)
+		quoted = true
+	case c == '\\':
+		lx.escape = true
+	}
+	return c, quoted, escaped
+}
+
+// splitUnquotedPipes splits a shell line at `|` separators that the shell
+// would treat as pipeline separators: outside quoted values and not
+// backslash-escaped.
+func splitUnquotedPipes(line string) []string {
+	var stages []string
+	var lx shellLexer
+	start := 0
+	for i := 0; i < len(line); i++ {
+		c, quoted, escaped := lx.next(line, i)
+		if c == '|' && !quoted && !escaped {
+			stages = append(stages, line[start:i])
+			start = i + 1
+		}
+	}
+	return append(stages, line[start:])
+}
+
+// unquotedCommentIndex finds the start of a `#` comment, or -1. The shell
+// starts a comment only at the beginning of a new word: the `#` must be
+// unquoted, unescaped, and preceded by line start or an unescaped blank —
+// `--title hello\ #176` is a single word whose `#` is a plain character, so
+// the flags after it stay available for validation.
+func unquotedCommentIndex(line string) int {
+	var lx shellLexer
+	prevEscaped := false
+	for i := 0; i < len(line); i++ {
+		c, quoted, escaped := lx.next(line, i)
+		if c == '#' && !quoted && !escaped {
+			if i == 0 || ((line[i-1] == ' ' || line[i-1] == '\t') && !prevEscaped) {
+				return i
+			}
+		}
+		prevEscaped = escaped
+	}
+	return -1
+}
+
+// resolveSkillCommandRef resolves one extracted reference against the cobra
+// tree. See TestSkillDocsCommandReferencesResolve for the grammar.
+func resolveSkillCommandRef(root *cobra.Command, reference string) error {
+	toks := strings.Fields(reference)
+	if len(toks) > 0 && toks[0] == "cupthread" {
+		toks = toks[1:]
+	}
+	cur := []*cobra.Command{root}
+	pathOpen := true
+	prevWasFlag := false
+	for _, tok := range toks {
+		if tok == "|" {
+			return nil // the rest of the line is another pipeline stage
+		}
+		if tok == "-" || tok == "--" { // stdin value / flag separator
+			prevWasFlag = false
+			pathOpen = false
+			continue
+		}
+		if strings.HasPrefix(tok, "-") {
+			if err := requireSkillRefFlag(cur, tok, reference); err != nil {
+				return err
+			}
+			prevWasFlag = true
+			continue
+		}
+		afterFlag := prevWasFlag
+		prevWasFlag = false
+		if afterFlag || !pathOpen {
+			continue // a token directly after a flag is that flag's value, not a path segment
+		}
+		if strings.ContainsAny(tok, "<>[{…") {
+			pathOpen = false // placeholder argument
+			continue
+		}
+		var next []*cobra.Command
+		hasGroup := false
+		for _, c := range cur {
+			if len(c.Commands()) > 0 {
+				hasGroup = true
+			}
+			for _, alt := range strings.FieldsFunc(tok, func(r rune) bool { return r == '/' || r == '|' }) {
+				if sub := findChildCommand(c, alt); sub != nil {
+					next = append(next, sub)
+				}
+			}
+		}
+		if len(next) == 0 {
+			if hasGroup {
+				return fmt.Errorf("command reference %q: %q does not resolve to a registered subcommand", reference, tok)
+			}
+			pathOpen = false // plain argument of a leaf command
+			continue
+		}
+		cur = next
+	}
+	return nil
+}
+
+// requireSkillRefFlag asserts that the flag token (`--name`, `--name=value`,
+// `-s`, or a combined shorthand) resolves on every current command branch,
+// walking up through persistent flags.
+func requireSkillRefFlag(cur []*cobra.Command, tok, reference string) error {
+	if strings.HasPrefix(tok, "--") {
+		name := strings.SplitN(tok[2:], "=", 2)[0]
+		for _, c := range cur {
+			if !commandHasLongFlag(c, name) {
+				return fmt.Errorf("command reference %q: flag --%s does not exist on %q", reference, name, skillRefCommandPath(c))
+			}
+		}
+		return nil
+	}
+	shorthand := strings.SplitN(tok[1:], "=", 2)[0]
+	if shorthand == "" {
+		return nil
+	}
+	for _, c := range cur {
+		if !commandHasShortFlag(c, shorthand[:1]) {
+			return fmt.Errorf("command reference %q: flag %s does not exist on %q", reference, tok, skillRefCommandPath(c))
+		}
+	}
+	return nil
+}
+
+func commandHasLongFlag(c *cobra.Command, name string) bool {
+	if c.Flags().Lookup(name) != nil {
+		return true
+	}
+	for x := c; x != nil; x = x.Parent() {
+		if x.PersistentFlags().Lookup(name) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func commandHasShortFlag(c *cobra.Command, shorthand string) bool {
+	if c.Flags().ShorthandLookup(shorthand) != nil {
+		return true
+	}
+	for x := c; x != nil; x = x.Parent() {
+		if x.PersistentFlags().ShorthandLookup(shorthand) != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// findChildCommand returns the direct subcommand of c matching name,
+// aliases included.
+func findChildCommand(c *cobra.Command, name string) *cobra.Command {
+	for _, sub := range c.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+		for _, alias := range sub.Aliases {
+			if alias == name {
+				return sub
+			}
+		}
+	}
+	return nil
+}
+
+func skillRefCommandPath(c *cobra.Command) string {
+	if c.Parent() == nil {
+		return c.Name()
+	}
+	return skillRefCommandPath(c.Parent()) + " " + c.Name()
 }
