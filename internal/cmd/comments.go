@@ -108,7 +108,7 @@ func newCommentsModerationListCmd() *cobra.Command {
 	list := &cobra.Command{
 		Use:   "list <feature-request-id>",
 		Short: "List all comments on a feature request, including hidden ones",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("feature request id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -231,7 +231,7 @@ bearer here, since it cannot satisfy a sign-in-only board either. Pass
 --app-key/--user-token to identify an SDK-style caller. The route shares a
 60 requests/minute per-IP budget; boards with anonymous roadmap view
 disabled answer 401.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("feature request id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "/api/v1/feature-requests/" + pathID(args[0]) + "/comments"
 			headers := map[string]string{}

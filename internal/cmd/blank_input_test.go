@@ -46,7 +46,8 @@ func blankLabel(s string) string {
 // self-diagnosing error naming the argument, and never reaches the wire, not
 // even for the confirm-guarded destructive commands, where the refusal must
 // precede the confirmDestructive prompt (so a non-interactive run fails with
-// the argument error, not the missing---yes refusal).
+// the argument error, not the missing---yes refusal). The comments and users
+// rows are the #304 residuals: the three ID-taking commands b85b77a missed.
 func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 	// yes marks the commands that register --yes; those run both with and
 	// without it so the guard demonstrably fires before the confirm refusal.
@@ -56,9 +57,12 @@ func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 		yes  bool
 		args []string
 	}{
+		{false, []string{"comments", "moderation", "list", "@ID@"}},
+		{false, []string{"comments", "list", "@ID@"}},
 		{false, []string{"comments", "moderation", "hide", "@ID@"}},
 		{false, []string{"comments", "moderation", "unhide", "@ID@"}},
 		{true, []string{"comments", "moderation", "delete", "@ID@"}},
+		{false, []string{"users", "profile", "@ID@"}},
 		{false, []string{"notifications", "read", "@ID@"}},
 		{false, []string{"changelog", "update", "@ID@", "--title", "t"}},
 		{true, []string{"changelog", "delete", "@ID@"}},
