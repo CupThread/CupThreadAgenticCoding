@@ -262,7 +262,7 @@ func newAppsListCmd() *cobra.Command {
 			rows := make([][]string, 0, len(resp.Apps))
 			for _, appRec := range resp.Apps {
 				defaultMark := ""
-				if prefs, ok := A.cfg.Workspaces[ws]; ok && prefs.DefaultApp == appRec.AppID {
+				if prefs, ok := A.cfg.Workspaces[ws]; ok && prefs != nil && prefs.DefaultApp == appRec.AppID {
 					defaultMark = " *"
 				}
 				rows = append(rows, []string{

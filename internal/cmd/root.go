@@ -802,7 +802,7 @@ func (a *app) requireAppID() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if prefs, ok := a.cfg.Workspaces[ws]; ok && prefs.DefaultApp != "" {
+	if prefs, ok := a.cfg.Workspaces[ws]; ok && prefs != nil && prefs.DefaultApp != "" {
 		return prefs.DefaultApp, nil
 	}
 	return "", errors.New("no app selected: pass --app <id> or run 'cupthread apps use <id>'")
@@ -819,7 +819,7 @@ func (a *app) optionalAppID() string {
 	if err != nil {
 		return ""
 	}
-	if prefs, ok := a.cfg.Workspaces[ws]; ok {
+	if prefs, ok := a.cfg.Workspaces[ws]; ok && prefs != nil {
 		return prefs.DefaultApp
 	}
 	return ""

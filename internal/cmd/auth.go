@@ -655,7 +655,7 @@ func newAuthStatusCmd() *cobra.Command {
 				}
 			}
 			row.DefaultWorkspace = A.cfg.DefaultWorkspace
-			if prefs, ok := A.cfg.Workspaces[A.cfg.DefaultWorkspace]; ok {
+			if prefs, ok := A.cfg.Workspaces[A.cfg.DefaultWorkspace]; ok && prefs != nil {
 				row.DefaultApp = prefs.DefaultApp
 			}
 

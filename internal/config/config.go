@@ -112,7 +112,25 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	cfg.normalize()
 	return cfg, nil
+}
+
+// normalize repairs the one map shape JSON can decode but no code path
+// produces: an explicit null for a Workspaces entry decodes to a nil
+// *WorkspacePrefs, and every reader relies on the map invariant "key
+// present ⇒ non-nil value" (issue #309). Dropping the entry at the single
+// decode point heals all current and future consumers, and the next Save
+// stops re-emitting the null instead of persisting it forever.
+func (c *Config) normalize() {
+	for id, prefs := range c.Workspaces {
+		if prefs == nil {
+			delete(c.Workspaces, id)
+		}
+	}
+	if len(c.Workspaces) == 0 {
+		c.Workspaces = nil
+	}
 }
 
 // Save writes the config atomically with restrictive permissions: the

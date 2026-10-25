@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -69,6 +70,63 @@ func TestWorkspacePrefsForCreatesEntry(t *testing.T) {
 	prefs.DefaultApp = "app_y"
 	if cfg.Workspaces["ws_x"].DefaultApp != "app_y" {
 		t.Fatalf("map entry not stored: %+v", cfg.Workspaces)
+	}
+}
+
+// TestLoadNormalizesNullWorkspacePrefs pins the fix for issue #309: a JSON
+// null for a Workspaces entry decodes to a nil *WorkspacePrefs that cmd-layer
+// readers dereference, so Load must restore the "key present ⇒ non-nil value"
+// invariant at the single decode point, keep the surviving entries intact,
+// and stop the next Save from re-emitting the null.
+func TestLoadNormalizesNullWorkspacePrefs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	seed := `{"defaultWorkspace":"ws_1",` +
+		`"workspaces":{"ws_1":null,"ws_2":{"defaultApp":"app_9"}},` +
+		`"auth":{"method":"token","accessToken":"cpt_x","tokenPrefix":"cpt_x"}}`
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Workspaces["ws_1"]; ok {
+		t.Errorf("null entry survived Load: %+v", cfg.Workspaces)
+	}
+	if prefs := cfg.Workspaces["ws_2"]; prefs == nil || prefs.DefaultApp != "app_9" {
+		t.Errorf("sibling entry damaged by normalization: %+v", cfg.Workspaces)
+	}
+
+	// The normalization is in-memory only, but it must stick: the next
+	// persist (any auth login, workspaces use, token refresh) rewrites the
+	// file from this object, and that rewrite must not carry the null.
+	// (defaultWorkspace may legitimately still name ws_1; only the
+	// workspaces map is checked here.)
+	saved := filepath.Join(t.TempDir(), "saved.json")
+	if err := cfg.Save(saved); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	var onDisk Config
+	if err := json.Unmarshal(data, &onDisk); err != nil {
+		t.Fatalf("parse saved config: %v", err)
+	}
+	if _, ok := onDisk.Workspaces["ws_1"]; ok {
+		t.Errorf("saved config re-emits the null entry:\n%s", data)
+	}
+	roundTripped, err := Load(saved)
+	if err != nil {
+		t.Fatalf("reload saved config: %v", err)
+	}
+	if _, ok := roundTripped.Workspaces["ws_1"]; ok {
+		t.Errorf("null entry reappeared after save/reload: %+v", roundTripped.Workspaces)
+	}
+	if prefs := roundTripped.Workspaces["ws_2"]; prefs == nil || prefs.DefaultApp != "app_9" {
+		t.Errorf("sibling entry not round-tripped: %+v", roundTripped.Workspaces)
 	}
 }
 
