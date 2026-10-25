@@ -303,7 +303,9 @@ func newGitHubCategoriesCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := fmt.Sprintf("%s/integrations/github/repos/%s/%s/categories", wsPath(ws, ""), owner, repo)
+			// owner and repo are pasted from GitHub URLs — untrusted content,
+			// so each stays one encoded path segment (issue #303).
+			path := wsPath(ws, "/integrations/github/repos/"+pathID(owner)+"/"+pathID(repo)+"/categories")
 			var resp api.GitHubCategoriesResponse
 			if err := A.client.Do(cmd.Context(), "GET", path, nil, nil, &resp); err != nil {
 				return err

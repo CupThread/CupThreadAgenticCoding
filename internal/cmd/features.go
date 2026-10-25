@@ -455,7 +455,9 @@ func newFeaturesForwardCmd() *cobra.Command {
 			if len(labels) > 0 {
 				body["labels"] = labels
 			}
-			path := fmt.Sprintf("%s/apps/%s/features/%s/github/forward", wsPath(ws, ""), appID, r.ID)
+			// r.ID is server-derived (the lookup picked it); only the app
+			// segment carries user input, so it alone needs pathID (issue #303).
+			path := appPath(ws, appID, "/features/"+r.ID+"/github/forward")
 			var resp api.ForwardToGitHubResponse
 			if err := A.client.Do(cmd.Context(), "POST", path, nil, body, &resp); err != nil {
 				return err

@@ -170,6 +170,20 @@ func wsPath(ws, suffix string) string {
 	return "/api/v1/console/workspaces/" + pathID(ws) + suffix
 }
 
+// appPath builds an app-scoped console route under wsPath. The app segment
+// gets pathID like every other user-supplied reference (issue #303): --app
+// and the saved default app are free-form strings at the same trust level as
+// --workspace, and the raw fmt.Sprintf interpolation they used before
+// silently reshaped the authenticated request — '#' dropped the /suffix
+// route (an authenticated mutation fired against the truncated prefix), '?'
+// turned the tail into a query string, and '/'/'../' added or traversed
+// segments. Escaped, the route fails to match and the server's 404 is the
+// command's honest error; plain app ids pass through byte-identical (the
+// #297 no-double-encoding contract).
+func appPath(ws, appID, suffix string) string {
+	return wsPath(ws, "/apps/"+pathID(appID)+suffix)
+}
+
 func newWorkspaceMembersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "members",
