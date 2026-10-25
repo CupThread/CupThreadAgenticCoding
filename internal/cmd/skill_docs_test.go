@@ -1880,3 +1880,126 @@ func skillRefCommandPath(c *cobra.Command) string {
 	}
 	return skillRefCommandPath(c.Parent()) + " " + c.Name()
 }
+
+// skillLineByPrefix returns the first line of doc that starts with prefix,
+// failing the test when no line does.
+func skillLineByPrefix(t *testing.T, doc, prefix string) string {
+	t.Helper()
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	t.Fatalf("no line starts with %q", prefix)
+	return ""
+}
+
+// skillSection returns the body of the "## <heading>" section, up to the next
+// "## " heading, failing the test when the heading is absent.
+func skillSection(t *testing.T, doc, heading string) string {
+	t.Helper()
+	start := strings.Index(doc, heading)
+	if start < 0 {
+		t.Fatalf("no section heading %q", heading)
+	}
+	rest := doc[start+len(heading):]
+	if end := strings.Index(rest, "\n## "); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
+}
+
+// TestSkillDocsIssue177VoteRoadmapGate pins the PRIV-12 roadmap-surface gate
+// on the vote writes (issue #177, SaaS PR #618/#646): both vote routes answer
+// the uniform `401 authentication_required` on boards with anonymous roadmap
+// view disabled — even when allowAnonymousVote is on — and the gate runs
+// ahead of the feature-request existence lookup, so missing and approved ids
+// are indistinguishable and no voteCount is served. The cupthread-api skill
+// must document the gate on both vote endpoint rows and in the PRIV-12
+// enforcement table, and all four SDK skills must tell custom-voting-UI
+// authors to surface the sign-in flow instead of retrying.
+// Red-before/green-after: reverting any one of the phrases below must fail
+// this test.
+func TestSkillDocsIssue177VoteRoadmapGate(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+
+		// Each vote endpoint row must carry the gate note with its ordering.
+		rowRequirements := []struct{ rowPrefix, want string }{
+			{
+				rowPrefix: "| `/api/v1/feature-requests/:id/vote` | `POST` |",
+				want:      "even when anonymous voting is enabled",
+			},
+			{
+				rowPrefix: "| `/api/v1/feature-requests/:id/vote` | `DELETE` |",
+				want:      "even when anonymous voting is enabled",
+			},
+		}
+		for _, req := range rowRequirements {
+			row := skillLineByPrefix(t, doc, req.rowPrefix)
+			if !strings.Contains(row, req.want) {
+				t.Errorf("vote endpoint row %q must pin the PRIV-12 gate (%q); got: %s", req.rowPrefix, req.want, row)
+			}
+			if !strings.Contains(row, `"code": "authentication_required"`) {
+				t.Errorf("vote endpoint row %q must name the uniform 401 body code; got: %s", req.rowPrefix, row)
+			}
+			if !strings.Contains(row, "the gate runs before the feature-request existence lookup") {
+				t.Errorf("vote endpoint row %q must pin the gate's ordering ahead of the existence lookup; got: %s", req.rowPrefix, row)
+			}
+		}
+
+		// The PRIV-12 enforcement table must list both vote writes.
+		priv12Rows := []struct{ rowPrefix, want string }{
+			{
+				rowPrefix: "| `POST /api/v1/feature-requests/:id/vote` | anonymous write, `allowAnonymousRoadmap` off |",
+				want:      "it fires even when `allowAnonymousVote` is on",
+			},
+			{
+				rowPrefix: "| `DELETE /api/v1/feature-requests/:id/vote` | anonymous write, `allowAnonymousRoadmap` off |",
+				want:      "same ordering ahead of the existence lookup",
+			},
+		}
+		for _, req := range priv12Rows {
+			row := skillLineByPrefix(t, doc, req.rowPrefix)
+			if !strings.Contains(row, "`401` `authentication_required`") {
+				t.Errorf("PRIV-12 table row %q must document 401 authentication_required; got: %s", req.rowPrefix, row)
+			}
+			if !strings.Contains(row, req.want) {
+				t.Errorf("PRIV-12 table row %q is missing required claim %q; got: %s", req.rowPrefix, req.want, row)
+			}
+		}
+
+		for _, marker := range []string{
+			// The gate ordering contrast in the 401-body paragraph.
+			"The two vote-write gates are the strictest of the family: they run **ahead of** the feature-request existence lookup, so a gated board also keeps its missing-vs-approved oracle shut on the write paths — missing and approved ids both answer the `401`, never a `404`, and no `voteCount` is served.",
+			// The client-guidance bullet for the vote writes.
+			"Treat `401` + `code: \"authentication_required\"` on a vote `POST`/`DELETE` the same way: it is **sign-in required**, not a credentials bug — surface the host app's sign-in flow instead of retrying",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api/SKILL.md is missing required issue-#177 marker %q", marker)
+			}
+		}
+	})
+
+	// Every SDK skill's vote section must warn custom-voting-UI authors about
+	// the gated-board 401 and the sign-in-flow handling.
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
+			for _, marker := range []string{
+				"On boards with anonymous roadmap view disabled, anonymous vote `POST`/`DELETE` answer `401 authentication_required` (even when anonymous voting is enabled)",
+				"surface the host app's sign-in flow instead of retrying",
+			} {
+				if !strings.Contains(vote, marker) {
+					t.Errorf("%s/SKILL.md vote section is missing required issue-#177 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}
