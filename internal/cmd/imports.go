@@ -55,7 +55,7 @@ func newImportsListCmd() *cobra.Command {
 				return err
 			}
 			var resp api.ListImportJobsResponse
-			path := fmt.Sprintf("%s/apps/%s/imports", wsPath(ws, ""), appID)
+			path := appPath(ws, appID, "/imports")
 			if err := A.client.Do(cmd.Context(), "GET", path, nil, nil, &resp); err != nil {
 				return err
 			}
@@ -198,7 +198,7 @@ raw ImportOptions JSON instead of the per-source flags.`,
 			}
 
 			body := map[string]any{"appId": appID, "source": source, "mode": mode, "options": options}
-			path := fmt.Sprintf("%s/apps/%s/imports", wsPath(ws, ""), appID)
+			path := appPath(ws, appID, "/imports")
 			var resp api.CreateImportJobResponse
 			if err := A.client.Do(cmd.Context(), "POST", path, nil, body, &resp); err != nil {
 				return err

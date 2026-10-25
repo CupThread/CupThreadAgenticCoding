@@ -838,7 +838,10 @@ func (a *app) lookupApp(ctx context.Context, ref string) (*api.AppRecord, error)
 	client := a.client
 	client.WorkspaceID = ws
 	var resp api.ListAppsResponse
-	if err := client.Do(ctx, "GET", "/api/v1/console/workspaces/"+ws+"/apps", nil, nil, &resp); err != nil {
+	// wsPath, not a raw concatenation: --workspace accepts arbitrary strings,
+	// and this was the one remaining unescaped workspace interpolation in the
+	// tree (issue #303).
+	if err := client.Do(ctx, "GET", wsPath(ws, "/apps"), nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	for i := range resp.Apps {

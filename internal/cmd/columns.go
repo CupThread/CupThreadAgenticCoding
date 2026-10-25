@@ -34,7 +34,7 @@ func newColumnsListCmd() *cobra.Command {
 				return err
 			}
 			var resp api.ListColumnsResponse
-			if err := A.client.Do(cmd.Context(), "GET", fmt.Sprintf("%s/apps/%s/columns", wsPath(ws, ""), appID), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "GET", appPath(ws, appID, "/columns"), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -89,7 +89,7 @@ func newColumnsCreateCmd() *cobra.Command {
 				body["color"] = color
 			}
 			var resp api.Column
-			if err := A.client.Do(cmd.Context(), "POST", fmt.Sprintf("%s/apps/%s/columns", wsPath(ws, ""), appID), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", appPath(ws, appID, "/columns"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -209,7 +209,7 @@ func newVersionsListCmd() *cobra.Command {
 				return err
 			}
 			var resp api.ListVersionsResponse
-			if err := A.client.Do(cmd.Context(), "GET", fmt.Sprintf("%s/apps/%s/versions", wsPath(ws, ""), appID), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "GET", appPath(ws, appID, "/versions"), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -251,7 +251,7 @@ func newVersionsCreateCmd() *cobra.Command {
 				body["releasedAt"] = releasedAt
 			}
 			var resp api.Version
-			if err := A.client.Do(cmd.Context(), "POST", fmt.Sprintf("%s/apps/%s/versions", wsPath(ws, ""), appID), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", appPath(ws, appID, "/versions"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
