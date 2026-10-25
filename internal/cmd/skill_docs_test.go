@@ -1961,6 +1961,9 @@ func TestSkillDocsIssue177VoteRoadmapGate(t *testing.T) {
 		}
 		for _, req := range priv12Rows {
 			row := skillLineByPrefix(t, doc, req.rowPrefix)
+			if !strings.Contains(row, "`401` `authentication_required`") {
+				t.Errorf("PRIV-12 table row %q must document 401 authentication_required; got: %s", req.rowPrefix, row)
+			}
 			if !strings.Contains(row, req.want) {
 				t.Errorf("PRIV-12 table row %q is missing required claim %q; got: %s", req.rowPrefix, req.want, row)
 			}
