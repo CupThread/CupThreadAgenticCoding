@@ -1543,6 +1543,25 @@ func TestSkillDocsCommandReferencesResolve(t *testing.T) {
 		t.Errorf("`#` inside single-quoted value treated as comment start: index %d", got)
 	}
 
+	// An escaped double quote does not close a double-quoted value, so the
+	// embedded pipe must not split and the trailing flag stays resolvable.
+	escaped := `cupthread changelog create --title "a\"b|c" --bad-flag`
+	if got, ok := fencedCupthreadInvocation(escaped); !ok || got != escaped {
+		t.Errorf("escaped-quote invocation truncated: got %q, ok=%v", got, ok)
+	}
+	if err := resolveSkillCommandRef(root, escaped); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after escaped-quote value not resolved: err=%v", err)
+	}
+	// A `#` after an escaped blank is a plain character mid-word, not a
+	// comment: the line must not be truncated at the `#`.
+	escComment := `cupthread changelog create --title hello\ #176 --bad-flag`
+	if got := unquotedCommentIndex(escComment); got >= 0 {
+		t.Errorf("`#` after escaped blank treated as comment start: index %d", got)
+	}
+	if err := resolveSkillCommandRef(root, escComment); err == nil || !strings.Contains(err.Error(), "--bad-flag") {
+		t.Errorf("flag after escaped-blank value not resolved: err=%v", err)
+	}
+
 	minRefs := map[string]int{
 		"cupthread-android-sdk":      2,
 		"cupthread-api":              20,
@@ -1652,54 +1671,81 @@ func fencedCupthreadInvocation(line string) (string, bool) {
 	return "", false
 }
 
-// splitUnquotedPipes splits a shell line at `|` separators that sit outside
-// single- or double-quoted arguments; a backslash-escaped character outside
-// quotes (notably `\|`) is not a separator.
+// shellLexer walks a shell command line byte by byte so both doc-lexer
+// consumers share one shell-semantics implementation. next classifies line[i]:
+// quoted is true when the byte sits inside a single- or double-quoted value
+// (single-quoted spans have no escape sequences; inside double quotes a
+// backslash escapes only `"` and `\`), escaped is true when the byte is made
+// literal by a backslash outside quotes.
+type shellLexer struct {
+	quote  rune // 0, '\'' or '"'
+	escape bool // the next byte is escaped
+}
+
+func (lx *shellLexer) next(line string, i int) (c byte, quoted, escaped bool) {
+	c = line[i]
+	escaped = lx.escape
+	lx.escape = false
+	switch {
+	case escaped:
+		// literal byte: quote state unchanged
+	case lx.quote == '\'':
+		quoted = true
+		if c == '\'' {
+			lx.quote = 0
+		}
+	case lx.quote == '"':
+		quoted = true
+		switch c {
+		case '\\':
+			if i+1 < len(line) && (line[i+1] == '"' || line[i+1] == '\\') {
+				lx.escape = true
+			}
+		case '"':
+			lx.quote = 0
+		}
+	case c == '\'' || c == '"':
+		lx.quote = rune(c)
+		quoted = true
+	case c == '\\':
+		lx.escape = true
+	}
+	return c, quoted, escaped
+}
+
+// splitUnquotedPipes splits a shell line at `|` separators that the shell
+// would treat as pipeline separators: outside quoted values and not
+// backslash-escaped.
 func splitUnquotedPipes(line string) []string {
 	var stages []string
-	var quote rune
+	var lx shellLexer
 	start := 0
 	for i := 0; i < len(line); i++ {
-		switch c := line[i]; c {
-		case '\\':
-			if quote == 0 {
-				i++
-			}
-		case '\'', '"':
-			switch {
-			case quote == 0:
-				quote = rune(c)
-			case quote == rune(c):
-				quote = 0
-			}
-		case '|':
-			if quote == 0 {
-				stages = append(stages, line[start:i])
-				start = i + 1
-			}
+		c, quoted, escaped := lx.next(line, i)
+		if c == '|' && !quoted && !escaped {
+			stages = append(stages, line[start:i])
+			start = i + 1
 		}
 	}
 	return append(stages, line[start:])
 }
 
-// unquotedCommentIndex finds the start of a `#` comment outside single- or
-// double-quoted arguments, or -1.
+// unquotedCommentIndex finds the start of a `#` comment, or -1. The shell
+// starts a comment only at the beginning of a new word: the `#` must be
+// unquoted, unescaped, and preceded by line start or an unescaped blank —
+// `--title hello\ #176` is a single word whose `#` is a plain character, so
+// the flags after it stay available for validation.
 func unquotedCommentIndex(line string) int {
-	var quote rune
+	var lx shellLexer
+	prevEscaped := false
 	for i := 0; i < len(line); i++ {
-		switch c := line[i]; c {
-		case '\'', '"':
-			switch {
-			case quote == 0:
-				quote = rune(c)
-			case quote == rune(c):
-				quote = 0
-			}
-		case '#':
-			if quote == 0 && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t') {
+		c, quoted, escaped := lx.next(line, i)
+		if c == '#' && !quoted && !escaped {
+			if i == 0 || ((line[i-1] == ' ' || line[i-1] == '\t') && !prevEscaped) {
 				return i
 			}
 		}
+		prevEscaped = escaped
 	}
 	return -1
 }
