@@ -1518,6 +1518,14 @@ func TestSkillDocsCommandReferencesResolve(t *testing.T) {
 	}
 	initHelp(root)
 
+	// The cli skill documents the piped signing form
+	// `printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs …`;
+	// pin that the extractor picks the cupthread stage out of the pipeline
+	// instead of skipping the line.
+	if got, ok := fencedCupthreadInvocation(`printf %s "$CUP_SDK_SECRET" | cupthread api sign-user-attrs --app-key app_demo12345 \`); !ok || got != "cupthread api sign-user-attrs --app-key app_demo12345" {
+		t.Errorf("piped cupthread invocation not extracted: got %q, ok=%v", got, ok)
+	}
+
 	minRefs := map[string]int{
 		"cupthread-android-sdk":      2,
 		"cupthread-api":              20,
@@ -1608,18 +1616,43 @@ func inlineCodeSpans(line string) []string {
 }
 
 // fencedCupthreadInvocation strips shell decoration from a fenced code-block
-// line (a `$` prompt and an unquoted trailing `#` comment) and reports
-// whether what remains invokes the cupthread binary.
+// line (a `$` prompt and an unquoted trailing `#` comment), splits the rest
+// into pipeline stages at unquoted `|`, and returns the first stage that
+// invokes the cupthread binary, trailing `\` line-continuations removed — so
+// piped forms like `printf %s "$S" | cupthread api …` are validated too.
 func fencedCupthreadInvocation(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "$ "))
 	if i := unquotedCommentIndex(trimmed); i >= 0 {
-		trimmed = strings.TrimSpace(trimmed[:i])
+		trimmed = trimmed[:i]
 	}
-	if trimmed == "cupthread" || strings.HasPrefix(trimmed, "cupthread ") {
-		return trimmed, true
+	for _, stage := range splitUnquotedPipes(trimmed) {
+		stage = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(stage), "\\"))
+		if stage == "cupthread" || strings.HasPrefix(stage, "cupthread ") {
+			return stage, true
+		}
 	}
 	return "", false
+}
+
+// splitUnquotedPipes splits a shell line at `|` separators that sit outside
+// double quotes.
+func splitUnquotedPipes(line string) []string {
+	var stages []string
+	inQuote := false
+	start := 0
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '"':
+			inQuote = !inQuote
+		case '|':
+			if !inQuote {
+				stages = append(stages, line[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(stages, line[start:])
 }
 
 // unquotedCommentIndex finds the start of a `#` comment outside double
@@ -1724,8 +1757,11 @@ func requireSkillRefFlag(cur []*cobra.Command, tok, reference string) error {
 }
 
 func commandHasLongFlag(c *cobra.Command, name string) bool {
+	if c.Flags().Lookup(name) != nil {
+		return true
+	}
 	for x := c; x != nil; x = x.Parent() {
-		if x.Flags().Lookup(name) != nil || x.PersistentFlags().Lookup(name) != nil {
+		if x.PersistentFlags().Lookup(name) != nil {
 			return true
 		}
 	}
@@ -1733,8 +1769,11 @@ func commandHasLongFlag(c *cobra.Command, name string) bool {
 }
 
 func commandHasShortFlag(c *cobra.Command, shorthand string) bool {
+	if c.Flags().ShorthandLookup(shorthand) != nil {
+		return true
+	}
 	for x := c; x != nil; x = x.Parent() {
-		if x.Flags().ShorthandLookup(shorthand) != nil || x.PersistentFlags().ShorthandLookup(shorthand) != nil {
+		if x.PersistentFlags().ShorthandLookup(shorthand) != nil {
 			return true
 		}
 	}
