@@ -37,7 +37,7 @@ func newUsersProfileCmd() *cobra.Command {
 			"The profile GET is a public endpoint (issue #182), so this works\n" +
 			"logged out; the CLI never sends the console bearer here. The route\n" +
 			"is rate limited per client IP.",
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("user id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			userID := args[0]
 			if scopedUserIDRe.MatchString(userID) && appKey == "" {
