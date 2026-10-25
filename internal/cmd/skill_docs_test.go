@@ -1348,6 +1348,74 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 	}
 }
 
+// TestAPISkillIssue242VoteSubscribeTurnstileToken pins the issue #242 sync of
+// the optional turnstileToken field on the two email-triggering public
+// writes:
+//   - POST /api/v1/public/apps/{appKey}/changelog/subscribe
+//     (SubscribeChangelogInput) accepts an optional turnstileToken (string,
+//     10-2048 chars); when the server enforces Turnstile human verification an
+//     anonymous subscription requires a valid token and one that is missing or
+//     fails verification answers 403 {"error": "Human verification failed.
+//     Please try again.", "code": "turnstile_verification_failed"}, while
+//     signed-in callers subscribing with their session's verified email
+//     address are exempt.
+//   - POST /api/v1/feature-requests/{id}/vote (VoteFeatureRequestInput)
+//     accepts an optional turnstileToken; when verification is enforced an
+//     anonymous voter that opts in via shipNotifyEmail should supply a
+//     verified token, and a missing or failed token leaves the vote itself
+//     unchanged ({voted: true, voteCount}, no warning) while silently
+//     suppressing the ship-notification opt-in (no consent row, no
+//     confirmation email) to protect recipients from abuse.
+//
+// Every SDK skill's vote section carries the same suppression warning for
+// custom-voting-UI authors.
+func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// Subscribe row: the field, the gated 403 body, the signed-in exemption.
+		"The request body (`SubscribeChangelogInput`) accepts an optional `turnstileToken` (string, 10–2048 chars)",
+		`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
+		"signed-in callers subscribing with their session's verified email address are exempt",
+		// Changelog flow blockquote: the same gate in the flow summary.
+		"anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed`",
+		// Vote POST row: the field and the silent suppression.
+		"optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`)",
+		"if it is missing or fails verification the vote itself still answers `{voted: true, voteCount}` unchanged, but the ship-notification opt-in is suppressed",
+		// Ship-notification section: the invisible-suppression contract.
+		"### Turnstile-gated ship-notification opt-in (#242)",
+		"the response is still the plain `200 {voted: true, voteCount}` with no warning field",
+		"no consent row is written and no confirmation email is sent",
+		"a client must never treat a `200` as proof the address was enrolled",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
+		}
+	}
+
+	// Every SDK skill's vote section must warn custom-voting-UI authors that a
+	// 200 does not prove the ship-notify address was enrolled when Turnstile
+	// verification suppresses the opt-in.
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
+			for _, marker := range []string{
+				"an anonymous vote that opts in via `shipNotifyEmail` should carry a verified `turnstileToken` (string, 10–2048 chars)",
+				"never treat a `200` as proof the address was enrolled",
+			} {
+				if !strings.Contains(vote, marker) {
+					t.Errorf("%s/SKILL.md vote section is missing required issue-#242 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}
+
 // TestSkillDocsIssue254PublicUserProfileResponseShape pins the issue #254 sync
 // of the OpenAPI 3.1 PublicUserProfileResponse contract on GET
 // /api/v1/users/{userId}/profile (SaaS #1190 / PR #1192):
