@@ -224,7 +224,7 @@ func newFeaturesGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <request-id>",
 		Short: "Show one feature request",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := fetchOneFeatureRequest(cmd.Context(), args[0])
 			if err != nil {
@@ -306,7 +306,7 @@ func newFeaturesUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <request-id>",
 		Short: "Update a feature request",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := fetchOneFeatureRequest(cmd.Context(), args[0])
 			if err != nil {
@@ -357,7 +357,7 @@ func newFeaturesApproveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "approve <request-id>",
 		Short: "Approve a pending feature request",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := fetchOneFeatureRequest(cmd.Context(), args[0])
 			if err != nil {
@@ -389,7 +389,7 @@ func newFeaturesDeleteCmd() *cobra.Command {
 The server hard-deletes the request and it cannot be restored. On an
 interactive terminal you are asked to confirm before anything is sent;
 non-interactive callers (scripts, agents) must pass --yes.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete feature request %q", args[0])); err != nil {
 				return err
@@ -422,7 +422,7 @@ func newFeaturesForwardCmd() *cobra.Command {
 	forward := &cobra.Command{
 		Use:   "forward <request-id>",
 		Short: "Forward a feature request to GitHub (discussion or issue)",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if target != "discussion" && target != "issue" {
 				return fmt.Errorf("invalid --target %q: use discussion or issue", target)

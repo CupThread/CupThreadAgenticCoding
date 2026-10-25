@@ -41,13 +41,15 @@ func blankLabel(s string) string {
 }
 
 // TestBlankPositionalIDsRejectedBeforeAnyRequest pins the issue #293 guard on
-// every single-ID command outside features: an empty or whitespace-only id —
-// the canonical unset-shell-variable accident — fails locally with a
-// self-diagnosing error naming the argument, and never reaches the wire, not
-// even for the confirm-guarded destructive commands, where the refusal must
-// precede the confirmDestructive prompt (so a non-interactive run fails with
-// the argument error, not the missing---yes refusal). The comments and users
-// rows are the #304 residuals: the three ID-taking commands b85b77a missed.
+// every single-ID command, the features family included (issue #310): an
+// empty or whitespace-only id — the canonical unset-shell-variable accident —
+// fails locally with a self-diagnosing error naming the argument, and never
+// reaches the wire, not even for the confirm-guarded destructive commands,
+// where the refusal must precede the confirmDestructive prompt (so a
+// non-interactive run fails with the argument error, not the missing---yes
+// refusal). The comments and users rows are the #304 residuals: the three
+// ID-taking commands b85b77a missed; the features rows close the family that
+// guarded inside fetchOneFeatureRequest only, after the confirm prompt.
 func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 	// yes marks the commands that register --yes; those run both with and
 	// without it so the guard demonstrably fires before the confirm refusal.
@@ -83,6 +85,11 @@ func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 		{false, []string{"inbox", "triage", "@ID@", "open"}},
 		{false, []string{"inbox", "assign", "@ID@"}},
 		{false, []string{"inbox", "retry", "@ID@"}},
+		{false, []string{"features", "get", "@ID@"}},
+		{false, []string{"features", "update", "@ID@", "--title", "t"}},
+		{false, []string{"features", "approve", "@ID@"}},
+		{true, []string{"features", "delete", "@ID@"}},
+		{false, []string{"features", "forward", "@ID@", "--target", "issue"}},
 	}
 
 	blanks := []string{"", "   "}
