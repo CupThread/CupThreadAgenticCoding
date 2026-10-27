@@ -26,6 +26,7 @@ const publicAppConfigFixture = `{
 	"allowAnonymousVote": true,
 	"allowAnonymousFeedback": true,
 	"allowAnonymousChangelog": false,
+	"requireAnonymousVoteTurnstile": true,
 	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"]
 }`
 
@@ -58,6 +59,9 @@ func TestPublicAppConfigDecodesFullSchema(t *testing.T) {
 	if !cfg.AllowAnonymousVote || cfg.AllowAnonymousChangelog {
 		t.Errorf("anonymous flags = %+v", cfg)
 	}
+	if !cfg.RequireAnonymousVoteTurnstile {
+		t.Errorf("RequireAnonymousVoteTurnstile = false, want the SEC-846 gate from the full-schema payload")
+	}
 	if len(cfg.AllowedEmbedOrigins) != 2 ||
 		cfg.AllowedEmbedOrigins[0] != "https://docs.example.com" ||
 		cfg.AllowedEmbedOrigins[1] != "https://app.partner.com:8443" {
@@ -79,6 +83,9 @@ func TestPublicAppConfigMinimalPayload(t *testing.T) {
 	}
 	if cfg.HideSiteBranding {
 		t.Errorf("HideSiteBranding = true, want default false")
+	}
+	if cfg.RequireAnonymousVoteTurnstile {
+		t.Errorf("RequireAnonymousVoteTurnstile = true, want default false when the server omits the field")
 	}
 }
 

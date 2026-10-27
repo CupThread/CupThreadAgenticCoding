@@ -231,6 +231,7 @@ over-budget caller gets 429.`,
 				{"Embed origins", orDash(strings.Join(config.AllowedEmbedOrigins, ", "))},
 				{"Anonymous roadmap", boolYesNo(config.AllowAnonymousRoadmap)},
 				{"Anonymous vote", boolYesNo(config.AllowAnonymousVote)},
+				{"Anonymous vote Turnstile", boolYesNo(config.RequireAnonymousVoteTurnstile)},
 				{"Anonymous feedback", boolYesNo(config.AllowAnonymousFeedback)},
 				{"Anonymous changelog", boolYesNo(config.AllowAnonymousChangelog)},
 			})

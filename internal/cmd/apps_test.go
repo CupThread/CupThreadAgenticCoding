@@ -16,7 +16,8 @@ import (
 )
 
 // publicConfigFixture is a PublicAppConfig payload exercising the fields from
-// issue #2 (websiteUrl, hideSiteBranding) and issue #146 (allowedEmbedOrigins).
+// issue #2 (websiteUrl, hideSiteBranding), issue #146 (allowedEmbedOrigins),
+// and issue #243 (requireAnonymousVoteTurnstile).
 const publicConfigFixture = `{
 	"appId": "app_1",
 	"appKey": "key_live_1",
@@ -33,7 +34,8 @@ const publicConfigFixture = `{
 	"hideSiteBranding": true,
 	"allowedPlatforms": ["ios", "universal"],
 	"maxAttachmentBytes": 10485760,
-	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"]
+	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"],
+	"requireAnonymousVoteTurnstile": true
 }`
 
 // publicConfigNoEmbedFixture is the same payload without allowedEmbedOrigins:
@@ -108,6 +110,7 @@ func TestAppsPublicConfigByAppKey(t *testing.T) {
 	for _, want := range []string{
 		"Website URL", "https://acme.example.com", "Hide site branding", "yes",
 		"Embed origins", "https://docs.example.com", "https://app.partner.com:8443",
+		"Anonymous vote Turnstile", "yes",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -183,6 +186,7 @@ func TestAppsPublicConfigJSON(t *testing.T) {
 		`"allowedEmbedOrigins": [`,
 		`"https://docs.example.com"`,
 		`"https://app.partner.com:8443"`,
+		`"requireAnonymousVoteTurnstile": true`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %q:\n%s", want, out)
