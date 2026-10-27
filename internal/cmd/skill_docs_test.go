@@ -1386,18 +1386,22 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"the response is still the plain `200 {voted: true, voteCount}` with no warning field",
 		"no consent row is written and no confirmation email is sent",
 		"a client must never treat a `200` as proof the address was enrolled",
-		// CodeRabbit correction: the config cannot be used to detect the gate.
-		"`PublicAppConfig` exposes no Turnstile-enforcement field",
+		// Issue #243 correction: the config flag gates only the vote itself;
+		// this opt-in guard is not config-gated, so the flag is no signal for
+		// whether a 200 enrolled the address.
+		"it says nothing about this opt-in guard, which applies to every anonymous opt-in whether the flag is `true` or `false`",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
 		}
 	}
 	for _, stale := range []string{
-		// PublicAppConfig carries no Turnstile field (issue #247's siteKey is
-		// not shipped), so the doc must not claim a caller can read the
-		// enforcement requirement off the public config.
-		"when the board's public config reports that verification is required",
+		// Superseded by issue #243: PublicAppConfig now legitimately carries
+		// the requireAnonymousVoteTurnstile vote gate, but the pre-#243 docs
+		// must not come back claiming either the old no-field position or the
+		// even older config-signal position.
+		"`PublicAppConfig` exposes no Turnstile-enforcement field",
+		"the host app shows its Turnstile challenge based on its own app settings",
 	} {
 		if strings.Contains(doc, stale) {
 			t.Errorf("cupthread-api/SKILL.md still documents the incorrect public-config Turnstile signal %q", stale)
@@ -1427,6 +1431,69 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 			} {
 				if !strings.Contains(vote, marker) {
 					t.Errorf("%s/SKILL.md vote section is missing required issue-#242 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}
+
+// TestSkillDocsIssue243RequireAnonymousVoteTurnstile pins the issue #243 sync
+// of the SEC-846 Turnstile vote gate:
+//   - PublicAppConfig gains requireAnonymousVoteTurnstile (boolean, always
+//     served, defaults to false) alongside the other anonymous-access flags.
+//   - When a board sets it to true, an anonymous voter must supply a verified
+//     turnstileToken (string, 10-2048 chars) minted for action "vote" with
+//     cdata bound to the board's appKey, or POST /feature-requests/{id}/vote
+//     rejects the vote outright: a missing token answers 403
+//     {"error": "Human verification (Turnstile) is required",
+//     "code": "turnstile_required"} and a token that fails verification
+//     answers 403 {"error": "Human verification failed. Please try again.",
+//     "code": "turnstile_verification_failed"} — the vote is not recorded.
+//     Signed-in voters are exempt (the guard is flag && !identity).
+//   - The flag gates only the vote itself: the #242 ship-notification opt-in
+//     guard applies to every anonymous opt-in regardless of the flag, so a
+//     200 still never proves the address was enrolled.
+//
+// Every SDK skill's vote section carries the same hard-gate warning so
+// custom-voting-UI authors read the flag off the public config before
+// rendering the ballot.
+func TestSkillDocsIssue243RequireAnonymousVoteTurnstile(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// Public-config endpoint row: the flag joins the anonymous-access list.
+		"and the `requireAnonymousVoteTurnstile` SEC-846 vote-verification gate",
+		// The dedicated gate section.
+		"### Turnstile-gated anonymous vote (SEC-846, #243)",
+		"`PublicAppConfig` carries a `requireAnonymousVoteTurnstile` flag (boolean, always served, defaults to `false`)",
+		"minted for action `vote` with cdata bound to the board's `appKey`",
+		`403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`,
+		`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
+		"the guard is `requireAnonymousVoteTurnstile && !identity`",
+		"the ship-notification opt-in guard below applies to every anonymous opt-in regardless of the flag",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#243 marker %q", marker)
+		}
+	}
+
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
+			for _, marker := range []string{
+				"sets `requireAnonymousVoteTurnstile` to `true`, an anonymous vote must carry a verified `turnstileToken` (string, 10–2048 chars) minted for action `vote` with cdata bound to the board's `appKey`, or it is rejected outright",
+				`403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`,
+				`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
+				"the vote is not recorded. Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
+				"this opt-in guard applies to every anonymous opt-in whether or not the board sets `requireAnonymousVoteTurnstile`",
+			} {
+				if !strings.Contains(vote, marker) {
+					t.Errorf("%s/SKILL.md vote section is missing required issue-#243 marker %q", skill, marker)
 				}
 			}
 		})

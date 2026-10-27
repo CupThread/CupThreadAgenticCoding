@@ -792,6 +792,12 @@ type PublicAppConfig struct {
 	AllowAnonymousVote      bool     `json:"allowAnonymousVote"`
 	AllowAnonymousFeedback  bool     `json:"allowAnonymousFeedback"`
 	AllowAnonymousChangelog bool     `json:"allowAnonymousChangelog"`
+	// RequireAnonymousVoteTurnstile mirrors the SEC-846 vote gate: when the
+	// tenant turns it on, an anonymous voter must supply a verified Turnstile
+	// token on POST /api/v1/feature-requests/{id}/vote or the endpoint answers
+	// 403 and the vote is not recorded. Always served (settings default
+	// false); signed-in voters are exempt.
+	RequireAnonymousVoteTurnstile bool `json:"requireAnonymousVoteTurnstile"`
 	// AllowedEmbedOrigins lists the external https origins permitted to
 	// embed the app's public portal in an iframe (frame-ancestors). The
 	// server sends the field only when at least one origin is configured —
