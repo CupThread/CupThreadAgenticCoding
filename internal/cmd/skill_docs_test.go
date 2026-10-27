@@ -1380,16 +1380,18 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed`",
 		// Vote POST row: the field and the silent suppression.
 		"optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`)",
-		"if it is missing or fails verification the vote itself still answers `{voted: true, voteCount}` unchanged, but the ship-notification opt-in is suppressed",
+		"on a board whose public config sets `requireAnonymousVoteTurnstile: true`, a missing or failed token rejects the vote outright with the SEC-846 `403`",
+		"on boards without that flag, a missing or failed token leaves the vote itself at `{voted: true, voteCount}` unchanged while the ship-notification opt-in is silently suppressed",
 		// Ship-notification section: the invisible-suppression contract.
 		"### Turnstile-gated ship-notification opt-in (#242)",
 		"the response is still the plain `200 {voted: true, voteCount}` with no warning field",
 		"no consent row is written and no confirmation email is sent",
 		"a client must never treat a `200` as proof the address was enrolled",
-		// Issue #243 correction: the config flag gates only the vote itself;
-		// this opt-in guard is not config-gated, so the flag is no signal for
-		// whether a 200 enrolled the address.
-		"it says nothing about this opt-in guard, which applies to every anonymous opt-in whether the flag is `true` or `false`",
+		// Issue #243 correction: the silent-200 suppression is qualified by
+		// the vote gate — it only applies while the vote itself passes
+		// (flag false); flag-on boards reject the vote instead.
+		"When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that silent state",
+		"the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
@@ -1490,7 +1492,7 @@ func TestSkillDocsIssue243RequireAnonymousVoteTurnstile(t *testing.T) {
 				`403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`,
 				`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
 				"the vote is not recorded. Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
-				"this opt-in guard applies to every anonymous opt-in whether or not the board sets `requireAnonymousVoteTurnstile`",
+				"and that suppression only applies while the vote itself passes: when the board sets `requireAnonymousVoteTurnstile` to `true`, a missing or failed token rejects the whole vote with the `403`s above instead of suppressing anything",
 			} {
 				if !strings.Contains(vote, marker) {
 					t.Errorf("%s/SKILL.md vote section is missing required issue-#243 marker %q", skill, marker)
