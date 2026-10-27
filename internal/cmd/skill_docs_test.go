@@ -1418,6 +1418,11 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
 			for _, marker := range []string{
 				"an anonymous vote that opts in via `shipNotifyEmail` should carry a verified `turnstileToken` (string, 10–2048 chars)",
+				// Both suppression consequences in one pinned phrase: a loose
+				// "no confirmation email" marker would also match the
+				// preceding email_not_verified bullet, hiding an omission
+				// from the Turnstile bullet.
+				"(no consent row, no confirmation email)",
 				"never treat a `200` as proof the address was enrolled",
 			} {
 				if !strings.Contains(vote, marker) {
