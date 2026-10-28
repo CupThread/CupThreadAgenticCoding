@@ -35,7 +35,20 @@ Signed-in voters are exempt: the guard is `requireAnonymousVoteTurnstile && !ide
 
 ### Turnstile-gated ship-notification opt-in (#242)
 
-The vote body also accepts an optional `turnstileToken` (string, 10–2048 chars). When the server enforces Turnstile human verification, an anonymous voter that opts in via `shipNotifyEmail` should supply a verified token alongside the address. On boards whose `requireAnonymousVoteTurnstile` flag is `false`, a token that is missing or fails verification does **not** fail the vote: the response is still the plain `200 {voted: true, voteCount}` with no warning field, but the ship-notification opt-in is silently suppressed — no consent row is written and no confirmation email is sent — so recipients cannot be enrolled by an abusive bot. Because the suppression is invisible in the response, a client must never treat a `200` as proof the address was enrolled. When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that silent state: the SEC-846 gate rejects the vote outright with the `403`s documented above, so nothing is recorded at all. The flag gates only the vote itself — the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it (the server verifies the single token once) — while signed-in voters on sign-in-required boards bypass the check entirely (their address is already bound to a verified session email), and when the server has no Turnstile enforcement the field is ignored. Signed-in voters on sign-in-required boards bypass the check (their address is already bound to a verified session email), and when the server has no Turnstile enforcement the field is ignored.
+The vote body also accepts an optional `turnstileToken` (string, 10–2048 chars). When the server enforces Turnstile human verification, an anonymous voter that opts in via `shipNotifyEmail` should supply a verified token alongside the address. On boards whose `requireAnonymousVoteTurnstile` flag is `false`, a token that is missing or fails verification does **not** fail the vote — the vote still answers `200 {voted: true, voteCount}` — but the refusal is observable (SaaS #1472): the response carries a `warning` object with `code: "ship_notify_verification_failed"`, so a client must never treat a bare `200` as proof the address was enrolled:
+
+```json
+{
+  "voted": true,
+  "voteCount": 1,
+  "warning": {
+    "code": "ship_notify_verification_failed",
+    "error": "Human verification failed, so the ship-notification opt-in was not recorded. Complete the verification and try again."
+  }
+}
+```
+
+Treat `ship_notify_verification_failed` as "opt-in refused (verification)" — distinct from the signed-in `email_not_verified` mismatch above and from a vote failure: surface the refusal and prompt the end user to complete the verification and vote again. When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that warning state: the SEC-846 gate rejects the vote outright with the `403`s documented above, so nothing is recorded at all. The flag gates only the vote itself — the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it (the server verifies the single token once) — signed-in voters on sign-in-required boards bypass the check entirely (their address is already bound to a verified session email), and when the server has no Turnstile enforcement the field is ignored (verification silently skips, no warning).
 
 ---
 
