@@ -242,7 +242,11 @@ Pass the exact JSON body you plan to send via --input (a file path,
 limit). Absent fields sign as "unset" and explicit JSON null as "null";
 values are signed as sent (currency before any server-side normalization).
 userToken comes from the body, falling back to --user-token (the
-X-User-Token header value).
+X-User-Token header value). The server verifies the signature over the
+userToken exactly as presented, then folds it to lowercase only for
+identity storage — sign and send the same spelling (mixed-case UUIDs
+included); signing one spelling and sending another fails 401
+invalid_signature (issue #260).
 
 The body is mirrored against the server's schema before anything is signed
 (issue #196): currency must be a 3-letter alphabetic code and may not be

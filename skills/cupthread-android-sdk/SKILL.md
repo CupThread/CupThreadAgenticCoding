@@ -124,7 +124,7 @@ cpt-user-attrs-v1
 <timestamp: epochSeconds>
 ```
 
-- Absent fields sign as `unset`, explicit JSON `null` as `null` (omitting `plan` ≠ sending `"plan": null`). `userToken` is the body value when present, else the `X-User-Token` header value.
+- Absent fields sign as `unset`, explicit JSON `null` as `null` (omitting `plan` ≠ sending `"plan": null`). `userToken` is the body value when present, else the `X-User-Token` header value. The server verifies the HMAC over the token **exactly as presented** — send the same spelling you signed (mixed-case UUIDs included); it folds the token to lowercase only for identity storage, so signing one spelling and sending another fails `401 invalid_signature` (issue #260).
 - `canonicalNumber` follows JS `Number.prototype.toFixed(2)` with trailing zeros and a trailing `.` stripped (`1200.00 → "1200"`, `99.50 → "99.5"`); exact binary ties pick the larger n (`10.125 → "10.13"`). Compute it from the raw JSON value as sent.
 - Sign immediately before sending (±300 s freshness window) and don't mutate signed values when appending `signature`/`timestamp` to the body.
 

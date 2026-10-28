@@ -2254,3 +2254,74 @@ func TestSkillDocsIssue261PseudonymOnlyProfiles(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsIssue260PresentedSpellingHMAC pins the issue-#260 sync of
+// CupThread/SaaS#1271 (PR SaaS #1274): the DATA-03 HMAC is verified over the
+// userToken exactly as presented — byte-for-byte, mixed-case UUIDs included —
+// and the route folds the token to lowercase only after the signature
+// verifies, solely for identity resolution, so the stored profile is keyed by
+// the lowercased spelling. The signing-contract reference, the compact
+// API-skill section, the CLI skill, the sign-user-attrs command help, and all
+// four SDK skills must teach the sign-and-send-the-same-spelling rule and the
+// 401 invalid_signature outcome of a spelling mismatch.
+func TestSkillDocsIssue260PresentedSpellingHMAC(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			// Reference contract bullet (reference/payment-attribute-signing.md).
+			"The server verifies the HMAC over that token **exactly as presented** (byte-for-byte, mixed-case UUIDs included)",
+			"folds it to lowercase only **after** the signature verifies, solely for identity resolution",
+			"So sign and send the **same** spelling",
+			"Signing one spelling and presenting another fails `401 invalid_signature`",
+			"No client change is required for tokens already minted lowercase.",
+			// invalid_signature table-row trigger.
+			"or a `userToken` spelling different from the one signed (the HMAC is verified over the token exactly as presented)",
+			// Compact DATA-03 section in SKILL.md.
+			"The HMAC is verified over the `userToken` **exactly as presented** — sign and send the same spelling (mixed-case UUIDs included); the server folds it to lowercase only for identity storage",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api docs are missing required issue-#260 marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("cli-command-help", func(t *testing.T) {
+		sign := newAPISignUserAttrsCmd()
+		for _, marker := range []string{
+			"userToken exactly as presented, then folds it to lowercase only for",
+			"identity storage — sign and send the same spelling (mixed-case UUIDs",
+			"included); signing one spelling and sending another fails 401",
+			"invalid_signature (issue #260).",
+		} {
+			if !strings.Contains(sign.Long, marker) {
+				t.Errorf("sign-user-attrs help is missing required issue-#260 marker %q", marker)
+			}
+		}
+	})
+
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"The server verifies the HMAC over the `userToken` **exactly as presented** — sign and send the same spelling (mixed-case UUIDs included); it folds the token to lowercase only for identity storage",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#260 marker %q", marker)
+			}
+		}
+	})
+
+	sdkMarker := "The server verifies the HMAC over the token **exactly as presented** — send the same spelling you signed (mixed-case UUIDs included); it folds the token to lowercase only for identity storage, so signing one spelling and sending another fails `401 invalid_signature` (issue #260)."
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			if !strings.Contains(doc, sdkMarker) {
+				t.Errorf("%s/SKILL.md is missing required issue-#260 marker %q", skill, sdkMarker)
+			}
+		})
+	}
+}
