@@ -17,7 +17,8 @@ import (
 
 // publicConfigFixture is a PublicAppConfig payload exercising the fields from
 // issue #2 (websiteUrl, hideSiteBranding), issue #146 (allowedEmbedOrigins),
-// and issue #243 (requireAnonymousVoteTurnstile).
+// issue #243 (requireAnonymousVoteTurnstile), and issue #257 (the
+// always-served sdk object).
 const publicConfigFixture = `{
 	"appId": "app_1",
 	"appKey": "key_live_1",
@@ -35,7 +36,23 @@ const publicConfigFixture = `{
 	"allowedPlatforms": ["ios", "universal"],
 	"maxAttachmentBytes": 10485760,
 	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"],
-	"requireAnonymousVoteTurnstile": true
+	"requireAnonymousVoteTurnstile": true,
+	"sdk": {
+		"theme": "candy",
+		"features": {
+			"feedback": true,
+			"featureRequests": true,
+			"roadmap": false,
+			"changelog": true
+		},
+		"changelogOverlay": {
+			"title": "What's New",
+			"subtitle": "Fresh builds, every week",
+			"entryCount": 5,
+			"primaryButton": "Continue",
+			"closeButton": "Close"
+		}
+	}
 }`
 
 // publicConfigNoEmbedFixture is the same payload without allowedEmbedOrigins:
@@ -57,7 +74,23 @@ const publicConfigNoEmbedFixture = `{
 	"allowPublic": true,
 	"hideSiteBranding": true,
 	"allowedPlatforms": ["ios", "universal"],
-	"maxAttachmentBytes": 10485760
+	"maxAttachmentBytes": 10485760,
+	"sdk": {
+		"theme": "system",
+		"features": {
+			"feedback": true,
+			"featureRequests": true,
+			"roadmap": true,
+			"changelog": true
+		},
+		"changelogOverlay": {
+			"title": "What's New",
+			"subtitle": "",
+			"entryCount": 3,
+			"primaryButton": "Continue",
+			"closeButton": "Close"
+		}
+	}
 }`
 
 // runRoot executes the CLI against serverURL with a throwaway config and
@@ -111,6 +144,9 @@ func TestAppsPublicConfigByAppKey(t *testing.T) {
 		"Website URL", "https://acme.example.com", "Hide site branding", "yes",
 		"Embed origins", "https://docs.example.com", "https://app.partner.com:8443",
 		"Anonymous vote Turnstile", "yes",
+		"SDK theme", "candy",
+		"SDK features", "feedback, featureRequests, changelog",
+		"Changelog overlay", "What's New · 5 entries",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -187,6 +223,11 @@ func TestAppsPublicConfigJSON(t *testing.T) {
 		`"https://docs.example.com"`,
 		`"https://app.partner.com:8443"`,
 		`"requireAnonymousVoteTurnstile": true`,
+		`"sdk": {`,
+		`"theme": "candy"`,
+		`"featureRequests": true`,
+		`"roadmap": false`,
+		`"entryCount": 5`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %q:\n%s", want, out)

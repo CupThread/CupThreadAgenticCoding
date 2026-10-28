@@ -799,6 +799,42 @@ type PublicAppConfig struct {
 	// never an empty array — so omitempty keeps --json/-o yaml round-trips
 	// lossless (SEC-518).
 	AllowedEmbedOrigins []string `json:"allowedEmbedOrigins,omitempty"`
+	// Sdk mirrors the SdkAppearance object the portal and SDKs read for
+	// theming (SaaS #1235). Always served from app settings — tenants that
+	// never touched the theme editor get the defaults (theme "system", all
+	// four features on, the "What's New" overlay) — so it is a value, not a
+	// pointer.
+	Sdk SdkAppearance `json:"sdk"`
+}
+
+// SdkAppearance is the theme bundle inside PublicAppConfig.sdk.
+type SdkAppearance struct {
+	// Theme is one of system/light/dark/midnight/ocean/forest/sunset/candy
+	// (settings default system).
+	Theme            string                 `json:"theme"`
+	Features         SdkFeatures            `json:"features"`
+	ChangelogOverlay ChangelogOverlayConfig `json:"changelogOverlay"`
+}
+
+// SdkFeatures toggles which public surfaces the embedded SDK exposes.
+// All four default to true.
+type SdkFeatures struct {
+	Feedback        bool `json:"feedback"`
+	FeatureRequests bool `json:"featureRequests"`
+	Roadmap         bool `json:"roadmap"`
+	Changelog       bool `json:"changelog"`
+}
+
+// ChangelogOverlayConfig customizes the hosted "What's New" overlay:
+// title (1–80), subtitle (≤240), entryCount (1–10), primaryButton and
+// closeButton (1–40 each). Defaults: "What's New", "", 3, "Continue",
+// "Close".
+type ChangelogOverlayConfig struct {
+	Title         string `json:"title"`
+	Subtitle      string `json:"subtitle"`
+	EntryCount    int    `json:"entryCount"`
+	PrimaryButton string `json:"primaryButton"`
+	CloseButton   string `json:"closeButton"`
 }
 
 // ─── Generic envelopes ───────────────────────────────────────────────────────

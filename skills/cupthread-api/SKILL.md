@@ -56,7 +56,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/v1/public/config/:appKey` (and the workspace/app-slug variant) | `GET` | `PublicAppConfig`: branding, platforms, anonymous-access flags, `requireAnonymousVoteTurnstile`, optional `allowedEmbedOrigins`. Private apps and unknown keys both fail closed with the same `404` (SEC-37). |
+| `/api/v1/public/config/:appKey` (and the workspace/app-slug variant) | `GET` | `PublicAppConfig`: branding, platforms, anonymous-access flags, `requireAnonymousVoteTurnstile`, optional `allowedEmbedOrigins`, and the always-served `sdk` object (`theme`, feature toggles, changelog-overlay copy — SaaS #1235). Private apps and unknown keys both fail closed with the same `404` (SEC-37). |
 | `/api/v1/public/showcase` (alias `/api/v1/public/apps`) | `GET` | Public app showcase, newest first; `offset` clamps at 5000. |
 | `/api/v1/public/columns/:appKey`, `/api/v1/public/versions/:appKey` | `GET` | Roadmap columns and released versions; `401 authentication_required` on sign-in-only roadmaps (PRIV-12). |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published changelog feed, cursor-paginated; corrected entry schema in [reference/endpoints.md](reference/endpoints.md) (SaaS #1226). |
