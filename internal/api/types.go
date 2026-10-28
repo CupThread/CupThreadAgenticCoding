@@ -369,16 +369,6 @@ type SuccessResponse struct {
 	Success bool `json:"success"`
 }
 
-type CreateCommentInput struct {
-	Body              string  `json:"body"`
-	AuthorName        *string `json:"authorName,omitempty"`
-	AuthorEmail       *string `json:"authorEmail,omitempty"`
-	AuthorAvatarURL   *string `json:"authorAvatarUrl,omitempty"`
-	ParentID          *string `json:"parentId,omitempty"`
-	ReplyToClerkID    *string `json:"replyToClerkId,omitempty"`
-	ReplyToAuthorName *string `json:"replyToAuthorName,omitempty"`
-}
-
 // ─── Columns & versions ──────────────────────────────────────────────────────
 
 type Column struct {
