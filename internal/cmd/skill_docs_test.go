@@ -2162,3 +2162,95 @@ func TestSkillDocsIssue177VoteRoadmapGate(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsIssue261PseudonymOnlyProfiles pins the issue-#261 sync of
+// pseudonym-only public profile resolution (SaaS #1322): GET
+// /api/v1/users/{userId}/profile resolves app-scoped u_* ids only, and every
+// non-u_* identifier — including raw Clerk user_* ids from legacy /u/ links
+// — answers the anonymous placeholder (200, displayName null, empty
+// publicApps/recentComments) even for opted-in users. The CLI rejects
+// user_* ids up front, and the api/cli skills plus all four SDK skills must
+// not claim the old legacy-id resolution anymore.
+func TestSkillDocsIssue261PseudonymOnlyProfiles(t *testing.T) {
+	t.Run("command help", func(t *testing.T) {
+		profile := newUsersProfileCmd()
+		for _, marker := range []string{
+			"must be the app-scoped pseudonym",
+			"no longer resolved (issue #261)",
+			"rejects them up front",
+		} {
+			if !strings.Contains(profile.Long, marker) {
+				t.Errorf("users profile Long missing issue-#261 marker %q:\n%s", marker, profile.Long)
+			}
+		}
+	})
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			"resolves app-scoped `u_*` pseudonyms only",
+			"any raw Clerk `user_*` id answers the anonymous placeholder",
+			"including raw Clerk `user_*` ids from legacy `/u/` links",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api docs are missing required issue-#261 marker %q", marker)
+			}
+		}
+	})
+	t.Run("cupthread-cli", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-cli")
+		for _, marker := range []string{
+			"Raw Clerk `user_*` ids no longer work at all (issue #261)",
+			"rejects `user_*` arguments up front",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-cli/SKILL.md is missing required issue-#261 marker %q", marker)
+			}
+		}
+	})
+	// The superseded wording must not come back anywhere: the api reference
+	// claiming legacy ids remain accepted, the cli skill claiming they still
+	// work, or an SDK skill keeping the old opt-in placeholder phrasing.
+	staleMarkers := []string{
+		"Legacy `user_*` ids remain accepted without `appKey`",
+		"Legacy `user_*` ids still work without it",
+		"keep the opt-in placeholder behavior",
+	}
+	for _, skill := range []string{
+		"cupthread-api",
+		"cupthread-cli",
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, stale := range staleMarkers {
+				if strings.Contains(doc, stale) {
+					t.Errorf("%s docs still document the incorrect legacy-id resolution %q", skill, stale)
+				}
+			}
+		})
+	}
+	// Every SDK skill's profile section must state the always-placeholder
+	// consequence for raw user_* ids and the u_* remediation.
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			profile := skillSection(t, doc, "## Public Profile Rate Limits & Unknown-User 404 (SEC-34)")
+			for _, marker := range []string{
+				"now always answer that placeholder — even for opted-in users",
+				"switch legacy `/u/` flows to the `u_*` id carried by board and comment payloads",
+			} {
+				if !strings.Contains(profile, marker) {
+					t.Errorf("%s/SKILL.md profile section is missing required issue-#261 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}

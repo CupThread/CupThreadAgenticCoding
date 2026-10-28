@@ -72,7 +72,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/feature-requests/:id/comments` | `POST` | Clerk-session comment/@reply; `parentId` must reference a visible comment on the same request (SEC-50). |
 | `/api/v1/me/link` | `POST` | Bind an anonymous `X-User-Token` profile to the signed-in Clerk identity (SEC-12); `409 already_linked` is never hijacked. |
 | `/api/v1/me/erase` | `POST` | Self-service erasure (PRIV-01): rotates the token immediately, anonymizes attribution, keeps aggregates. |
-| `/api/v1/users/:userId/profile` | `GET` | Public profile `{profile, publicApps, recentComments}`; `u_*` pseudonym ids require `?appKey=` (PRIV-06). |
+| `/api/v1/users/:userId/profile` | `GET` | Public profile `{profile, publicApps, recentComments}`; resolves app-scoped `u_*` pseudonyms only, and those require `?appKey=` (PRIV-06) — any other id, incl. raw Clerk `user_*`, answers the anonymous placeholder (SaaS #1322). |
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Sync end-user attributes; payment attributes (`isPaying`, `mrr`, `plan`, `currency`) require HMAC `signature` + `timestamp` (DATA-03). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (1–8 reserved slots); anonymous callers must send `X-User-Token` (SEC-28). |
 | `/api/v1/uploads/:uploadId` | `PUT`/`POST` | Fill one reserved slot with raw bytes or multipart; `Authorization: Bearer <sessionToken>`. |
@@ -123,7 +123,7 @@ Five public GETs (board detail, comment threads, changelog feed, columns, versio
 
 ### User identifiers (PRIV-06)
 
-Public payloads identify users with app-scoped pseudonyms: `u_` + 32 hex chars. Stable within one app, unlinkable across apps — never join or correlate ids between `appKey`s. `GET /api/v1/users/:userId/profile` resolves `u_*` ids only with `?appKey=`; unknown ids answer `404` with no reverse-lookup oracle (SEC-34). Never assume a legacy `user_` prefix on user ids.
+Public payloads identify users with app-scoped pseudonyms: `u_` + 32 hex chars. Stable within one app, unlinkable across apps — never join or correlate ids between `appKey`s. `GET /api/v1/users/:userId/profile` resolves `u_*` ids only with `?appKey=`; unknown ids answer `404` with no reverse-lookup oracle (SEC-34). Never assume a legacy `user_` prefix on user ids: since SaaS #1322 the profile endpoint is pseudonym-only — any raw Clerk `user_*` id answers the anonymous placeholder (`displayName: null`, empty `publicApps`/`recentComments`) even for opted-in users.
 
 ### Payment-attribute signing (DATA-03 / DATA-07)
 

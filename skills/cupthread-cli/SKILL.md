@@ -427,7 +427,7 @@ cupthread users profile u_9f2c… --app-key key_live_…  # App-scoped u_* ids f
 `users profile` needs no credential either: like `comments list` it reads a
 public endpoint through a credential-free client and never sends the console
 bearer (issue #182).
-User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Legacy `user_*` ids still work without it. Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19) — the CLI prints `—` for `null`; when consuming the `--json` output, render a placeholder rather than assuming the value's host.
+User ids on public boards and comments are app-scoped pseudonyms (`u_<32 hex>`); they only resolve within their app, so pass the app's key with `--app-key`. Raw Clerk `user_*` ids no longer work at all (issue #261): the endpoint answers the anonymous placeholder for them, so the CLI rejects `user_*` arguments up front instead of rendering a misleading empty profile. Avatar fields in profile and board payloads are always `null` or a managed `https:` URL (PRIV-19) — the CLI prints `—` for `null`; when consuming the `--json` output, render a placeholder rather than assuming the value's host.
 
 ### Changelog & Releases
 ```sh
