@@ -2337,8 +2337,9 @@ func TestSkillDocsIssue259PublicChangelogFeedSchema(t *testing.T) {
 	t.Run("cupthread-api", func(t *testing.T) {
 		doc := readSkill(t, "cupthread-api")
 		for _, marker := range []string{
-			// Compact index row (SKILL.md).
-			"entries carry nullable `versionLabel` and always-present `linkedRequests`, never `appId` or `versionNumber` (SaaS #1226)",
+			// Compact index row (SKILL.md) — pointer only; the field-level
+			// detail stays in reference/endpoints.md per the #318 budget.
+			"corrected entry schema in [reference/endpoints.md](reference/endpoints.md) (SaaS #1226)",
 			// Corrected entry schema (reference/endpoints.md).
 			"the corrected `ChangelogEntry` schema (SaaS #1226 / PR #1273): `{id, title, body, versionLabel, publishedAt, linkedRequests}`, all six required",
 			"no `appId` (a workspace-internal identifier the public feed never serves)",
