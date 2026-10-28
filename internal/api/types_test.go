@@ -27,7 +27,23 @@ const publicAppConfigFixture = `{
 	"allowAnonymousFeedback": true,
 	"allowAnonymousChangelog": false,
 	"requireAnonymousVoteTurnstile": true,
-	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"]
+	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"],
+	"sdk": {
+		"theme": "midnight",
+		"features": {
+			"feedback": true,
+			"featureRequests": false,
+			"roadmap": true,
+			"changelog": true
+		},
+		"changelogOverlay": {
+			"title": "What's New",
+			"subtitle": "Fresh builds, every week",
+			"entryCount": 5,
+			"primaryButton": "Continue",
+			"closeButton": "Close"
+		}
+	}
 }`
 
 // TestPublicAppConfigDecodesFullSchema mirrors the OpenAPI PublicAppConfig
@@ -66,6 +82,54 @@ func TestPublicAppConfigDecodesFullSchema(t *testing.T) {
 		cfg.AllowedEmbedOrigins[0] != "https://docs.example.com" ||
 		cfg.AllowedEmbedOrigins[1] != "https://app.partner.com:8443" {
 		t.Errorf("AllowedEmbedOrigins = %v, want the two configured origins", cfg.AllowedEmbedOrigins)
+	}
+	if cfg.Sdk.Theme != "midnight" {
+		t.Errorf("Sdk.Theme = %q, want midnight", cfg.Sdk.Theme)
+	}
+	if !cfg.Sdk.Features.Feedback || cfg.Sdk.Features.FeatureRequests || !cfg.Sdk.Features.Roadmap || !cfg.Sdk.Features.Changelog {
+		t.Errorf("Sdk.Features = %+v, want featureRequests toggled off and the rest on", cfg.Sdk.Features)
+	}
+	if cfg.Sdk.ChangelogOverlay.Title != "What's New" ||
+		cfg.Sdk.ChangelogOverlay.Subtitle != "Fresh builds, every week" ||
+		cfg.Sdk.ChangelogOverlay.EntryCount != 5 ||
+		cfg.Sdk.ChangelogOverlay.PrimaryButton != "Continue" ||
+		cfg.Sdk.ChangelogOverlay.CloseButton != "Close" {
+		t.Errorf("Sdk.ChangelogOverlay = %+v", cfg.Sdk.ChangelogOverlay)
+	}
+}
+
+// TestPublicAppConfigSdkDefaultsDecode pins the always-served sdk object
+// from SaaS #1235: an app whose tenant never touched the theme editor still
+// carries sdk with the settings defaults (theme "system", all four feature
+// toggles on, the stock "What's New" overlay), so the value-type modeling
+// must not invent nulls or drop the object from --json round-trips.
+func TestPublicAppConfigSdkDefaultsDecode(t *testing.T) {
+	var cfg PublicAppConfig
+	const body = `{"appId":"app_1","appKey":"key_live_1","sdk":{"theme":"system","features":{"feedback":true,"featureRequests":true,"roadmap":true,"changelog":true},"changelogOverlay":{"title":"What's New","subtitle":"","entryCount":3,"primaryButton":"Continue","closeButton":"Close"}}}`
+	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if cfg.Sdk.Theme != "system" ||
+		!cfg.Sdk.Features.Feedback || !cfg.Sdk.Features.FeatureRequests ||
+		!cfg.Sdk.Features.Roadmap || !cfg.Sdk.Features.Changelog ||
+		cfg.Sdk.ChangelogOverlay.Title != "What's New" ||
+		cfg.Sdk.ChangelogOverlay.EntryCount != 3 {
+		t.Fatalf("Sdk = %+v, want the stock defaults", cfg.Sdk)
+	}
+	out, err := json.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"sdk":{`,
+		`"theme":"system"`,
+		`"featureRequests":true`,
+		`"entryCount":3`,
+		`"primaryButton":"Continue"`,
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("re-marshaled config %s drops %s", out, want)
+		}
 	}
 }
 

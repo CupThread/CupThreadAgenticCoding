@@ -234,6 +234,10 @@ over-budget caller gets 429.`,
 				{"Anonymous vote Turnstile", boolYesNo(config.RequireAnonymousVoteTurnstile)},
 				{"Anonymous feedback", boolYesNo(config.AllowAnonymousFeedback)},
 				{"Anonymous changelog", boolYesNo(config.AllowAnonymousChangelog)},
+				{"SDK theme", config.Sdk.Theme},
+				{"SDK features", orDash(sdkFeaturesEnabled(config.Sdk.Features))},
+				{"Changelog overlay", fmt.Sprintf("%s · %d entries",
+					config.Sdk.ChangelogOverlay.Title, config.Sdk.ChangelogOverlay.EntryCount)},
 			})
 			return nil
 		},
@@ -286,6 +290,25 @@ func boolYesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// sdkFeaturesEnabled lists the SDK surface toggles that are on, in wire
+// order; an empty string means every surface is off.
+func sdkFeaturesEnabled(f api.SdkFeatures) string {
+	enabled := make([]string, 0, 4)
+	if f.Feedback {
+		enabled = append(enabled, "feedback")
+	}
+	if f.FeatureRequests {
+		enabled = append(enabled, "featureRequests")
+	}
+	if f.Roadmap {
+		enabled = append(enabled, "roadmap")
+	}
+	if f.Changelog {
+		enabled = append(enabled, "changelog")
+	}
+	return strings.Join(enabled, ", ")
 }
 
 func newAppsCreateCmd() *cobra.Command {
