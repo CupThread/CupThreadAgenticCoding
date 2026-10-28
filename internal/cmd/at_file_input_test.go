@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -69,7 +70,7 @@ func TestReadInputFileAtSyntax(t *testing.T) {
 			if _, err := f.Seek(0, 0); err != nil {
 				t.Fatalf("rewind stdin file: %v", err)
 			}
-			out, err := readInputFile(tc.arg, maxConsoleBodyBytes)
+			out, err := readInputFile(context.Background(), tc.arg, maxConsoleBodyBytes)
 			if err != nil {
 				t.Fatalf("readInputFile(%q): %v", tc.arg, err)
 			}
@@ -81,7 +82,7 @@ func TestReadInputFileAtSyntax(t *testing.T) {
 
 	t.Run("@missing names the path without the sigil", func(t *testing.T) {
 		missing := filepath.Join(dir, "missing.json")
-		_, err := readInputFile("@"+missing, maxConsoleBodyBytes)
+		_, err := readInputFile(context.Background(), "@"+missing, maxConsoleBodyBytes)
 		// The not-exist wording is OS-specific ("no such file or directory"
 		// vs Windows' "The system cannot find the file specified."), so match
 		// on the sentinel, not the text.
@@ -101,7 +102,7 @@ func TestReadInputFileAtSyntax(t *testing.T) {
 		if err := os.WriteFile(huge, []byte(strings.Repeat("x", 11)), 0o600); err != nil {
 			t.Fatalf("write huge file: %v", err)
 		}
-		_, err := readInputFile("@"+huge, 10)
+		_, err := readInputFile(context.Background(), "@"+huge, 10)
 		var tooLarge *InputTooLargeError
 		if !asInputTooLarge(err, &tooLarge) {
 			t.Fatalf("@path over cap err = %v, want InputTooLargeError", err)

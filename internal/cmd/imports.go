@@ -130,7 +130,7 @@ raw ImportOptions JSON instead of the per-source flags.`,
 			// integers a float64 cannot represent exactly.
 			var options map[string]json.RawMessage
 			if optionsFile != "" {
-				data, err := readInputFile(optionsFile, maxConsoleBodyBytes)
+				data, err := readInputFile(cmd.Context(), optionsFile, maxConsoleBodyBytes)
 				if err != nil {
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr

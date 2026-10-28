@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -24,10 +25,10 @@ func integrationEnvToken(provider string) string {
 // whitespace trimmed), an inline flag wins over the per-provider environment
 // fallback (also trimmed), and the error names every accepted source when
 // none is set.
-func resolveIntegrationToken(provider, tokenFlag string) (string, error) {
+func resolveIntegrationToken(ctx context.Context, provider, tokenFlag string) (string, error) {
 	readsStdin := func(v string) bool { return v == "-" || v == "@" }
 	if readsStdin(tokenFlag) {
-		data, err := readInputFile(tokenFlag, maxSecretBytes)
+		data, err := readInputFile(ctx, tokenFlag, maxSecretBytes)
 		if err != nil {
 			return "", err
 		}
@@ -59,10 +60,10 @@ const webhookSecretEnvVar = "CUPTHREAD_GITHUB_WEBHOOK_SECRET"
 // `--webhook-secret ""` clears the stored secret even with the variable
 // exported. ok is false when no source is set and the caller should leave the
 // field out of the request body entirely.
-func resolveWebhookSecret(secretFlag string, flagChanged bool) (secret string, ok bool, err error) {
+func resolveWebhookSecret(ctx context.Context, secretFlag string, flagChanged bool) (secret string, ok bool, err error) {
 	if flagChanged {
 		if secretFlag == "-" || secretFlag == "@" {
-			data, err := readInputFile(secretFlag, maxSecretBytes)
+			data, err := readInputFile(ctx, secretFlag, maxSecretBytes)
 			if err != nil {
 				return "", false, err
 			}
@@ -260,7 +261,7 @@ Alternatively run 'cupthread integrations github auth-url', open the printed
 URL in a browser and finish the OAuth flow in the Console.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token, err := resolveIntegrationToken("github", token)
+			token, err := resolveIntegrationToken(cmd.Context(), "github", token)
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
@@ -335,7 +336,7 @@ func newGitHubConfigCmd() *cobra.Command {
 		Short: "Set the per-app GitHub repository and sync options",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			secret, haveSecret, err := resolveWebhookSecret(webhookSecret, cmd.Flags().Changed("webhook-secret"))
+			secret, haveSecret, err := resolveWebhookSecret(cmd.Context(), webhookSecret, cmd.Flags().Changed("webhook-secret"))
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
@@ -526,7 +527,7 @@ via stdin ('printf %%s "$%s_TOKEN" | cupthread integrations %s connect
 the secret.`, prov, strings.ToUpper(prov), prov, integrationEnvToken(prov)),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token, err := resolveIntegrationToken(prov, token)
+			token, err := resolveIntegrationToken(cmd.Context(), prov, token)
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr

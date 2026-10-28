@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func TestReadInputFileWriterlessFIFORejectedFast(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := readInputFile(fifo, 1024)
+		_, err := readInputFile(context.Background(), fifo, 1024)
 		done <- err
 	}()
 	select {
@@ -92,7 +93,7 @@ func TestReadInputFileAttachedFIFOIsRejected(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := readInputFile(fifo, 1024)
+		_, err := readInputFile(context.Background(), fifo, 1024)
 		done <- err
 	}()
 	select {

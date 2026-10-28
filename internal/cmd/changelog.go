@@ -189,7 +189,7 @@ func resolveBody(cmd *cobra.Command, bodyText, bodyFile string) (string, error) 
 		if strings.TrimSpace(bodyFile) == "" {
 			return "", errors.New(`--body-file is empty — pass a file path, "@path", or "-" for stdin`)
 		}
-		data, err := readInputFile(bodyFile, maxConsoleBodyBytes)
+		data, err := readInputFile(cmd.Context(), bodyFile, maxConsoleBodyBytes)
 		if err != nil {
 			return "", flagInputError("body-file", err)
 		}

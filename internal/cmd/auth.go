@@ -151,7 +151,7 @@ func loginWithToken(ctx context.Context, token string) error {
 		// every other piped secret (--secret -, integration --token -): a
 		// newline-free runaway pipe fails with input_too_large at the 64 KB
 		// cap instead of buffering stdin without bound (issue #189).
-		data, err := readInputFile(token, maxSecretBytes)
+		data, err := readInputFile(ctx, token, maxSecretBytes)
 		if err != nil {
 			if perr := A.reportInputTooLarge(err); perr != nil {
 				return perr
