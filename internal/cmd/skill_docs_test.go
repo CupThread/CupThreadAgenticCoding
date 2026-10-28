@@ -2402,10 +2402,10 @@ func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
 		"`appVersion`/`buildNumber` 1–64 (optional), `uploadIds` items 1–128 chars with at most 8 entries, `attachments` at most 8 entries",
 		"omitting `metadata`, `uploadIds`, or `attachments` is equivalent to sending `{}`/`[]`/`[]`",
 		// Full deterministic status-code set for POST /api/v1/feedback.
-		"`402` the workspace's monthly submission quota is exceeded or its subscription is inactive (`tier_limit_submissions`)",
+		"`402` the workspace's monthly submission quota is exceeded (`tier_limit_submissions`) or its subscription is inactive or canceled (`subscription_inactive`)",
 		"`413` request body over the public JSON size limit (`payload_too_large`)",
 		"`403` Turnstile verification failures **and**, additionally, \"public feedback is disabled for the app\"",
-		"`400` schema validation only (including a `platform` value the app does not allow) — it no longer covers rate limiting",
+		"`400` schema validation (including a `platform` value the app does not allow) and attachment-reference failures (`direct_attachment_forbidden`, `uploader_mismatch`) — it no longer covers rate limiting",
 		// Corrected CreateFeatureRequestCommentInput schema.
 		"Corrected request schema `CreateFeatureRequestCommentInput` (SaaS #1117 / PR #1119)",
 		"`body` max length is **2000** (the previously documented 4000 was wrong)",
