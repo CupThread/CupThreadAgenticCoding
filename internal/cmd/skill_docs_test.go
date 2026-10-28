@@ -1313,7 +1313,9 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 		"there is no `requesterEmail` field",
 		"The requester token may be sent in the body field `requesterToken` **or** the `X-User-Token` header (SaaS #834)",
 		"`details.fieldErrors.requesterToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
-		"Success answers `201 {featureRequestId, pending: true}`",
+		// 201 body renamed by the SaaS #1105 spec correction (issue #256):
+		// the two-field intake receipt, never the full board record.
+		"Success answers `201` with the two-field intake receipt `FeatureRequestSubmissionCreated` (SaaS #1105): `{featureRequestId, pending}`, both required",
 		// Vote POST row: header-only body shape.
 		"a header-only vote body carries just `appKey`",
 		"`details.fieldErrors.userToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
@@ -2429,7 +2431,9 @@ func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
 // vote POST/DELETE, comment create, public columns/versions) and in the
 // shared-cache gates bullet, and must no longer claim "a private app still
 // answers 403" for the cached roadmap reads (the changelog feed keeps its
-// 403).
+// 403). The vote rows pin the documented body split — `App not found` for an
+// unknown key or disabled app, `Feature request not found` for a missing or
+// unapproved id — so neither route passes with the bodies swapped or lumped.
 // Red-before/green-after: reverting any one of the phrases below must fail
 // this test.
 func TestSkillDocsIssue250Uniform404PublicWrites(t *testing.T) {
@@ -2438,32 +2442,53 @@ func TestSkillDocsIssue250Uniform404PublicWrites(t *testing.T) {
 	const appNotFound404 = "`404 {\"error\": \"App not found\"}`"
 	const requestNotFound404 = "`404 {\"error\": \"Feature request not found\"}`"
 
-	rowRequirements := []struct{ rowPrefix, want string }{
+	rowRequirements := []struct {
+		rowPrefix string
+		want      []string
+	}{
 		{
 			rowPrefix: "| `/api/v1/public/columns/:appKey` | `GET` |",
-			want:      "An unknown `appKey` and a known app with public access disabled both answer the same uniform " + appNotFound404 + " (existence hiding, SaaS #1165/#1171)",
+			want: []string{
+				"An unknown `appKey` and a known app with public access disabled both answer the same uniform " + appNotFound404 + " (existence hiding, SaaS #1165/#1171)",
+			},
 		},
 		{
 			rowPrefix: "| `/api/v1/public/versions/:appKey` | `GET` |",
-			want:      "Same uniform " + appNotFound404 + " for an unknown `appKey` and a known app with public access disabled",
+			want: []string{
+				"Same uniform " + appNotFound404 + " for an unknown `appKey` and a known app with public access disabled",
+			},
 		},
 		{
 			// The longer prefix skips SKILL.md's compact index row (the #318
 			// budget keeps field-level status codes in reference/endpoints.md).
 			rowPrefix: "| `/api/v1/feature-requests` | `GET` | List/search feature requests",
-			want:      "An unknown `appKey` and a known app with public access disabled both answer the same uniform " + appNotFound404 + " (existence hiding, SaaS #1165/#1171)",
+			want: []string{
+				"An unknown `appKey` and a known app with public access disabled both answer the same uniform " + appNotFound404 + " (existence hiding, SaaS #1165/#1171)",
+			},
 		},
 		{
+			// Both vote routes must pin the documented body split: the
+			// unknown-key/disabled-app case answers `App not found` while the
+			// missing-or-unapproved case answers `Feature request not found`,
+			// so a regression that swaps or lumps the two bodies fails here.
 			rowPrefix: "| `/api/v1/feature-requests/:id/vote` | `POST` |",
-			want:      "a `403` from this route now means **only** Turnstile human-verification rejection",
+			want: []string{
+				"a `403` from this route now means **only** Turnstile human-verification rejection",
+				"both answer " + appNotFound404 + ", and a missing or **unapproved** feature-request id answers " + requestNotFound404,
+			},
 		},
 		{
 			rowPrefix: "| `/api/v1/feature-requests/:id/vote` | `DELETE` |",
-			want:      "a missing or **unapproved** feature-request id answers " + requestNotFound404,
+			want: []string{
+				"a missing or **unapproved** feature-request id answers " + requestNotFound404,
+				"both answer " + appNotFound404 + ", and a missing or **unapproved** feature-request id answers " + requestNotFound404,
+			},
 		},
 		{
 			rowPrefix: "| `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment",
-			want:      "a missing id, an id on an app with public access disabled, and an **unapproved** request all answer the same uniform " + requestNotFound404,
+			want: []string{
+				"a missing id, an id on an app with public access disabled, and an **unapproved** request all answer the same uniform " + requestNotFound404,
+			},
 		},
 	}
 	for _, req := range rowRequirements {
@@ -2471,8 +2496,10 @@ func TestSkillDocsIssue250Uniform404PublicWrites(t *testing.T) {
 		if !strings.Contains(row, appNotFound404) && !strings.Contains(row, requestNotFound404) {
 			t.Errorf("endpoint row %q must document a uniform 404 body; got: %s", req.rowPrefix, row)
 		}
-		if !strings.Contains(row, req.want) {
-			t.Errorf("endpoint row %q is missing required issue-#250 claim %q; got: %s", req.rowPrefix, req.want, row)
+		for _, want := range req.want {
+			if !strings.Contains(row, want) {
+				t.Errorf("endpoint row %q is missing required issue-#250 claim %q; got: %s", req.rowPrefix, want, row)
+			}
 		}
 	}
 
@@ -2501,5 +2528,38 @@ func TestSkillDocsIssue250Uniform404PublicWrites(t *testing.T) {
 	}
 	if strings.Contains(doc, "a private app still answers `403`") {
 		t.Error("cupthread-api docs still claim \"a private app still answers 403\" for the cached roadmap reads (issue #250: they answer the uniform 404)")
+	}
+}
+
+// TestSkillDocsIssue256IntakeResponseShapes pins the corrected public intake
+// response shapes (issue #256, SaaS #1105): POST /api/v1/feature-requests
+// answers a two-field `FeatureRequestSubmissionCreated` receipt (never the
+// full public board record), and POST
+// /api/v1/feature-requests/{id}/comments wraps the created comment in the
+// `FeatureRequestCommentCreated` `{ comment }` envelope (never the bare
+// record). The corrected comments-POST 401/429 documentation lives in the
+// issue-#250 uniform-404 sync, so this test pins only the 201 shapes.
+// Red-before/green-after: reverting either phrase below must fail this test.
+func TestSkillDocsIssue256IntakeResponseShapes(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	submitRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Submit (propose) a new feature request.")
+	for _, marker := range []string{
+		"Success answers `201` with the two-field intake receipt `FeatureRequestSubmissionCreated` (SaaS #1105): `{featureRequestId, pending}`, both required",
+		"a strict client must not model the full public `FeatureRequest` board record here",
+	} {
+		if !strings.Contains(submitRow, marker) {
+			t.Errorf("submit row is missing required issue-#256 marker %q; got: %s", marker, submitRow)
+		}
+	}
+
+	commentsRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment")
+	for _, marker := range []string{
+		"Success answers `201` with the `FeatureRequestCommentCreated` envelope `{ comment }` (SaaS #1105)",
+		"`comment` is required and holds the full public `FeatureRequestComment` record inside the wrapper — **not** the bare record the spec previously referenced",
+	} {
+		if !strings.Contains(commentsRow, marker) {
+			t.Errorf("comment-create row is missing required issue-#256 marker %q; got: %s", marker, commentsRow)
+		}
 	}
 }
