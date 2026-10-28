@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -199,7 +201,8 @@ func TestAppsPublicChangelogJSONKeepsContract(t *testing.T) {
 }
 
 // TestAppsPublicChangelogLastPage checks the table stays quiet when the feed
-// is exhausted (nextCursor null, hasMore false).
+// is exhausted (nextCursor null, hasMore false) and that --json still emits a
+// present `nextCursor: null` / `hasMore: false` envelope on the last page.
 func TestAppsPublicChangelogLastPage(t *testing.T) {
 	server, _, _ := changelogServer(t, `{
 		"entries": [{
@@ -223,6 +226,36 @@ func TestAppsPublicChangelogLastPage(t *testing.T) {
 	}
 	if !strings.Contains(out, "v1.0.0") {
 		t.Errorf("output missing entry title:\n%s", out)
+	}
+
+	jsonOut, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1", "--json")
+	if err != nil {
+		t.Fatalf("public-changelog --json: %v", err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &top); err != nil {
+		t.Fatalf("unmarshal last-page JSON: %v", err)
+	}
+	if got, ok := top["hasMore"].(bool); !ok || got {
+		t.Errorf("hasMore = %v, want false", top["hasMore"])
+	}
+	if got, present := top["nextCursor"]; !present || got != nil {
+		t.Errorf("nextCursor = %v (present=%t), want present null", got, present)
+	}
+	entries, ok := top["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("entries = %#v, want a 1-element array", top["entries"])
+	}
+	entry, ok := entries[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entries[0] = %#v, want an object", entries[0])
+	}
+	linked, present := entry["linkedRequests"]
+	if !present {
+		t.Fatalf("linkedRequests missing from output; the field is required even when empty (issue #259)")
+	}
+	if _, ok := linked.([]any); !ok {
+		t.Errorf("linkedRequests = %#v, want an array even when empty (issue #259)", linked)
 	}
 }
 
@@ -585,4 +618,121 @@ func TestAppsPublicChangelogClampsLimit(t *testing.T) {
 	if !strings.Contains(stderr, "⚠ --limit 500 is outside the server's 1-100 page range; requesting 100 instead") {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
 	}
+}
+
+// TestAppsPublicChangelogContractPinCorrectedSchema pins the corrected public
+// changelog entry contract (issue #259, SaaS #1226 / PR #1273): --json output
+// carries exactly the corrected entry keys — no workspace-internal `appId`,
+// nullable `versionLabel` (never `versionNumber`), and always-present
+// `linkedRequests` — and a legacy payload that still carries the removed keys
+// decodes the corrected fields without re-emitting them.
+func TestAppsPublicChangelogContractPinCorrectedSchema(t *testing.T) {
+	sortedKeys := func(t *testing.T, m map[string]any) []string {
+		t.Helper()
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	t.Run("served payload round-trips exactly the corrected entry keys", func(t *testing.T) {
+		server, _, _ := changelogServer(t, publicChangelogFixture)
+
+		out, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1", "--json")
+		if err != nil {
+			t.Fatalf("public-changelog --json: %v", err)
+		}
+		var top map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+		wantTop := []string{"entries", "hasMore", "nextCursor"}
+		if got := sortedKeys(t, top); !reflect.DeepEqual(got, wantTop) {
+			t.Errorf("top-level keys = %v, want %v", got, wantTop)
+		}
+
+		entries, ok := top["entries"].([]any)
+		if !ok || len(entries) != 1 {
+			t.Fatalf("entries = %#v, want a 1-element array", top["entries"])
+		}
+		entry, ok := entries[0].(map[string]any)
+		if !ok {
+			t.Fatalf("entries[0] = %#v, want an object", entries[0])
+		}
+		wantEntry := []string{"body", "id", "linkedRequests", "publishedAt", "title", "versionLabel"}
+		if got := sortedKeys(t, entry); !reflect.DeepEqual(got, wantEntry) {
+			t.Errorf("entry keys = %v, want exactly %v", got, wantEntry)
+		}
+		for _, banned := range []string{"appId", "versionNumber"} {
+			if _, present := entry[banned]; present {
+				t.Errorf("entry emits key %q; the public feed never serves it (issue #259)", banned)
+			}
+		}
+
+		linked, ok := entry["linkedRequests"].([]any)
+		if !ok {
+			t.Fatalf("linkedRequests = %#v, want an array (always present, even when empty)", entry["linkedRequests"])
+		}
+		if len(linked) != 1 {
+			t.Fatalf("linkedRequests = %#v, want 1 element", linked)
+		}
+		linked0, ok := linked[0].(map[string]any)
+		if !ok {
+			t.Fatalf("linkedRequests[0] = %#v, want an object", linked[0])
+		}
+		wantLinked := []string{"id", "title"}
+		if got := sortedKeys(t, linked0); !reflect.DeepEqual(got, wantLinked) {
+			t.Errorf("linkedRequests[0] keys = %v, want %v", got, wantLinked)
+		}
+	})
+
+	t.Run("legacy payload with removed keys decodes the corrected shape", func(t *testing.T) {
+		legacy := `{
+			"entries": [{
+				"id": "cl_old_1",
+				"appId": "app_internal_9",
+				"title": "v0.9.0",
+				"body": "Legacy entry",
+				"versionNumber": 9,
+				"versionLabel": null,
+				"publishedAt": "2025-12-01T00:00:00.000Z",
+				"linkedRequests": []
+			}],
+			"hasMore": false,
+			"nextCursor": null
+		}`
+		server, _, _ := changelogServer(t, legacy)
+
+		out, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1", "--json")
+		if err != nil {
+			t.Fatalf("public-changelog --json on legacy payload: %v", err)
+		}
+		var top struct {
+			Entries []map[string]any `json:"entries"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &top); err != nil {
+			t.Fatalf("unmarshal structured output: %v", err)
+		}
+		if len(top.Entries) != 1 {
+			t.Fatalf("entries = %#v, want 1", top.Entries)
+		}
+		entry := top.Entries[0]
+		if got, present := entry["versionLabel"]; !present || got != nil {
+			t.Errorf("versionLabel = %v (present=%t), want the nullable field passed through", got, present)
+		}
+		linked, present := entry["linkedRequests"]
+		if !present {
+			t.Fatalf("linkedRequests missing from output; the field is required even when empty (issue #259)")
+		}
+		if _, ok := linked.([]any); !ok {
+			t.Errorf("linkedRequests = %#v, want an array even when empty (issue #259)", linked)
+		}
+		for _, banned := range []string{"appId", "versionNumber"} {
+			if got, present := entry[banned]; present {
+				t.Errorf("legacy key %q reached the output as %v; the corrected model must not emit it (issue #259)", banned, got)
+			}
+		}
+	})
 }
