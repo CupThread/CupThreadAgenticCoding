@@ -57,6 +57,15 @@ type app struct {
 	client     *api.Client
 	clientOnce sync.Once
 	refreshMu  sync.Mutex
+
+	// degradedRefreshAccessToken records the access token a transparent
+	// refresh minted when the response carried no expires_in (issue #314):
+	// the stored expiry stays stale in that case, so the refresh guard would
+	// otherwise re-POST the token endpoint on every later request of this
+	// process. While the stored access token still equals this value it is
+	// by definition the freshest token known, and proactive refresh is
+	// skipped.
+	degradedRefreshAccessToken string
 }
 
 var A *app
@@ -278,19 +287,28 @@ func (a *app) buildClient() *api.Client {
 		if authState.Method != "oauth" || authState.RefreshToken == "" || authState.ExpiresAt == "" {
 			return authState.AccessToken, nil
 		}
+		// A refresh whose response omitted expires_in minted this access
+		// token while leaving the stored expiry stale (issue #314): the
+		// token is the freshest this process has seen, so skip the refresh
+		// instead of re-POSTing the token endpoint on every later request.
+		if authState.AccessToken == a.degradedRefreshAccessToken {
+			return authState.AccessToken, nil
+		}
 		expiresAt, err := time.Parse(time.RFC3339, authState.ExpiresAt)
 		if err != nil || time.Until(expiresAt) > time.Minute {
 			return authState.AccessToken, nil
 		}
 		// Snapshot the pair values: another goroutine can mutate a.cfg.Auth
 		// in place while we wait, so comparing through the pointer would
-		// never observe its rotation.
+		// never observe its rotation. The access token joins the comparison
+		// because a degraded (refresh_token-less, expires_in-less) response
+		// rotates only the access token (issue #314 review).
 		snap := *authState
 		a.refreshMu.Lock()
 		defer a.refreshMu.Unlock()
 		// Another request may have refreshed while we waited on the lock.
 		if cur := a.cfg.Auth; cur != nil &&
-			(cur.RefreshToken != snap.RefreshToken || cur.ExpiresAt != snap.ExpiresAt) {
+			(cur.AccessToken != snap.AccessToken || cur.RefreshToken != snap.RefreshToken || cur.ExpiresAt != snap.ExpiresAt) {
 			return cur.AccessToken, nil
 		}
 		return a.refreshAcrossProcesses(ctx, &snap)
@@ -725,7 +743,15 @@ func (a *app) acknowledgeAuth() {
 	a.cfgBaseline.Auth = &authCopy
 }
 
-// applyTokenSet stores a fresh OAuth token pair on the config. It deliberately
+// applyTokenSet stores a fresh OAuth token pair on the config, overwriting
+// only the fields the token response actually carries: a 200 without
+// refresh_token keeps the stored one (RFC 6749 §6 — the client retains its
+// refresh token when the response omits it) and a 200 without expires_in
+// keeps a still-future stored expiry. Both fields key the transparent-refresh
+// guard in buildClient, and blanking either permanently disables the self-heal
+// with no error anywhere (issue #314). When nothing still-future is stored
+// either, the omission is announced on stderr (human mode only, like the
+// other token-path notices) instead of silently degrading. It deliberately
 // leaves Auth.IssuedBaseURL untouched: the only caller-driven stamping happens
 // at login (rememberLoginBaseURL), because during a transparent refresh the
 // effective base URL may be a deliberate override while the credential's
@@ -744,13 +770,22 @@ func (a *app) applyTokenSet(set *auth.TokenSet) {
 	}
 	a.cfg.Auth.Method = method
 	a.cfg.Auth.AccessToken = set.AccessToken
-	a.cfg.Auth.RefreshToken = set.RefreshToken
+	if set.RefreshToken != "" {
+		a.cfg.Auth.RefreshToken = set.RefreshToken
+	}
 	a.cfg.Auth.ClientID = auth.FirstPartyClientID
 	a.cfg.Auth.TokenPrefix = prefix
 	if set.ExpiresIn > 0 {
 		a.cfg.Auth.ExpiresAt = time.Now().Add(time.Duration(set.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-	} else {
-		a.cfg.Auth.ExpiresAt = ""
+		a.degradedRefreshAccessToken = ""
+		return
+	}
+	a.degradedRefreshAccessToken = set.AccessToken
+	if t, err := time.Parse(time.RFC3339, a.cfg.Auth.ExpiresAt); err == nil && time.Until(t) > 0 {
+		return
+	}
+	if !a.structured() {
+		fmt.Fprintf(os.Stderr, "warning: token response omitted expires_in and no still-future expiry is stored; transparent token refresh requires a parseable expiry and can repeat on later requests while the stored expiry stays stale — run 'cupthread auth login' again if requests start failing\n")
 	}
 }
 
