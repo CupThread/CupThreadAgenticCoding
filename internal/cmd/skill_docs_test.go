@@ -2325,3 +2325,54 @@ func TestSkillDocsIssue260PresentedSpellingHMAC(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsIssue259PublicChangelogFeedSchema pins the corrected public
+// changelog feed contract (issue #259, SaaS #1226 / PR #1273): entries carry
+// exactly `{id, title, body, versionLabel, publishedAt, linkedRequests}` — no
+// workspace-internal `appId`, nullable free-form `versionLabel` (never
+// `versionNumber`), and an always-present `linkedRequests` array — and the
+// API reference documents the deterministic 400/401/403/404 errors alongside
+// 429 plus the always-emitted envelope.
+func TestSkillDocsIssue259PublicChangelogFeedSchema(t *testing.T) {
+	t.Run("cupthread-api", func(t *testing.T) {
+		doc := readSkill(t, "cupthread-api")
+		for _, marker := range []string{
+			// Compact index row (SKILL.md).
+			"entries carry nullable `versionLabel` and always-present `linkedRequests`, never `appId` or `versionNumber` (SaaS #1226)",
+			// Corrected entry schema (reference/endpoints.md).
+			"the corrected `ChangelogEntry` schema (SaaS #1226 / PR #1273): `{id, title, body, versionLabel, publishedAt, linkedRequests}`, all six required",
+			"no `appId` (a workspace-internal identifier the public feed never serves)",
+			"the version field is the operator's free-form `versionLabel` (nullable string, **not** `versionNumber`)",
+			"`linkedRequests` is an always-present array of `{id, title}` approved feature-request summaries (empty for callers who fail the roadmap visibility gate — it is required, not optional)",
+			// Always-emitted envelope and deterministic errors.
+			"the envelope always emits all three keys, with `hasMore: false` and `nextCursor: null` on the last page",
+			"`401` `authentication_required` when the app's `allowAnonymousChangelog` is false and no end-user session is present",
+			"`404` for an unknown `appKey`",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("cupthread-api docs are missing required issue-#259 marker %q", marker)
+			}
+		}
+	})
+
+	sdkMarkers := []string{
+		"**Public changelog entries follow the corrected `ChangelogEntry` schema (SaaS #1226 / PR #1273):**",
+		"no `appId` (a workspace-internal identifier the public feed never serves), a nullable free-form `versionLabel` (never `versionNumber`)",
+		"Drop `appId`/`versionNumber` from any custom or strict changelog model and require all six keys.",
+	}
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			for _, marker := range sdkMarkers {
+				if !strings.Contains(doc, marker) {
+					t.Errorf("%s/SKILL.md is missing required issue-#259 marker %q", skill, marker)
+				}
+			}
+		})
+	}
+}

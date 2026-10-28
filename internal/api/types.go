@@ -446,7 +446,11 @@ type ListChangelogResponse struct {
 
 // PublicChangelogEntry is one published entry of the public changelog feed
 // (GET /api/v1/public/apps/{appKey}/changelog), mirroring the OpenAPI
-// PublicChangelogEntry schema.
+// ChangelogEntry component as corrected by SaaS#1226/#1273: the feed never
+// serves the workspace-internal `appId`, the version field is the operator's
+// free-form `versionLabel` (nullable, never a `versionNumber`), and
+// `linkedRequests` is always present — empty for callers who fail the roadmap
+// visibility gate.
 type PublicChangelogEntry struct {
 	ID             string          `json:"id"`
 	Title          string          `json:"title"`
@@ -457,8 +461,9 @@ type PublicChangelogEntry struct {
 }
 
 // ListPublicChangelogResponse is the cursor-paginated public changelog feed
-// (PROD-28). NextCursor is nil on the last page; pass it back as the
-// `cursor` query parameter to fetch the next page.
+// (PROD-28). The envelope always emits all three keys (issue #259):
+// NextCursor is nil on the last page; pass it back as the `cursor` query
+// parameter to fetch the next page.
 type ListPublicChangelogResponse struct {
 	Entries    []PublicChangelogEntry `json:"entries"`
 	HasMore    bool                   `json:"hasMore"`
