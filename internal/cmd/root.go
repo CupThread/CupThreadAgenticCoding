@@ -725,7 +725,15 @@ func (a *app) acknowledgeAuth() {
 	a.cfgBaseline.Auth = &authCopy
 }
 
-// applyTokenSet stores a fresh OAuth token pair on the config. It deliberately
+// applyTokenSet stores a fresh OAuth token pair on the config, overwriting
+// only the fields the token response actually carries: a 200 without
+// refresh_token keeps the stored one (RFC 6749 §6 — the client retains its
+// refresh token when the response omits it) and a 200 without expires_in
+// keeps a still-future stored expiry. Both fields key the transparent-refresh
+// guard in buildClient, and blanking either permanently disables the self-heal
+// with no error anywhere (issue #314). When nothing still-future is stored
+// either, the omission is announced on stderr (human mode only, like the
+// other token-path notices) instead of silently degrading. It deliberately
 // leaves Auth.IssuedBaseURL untouched: the only caller-driven stamping happens
 // at login (rememberLoginBaseURL), because during a transparent refresh the
 // effective base URL may be a deliberate override while the credential's
@@ -744,13 +752,20 @@ func (a *app) applyTokenSet(set *auth.TokenSet) {
 	}
 	a.cfg.Auth.Method = method
 	a.cfg.Auth.AccessToken = set.AccessToken
-	a.cfg.Auth.RefreshToken = set.RefreshToken
+	if set.RefreshToken != "" {
+		a.cfg.Auth.RefreshToken = set.RefreshToken
+	}
 	a.cfg.Auth.ClientID = auth.FirstPartyClientID
 	a.cfg.Auth.TokenPrefix = prefix
 	if set.ExpiresIn > 0 {
 		a.cfg.Auth.ExpiresAt = time.Now().Add(time.Duration(set.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
-	} else {
-		a.cfg.Auth.ExpiresAt = ""
+		return
+	}
+	if t, err := time.Parse(time.RFC3339, a.cfg.Auth.ExpiresAt); err == nil && time.Until(t) > 0 {
+		return
+	}
+	if !a.structured() {
+		fmt.Fprintf(os.Stderr, "warning: token response omitted expires_in and no still-future expiry is stored; transparent token refresh will not run — run 'cupthread auth login' again if requests start failing\n")
 	}
 }
 
