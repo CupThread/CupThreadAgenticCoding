@@ -1313,7 +1313,9 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 		"there is no `requesterEmail` field",
 		"The requester token may be sent in the body field `requesterToken` **or** the `X-User-Token` header (SaaS #834)",
 		"`details.fieldErrors.requesterToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
-		"Success answers `201 {featureRequestId, pending: true}`",
+		// 201 body renamed by the SaaS #1105 spec correction (issue #256):
+		// the two-field intake receipt, never the full board record.
+		"Success answers `201` with the two-field intake receipt `FeatureRequestSubmissionCreated` (SaaS #1105): `{featureRequestId, pending}`, both required",
 		// Vote POST row: header-only body shape.
 		"a header-only vote body carries just `appKey`",
 		"`details.fieldErrors.userToken: [\"Required — send the token in the JSON body or the X-User-Token header\"]`",
@@ -2415,6 +2417,39 @@ func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api docs are missing required issue-#248 marker %q", marker)
+		}
+	}
+}
+
+// TestSkillDocsIssue256IntakeResponseShapes pins the corrected public intake
+// response shapes (issue #256, SaaS #1105): POST /api/v1/feature-requests
+// answers a two-field `FeatureRequestSubmissionCreated` receipt (never the
+// full public board record), and POST
+// /api/v1/feature-requests/{id}/comments wraps the created comment in the
+// `FeatureRequestCommentCreated` `{ comment }` envelope (never the bare
+// record). The corrected comments-POST 401/429 documentation lives in the
+// issue-#250 uniform-404 sync, so this test pins only the 201 shapes.
+// Red-before/green-after: reverting either phrase below must fail this test.
+func TestSkillDocsIssue256IntakeResponseShapes(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	submitRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Submit (propose) a new feature request.")
+	for _, marker := range []string{
+		"Success answers `201` with the two-field intake receipt `FeatureRequestSubmissionCreated` (SaaS #1105): `{featureRequestId, pending}`, both required",
+		"a strict client must not model the full public `FeatureRequest` board record here",
+	} {
+		if !strings.Contains(submitRow, marker) {
+			t.Errorf("submit row is missing required issue-#256 marker %q; got: %s", marker, submitRow)
+		}
+	}
+
+	commentsRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment")
+	for _, marker := range []string{
+		"Success answers `201` with the `FeatureRequestCommentCreated` envelope `{ comment }` (SaaS #1105)",
+		"`comment` is required and holds the full public `FeatureRequestComment` record inside the wrapper — **not** the bare record the spec previously referenced",
+	} {
+		if !strings.Contains(commentsRow, marker) {
+			t.Errorf("comment-create row is missing required issue-#256 marker %q; got: %s", marker, commentsRow)
 		}
 	}
 }
