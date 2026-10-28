@@ -201,7 +201,8 @@ func TestAppsPublicChangelogJSONKeepsContract(t *testing.T) {
 }
 
 // TestAppsPublicChangelogLastPage checks the table stays quiet when the feed
-// is exhausted (nextCursor null, hasMore false).
+// is exhausted (nextCursor null, hasMore false) and that --json still emits a
+// present `nextCursor: null` / `hasMore: false` envelope on the last page.
 func TestAppsPublicChangelogLastPage(t *testing.T) {
 	server, _, _ := changelogServer(t, `{
 		"entries": [{
@@ -225,6 +226,36 @@ func TestAppsPublicChangelogLastPage(t *testing.T) {
 	}
 	if !strings.Contains(out, "v1.0.0") {
 		t.Errorf("output missing entry title:\n%s", out)
+	}
+
+	jsonOut, err := runRoot(t, server.URL, "apps", "public-changelog", "key_live_1", "--json")
+	if err != nil {
+		t.Fatalf("public-changelog --json: %v", err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &top); err != nil {
+		t.Fatalf("unmarshal last-page JSON: %v", err)
+	}
+	if got, ok := top["hasMore"].(bool); !ok || got {
+		t.Errorf("hasMore = %v, want false", top["hasMore"])
+	}
+	if got, present := top["nextCursor"]; !present || got != nil {
+		t.Errorf("nextCursor = %v (present=%t), want present null", got, present)
+	}
+	entries, ok := top["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("entries = %#v, want a 1-element array", top["entries"])
+	}
+	entry, ok := entries[0].(map[string]any)
+	if !ok {
+		t.Fatalf("entries[0] = %#v, want an object", entries[0])
+	}
+	linked, present := entry["linkedRequests"]
+	if !present {
+		t.Fatalf("linkedRequests missing from output; the field is required even when empty (issue #259)")
+	}
+	if _, ok := linked.([]any); !ok {
+		t.Errorf("linkedRequests = %#v, want an array even when empty (issue #259)", linked)
 	}
 }
 
@@ -690,6 +721,13 @@ func TestAppsPublicChangelogContractPinCorrectedSchema(t *testing.T) {
 		entry := top.Entries[0]
 		if got, present := entry["versionLabel"]; !present || got != nil {
 			t.Errorf("versionLabel = %v (present=%t), want the nullable field passed through", got, present)
+		}
+		linked, present := entry["linkedRequests"]
+		if !present {
+			t.Fatalf("linkedRequests missing from output; the field is required even when empty (issue #259)")
+		}
+		if _, ok := linked.([]any); !ok {
+			t.Errorf("linkedRequests = %#v, want an array even when empty (issue #259)", linked)
 		}
 		for _, banned := range []string{"appId", "versionNumber"} {
 			if got, present := entry[banned]; present {

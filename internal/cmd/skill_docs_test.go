@@ -2347,8 +2347,11 @@ func TestSkillDocsIssue259PublicChangelogFeedSchema(t *testing.T) {
 			"`linkedRequests` is an always-present array of `{id, title}` approved feature-request summaries (empty for callers who fail the roadmap visibility gate — it is required, not optional)",
 			// Always-emitted envelope and deterministic errors.
 			"the envelope always emits all three keys, with `hasMore: false` and `nextCursor: null` on the last page",
+			"`400` `{\"error\": \"Invalid cursor\"}` for a malformed `cursor`",
 			"`401` `authentication_required` when the app's `allowAnonymousChangelog` is false and no end-user session is present",
+			"`403` `{\"error\": \"Public surfaces are disabled for this app\"}` for a private app",
 			"`404` for an unknown `appKey`",
+			"`429` when the rate budget is spent",
 		} {
 			if !strings.Contains(doc, marker) {
 				t.Errorf("cupthread-api docs are missing required issue-#259 marker %q", marker)
