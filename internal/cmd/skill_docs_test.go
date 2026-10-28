@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,11 +66,7 @@ func TestSDKSkillSigningGuidance(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.skill, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("..", "..", "skills", tc.skill, "SKILL.md"))
-			if err != nil {
-				t.Fatalf("read skill doc: %v", err)
-			}
-			doc := string(data)
+			doc := readSkill(t, tc.skill)
 			for _, marker := range append(common, tc.want...) {
 				if !strings.Contains(doc, marker) {
 					t.Errorf("%s/SKILL.md is missing required signing-guidance marker %q", tc.skill, marker)
@@ -85,11 +83,7 @@ func TestSDKSkillSigningGuidance(t *testing.T) {
 // When SaaS adds or removes one, update this snapshot and the SKILL.md in the
 // same sync — the enumeration below is that snapshot.
 func TestAPISkillInteractiveOnlyCapabilitySet(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
-	doc := string(data)
+	doc := readSkill(t, "cupthread-api")
 
 	interactiveOnlySet := "(`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `privacy.manage`, `workspace.delete`)"
 	if !strings.Contains(doc, interactiveOnlySet) {
@@ -108,11 +102,7 @@ func TestAPISkillInteractiveOnlyCapabilitySet(t *testing.T) {
 // scheduledAt under the gate. "" 400s on the datetime schema and a JSON null
 // clears without the gate (plain content.manage suffices).
 func TestAPISkillScheduleAtClearSemantics(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
-	doc := string(data)
+	doc := readSkill(t, "cupthread-api")
 
 	for _, marker := range []string{
 		"| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (setting a schedule only) | `changelog.publish` |",
@@ -159,11 +149,7 @@ func TestSkillDocsCommentThreadPagination(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.skill, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("..", "..", "skills", tc.skill, "SKILL.md"))
-			if err != nil {
-				t.Fatalf("read skill doc: %v", err)
-			}
-			doc := string(data)
+			doc := readSkill(t, tc.skill)
 			for _, marker := range tc.want {
 				if !strings.Contains(doc, marker) {
 					t.Errorf("%s/SKILL.md is missing required comment-pagination marker %q", tc.skill, marker)
@@ -181,11 +167,7 @@ func TestSkillDocsCommentThreadPagination(t *testing.T) {
 // 403 email_not_verified conditions, and must no longer present the
 // changelog subscribe endpoint as unconditionally available.
 func TestAPISkillAnonymousAccessEnforcement(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
-	doc := string(data)
+	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
 		"## Per-App Anonymous-Access Enforcement (PRIV-12)",
 		// Columns and versions inherit the roadmap flag with a coded 401.
@@ -215,11 +197,7 @@ func TestAPISkillAnonymousAccessEnforcement(t *testing.T) {
 // strict and the one-click budget is still chosen from the query string
 // before the body is read.
 func TestAPISkillChangelogUnsubscribeDurability(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
-	doc := string(data)
+	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
 		"## Changelog Unsubscribe on Private Apps and After Expiry (#635)",
 		"even after `exp`",
@@ -285,11 +263,7 @@ func TestSkillDocsPublicBoardReadLimits(t *testing.T) {
 
 	check := func(t *testing.T, skill string, markers []string) {
 		t.Helper()
-		data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
-		if err != nil {
-			t.Fatalf("read skill doc: %v", err)
-		}
-		doc := string(data)
+		doc := readSkill(t, skill)
 		for _, marker := range markers {
 			if !strings.Contains(doc, marker) {
 				t.Errorf("%s/SKILL.md is missing required public-read marker %q", skill, marker)
@@ -318,11 +292,7 @@ func TestSkillDocsPublicBoardReadLimits(t *testing.T) {
 // Without these markers a future edit can silently desync the skill from the
 // spec the way earlier API-sync issues (e.g. #67) did.
 func TestAPISkillOAuthServerDocs(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", "cupthread-api", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
-	doc := string(data)
+	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
 		"## OAuth Authorization Server (QUAL-04)",
 		"GET /.well-known/oauth-authorization-server",
@@ -727,7 +697,7 @@ func TestAPISkillIssue132(t *testing.T) {
 		"`code: \"website_url_not_allowed\"`",
 		"either `null` or a managed `https:` URL",
 		"served as `null`",
-		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19)",
+		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](user-identity-and-privacy.md#profile-avatar-urls-are-managed-host-only-priv-19)",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#132 marker %q", marker)
@@ -796,13 +766,36 @@ func TestCLISkillMutationResultDocs(t *testing.T) {
 	}
 }
 
+// skillDocFiles lists the markdown files that make up one skill's logical
+// documentation: SKILL.md plus, when present, the reference/*.md detail files
+// next to it. The cupthread-api skill split its per-endpoint contract detail
+// into reference files so SKILL.md stays under the agent-skill size budget
+// (issue #318); skill hosts cap SKILL.md only, so the pins below must check
+// the index and its references as one document.
+func skillDocFiles(t *testing.T, skill string) []string {
+	t.Helper()
+	root := filepath.Join("..", "..", "skills", skill)
+	files := []string{filepath.Join(root, "SKILL.md")}
+	refs, err := filepath.Glob(filepath.Join(root, "reference", "*.md"))
+	if err != nil {
+		t.Fatalf("glob reference docs: %v", err)
+	}
+	slices.Sort(refs)
+	return append(files, refs...)
+}
+
 func readSkill(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", name, "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
+	var sb strings.Builder
+	for _, f := range skillDocFiles(t, name) {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("read skill doc %s: %v", f, err)
+		}
+		sb.WriteString("\n\n")
+		sb.Write(data)
 	}
-	return string(data)
+	return sb.String()
 }
 
 // TestAPISkillVoteInsertOnlySemantics pins the PROD-36 insert-only vote
@@ -1142,7 +1135,7 @@ func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
 		// PRIV-12 matrix rows and the ordering note.
 		"| `GET /api/v1/feature-requests/:id` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |",
 		"| `GET /api/v1/feature-requests/:id` | request exists but is **unapproved** |",
-		"the comments-thread and single-request-detail `401` checks run **after** existence hiding",
+		"the `401` gate runs **after** the missing/private existence `404` but **before** the approved `404`",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#231 marker %q", marker)
@@ -1158,6 +1151,9 @@ func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
 		"those four may come from a 30-second shared cache",
 		// The pre-sync ordering note, which named only the comments thread.
 		"the comments-thread `401` check runs **after** existence hiding",
+		// The pre-sync ordering conclusion, which missed that a missing id
+		// still answers 404 (gate sits between the two 404 checks).
+		"cannot distinguish existing ids from missing ones",
 	} {
 		if strings.Contains(doc, stale) {
 			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
@@ -1739,16 +1735,16 @@ func TestSkillDocsCommandReferencesResolve(t *testing.T) {
 		}
 		for _, r := range refs {
 			if err := resolveSkillCommandRef(root, r.text); err != nil {
-				t.Errorf("%s/SKILL.md:%d: %v", skill, r.line, err)
+				t.Errorf("%s: %v", r.loc, err)
 			}
 		}
 	}
 }
 
-// skillCommandRef is one extracted command reference with its 1-based line
-// number in the SKILL.md file, for actionable failure messages.
+// skillCommandRef is one extracted command reference with its source location
+// (`<repo-relative file>:<1-based line>`), for actionable failure messages.
 type skillCommandRef struct {
-	line int
+	loc  string
 	text string
 }
 
@@ -1757,30 +1753,39 @@ type skillCommandRef struct {
 // command, and fenced code-block lines that invoke `cupthread …`.
 func extractSkillCommandRefs(t *testing.T, root *cobra.Command, skill string) []skillCommandRef {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, "SKILL.md"))
-	if err != nil {
-		t.Fatalf("read skill doc: %v", err)
-	}
 	var refs []skillCommandRef
-	inFence := false
-	for i, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-			continue
+	for _, path := range skillDocFiles(t, skill) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read skill doc %s: %v", path, err)
 		}
-		if inFence {
-			if invocation, ok := fencedCupthreadInvocation(line); ok {
-				refs = append(refs, skillCommandRef{i + 1, invocation})
-			}
-			continue
+		// Label refs with the path relative to the repo root so failures
+		// point at the right file, whether the reference lives in SKILL.md
+		// or a reference/*.md detail file.
+		label, err := filepath.Rel(filepath.Join("..", ".."), path)
+		if err != nil {
+			t.Fatalf("relativize %s: %v", path, err)
 		}
-		for _, span := range inlineCodeSpans(line) {
-			toks := strings.Fields(span)
-			if len(toks) == 0 {
+		inFence := false
+		for i, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "```") {
+				inFence = !inFence
 				continue
 			}
-			if toks[0] == "cupthread" || findChildCommand(root, toks[0]) != nil {
-				refs = append(refs, skillCommandRef{i + 1, span})
+			if inFence {
+				if invocation, ok := fencedCupthreadInvocation(line); ok {
+					refs = append(refs, skillCommandRef{label + ":" + strconv.Itoa(i+1), invocation})
+				}
+				continue
+			}
+			for _, span := range inlineCodeSpans(line) {
+				toks := strings.Fields(span)
+				if len(toks) == 0 {
+					continue
+				}
+				if toks[0] == "cupthread" || findChildCommand(root, toks[0]) != nil {
+					refs = append(refs, skillCommandRef{label + ":" + strconv.Itoa(i+1), span})
+				}
 			}
 		}
 	}

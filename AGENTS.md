@@ -25,3 +25,7 @@ Install via `brew install CupThread/tap/cupthread` (releases are tag-driven, so 
 Global overrides: `--base-url` / `$CUPTHREAD_BASE_URL` (default `https://api.cupthread.com`), `--workspace` / `--app` for context, `$CUPTHREAD_TOKEN` for credential injection, `--config` / `$CUPTHREAD_CONFIG` for the config path (default `~/.config/cupthread/config.json`).
 ## API Contracts
 The CLI mirrors the Console API in the local SaaS monorepo checkout (`~/g/CupThread/SaaS`, a sibling of this repo; backend under `apps/api`, shared schemas under `packages/shared/src/schemas/`). CLI authentication (access token + OAuth) is specified in the monorepo's `docs/CLI-Access-Tokens.md` and `docs/CLI-OAuth.md`.
+
+## Skill Size Budget (issue #318)
+Agent-skill hosts refuse to load a `SKILL.md` at or above **100 KB**, rejecting the whole skill. `TestSkillMDSizeBudgets` (`skills/skill_size_test.go`) enforces a **hard limit of 100 KB** and a **soft budget of 80 KB** on every `skills/*/SKILL.md` (via the embedded copies) on each CI run. When a docs-sync brings new endpoint detail, put per-endpoint contract tables in the live OpenAPI spec (SaaS repo), the relevant SDK/CLI skill, or the `skills/cupthread-api/reference/*.md` topic files — and keep `skills/cupthread-api/SKILL.md` a compact index of the surface and cross-cutting invariants.
+

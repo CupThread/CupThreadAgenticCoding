@@ -5,709 +5,155 @@ description: Reference for CupThread backend API endpoints, authentication flows
 
 # CupThread API Reference & OpenAPI Specification
 
-Complete developer reference for CupThread's backend API endpoints, authentication flows, public SDK APIs, and OpenAPI 3.1 specifications.
+Compact index for CupThread's backend API. This file intentionally stays small — it maps the surface and the cross-cutting rules. Two places carry the detail:
+
+1. The **live OpenAPI 3.1 spec** — the always-current, authoritative contract for every endpoint (request/response schemas, status codes, error bodies).
+2. The **`reference/*.md` files in this skill directory** — the shipped behavioral detail per topic (gate orderings, error-code tables, pagination semantics). Read the file listed for a topic when you need that level of detail.
+
+Never inline per-endpoint contract detail back into this file (see the maintainer note at the bottom).
 
 ## 🌐 Official API Documentation & OpenAPI Schema
-- **Interactive API Documentation (Web)**: [https://cupthread.com/api](https://cupthread.com/api) (or [https://api.cupthread.com/reference](https://api.cupthread.com/reference))
+
 - **OpenAPI 3.1 Schema (JSON)**: [https://api.cupthread.com/api/v1/openapi.json](https://api.cupthread.com/api/v1/openapi.json)
 - **OpenAPI 3.1 Schema (YAML)**: [https://api.cupthread.com/api/v1/openapi.yaml](https://api.cupthread.com/api/v1/openapi.yaml)
+- **Interactive API Documentation (Web)**: [https://cupthread.com/api](https://cupthread.com/api) (or [https://api.cupthread.com/reference](https://api.cupthread.com/reference))
 - **Official Platform Website**: [https://cupthread.com](https://cupthread.com)
 
----
-
 ## 🤖 Quick Prompt for Coding Agents
-
-To ask your AI agent to build a custom API client or webhook integration using the official OpenAPI spec, copy and paste this prompt:
 
 ```text
 Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com/api/v1/openapi.json and implement a type-safe client for submitting user feedback, querying public feature requests, and syncing user attributes.
 ```
 
----
-
 ## Base URL & Environment
+
 - **Production API Base**: `https://api.cupthread.com`
 - **Interactive Reference UI**: `https://cupthread.com/api`
 
----
-
 ## Roles & Authentication
-- **Developer / Console Access**: Developer API token / Bearer token (`cpt_...`) or Clerk session header (`/api/v1/console/*`). Console workspace routes additionally enforce role-based capabilities (AUTH-01), and high-impact ones reject `cpt_` tokens outright — see [Workspace Capability RBAC (AUTH-01)](#workspace-capability-rbac-auth-01).
-- **End-User / Public SDK Access**: Identified by `appKey` in path/query/body, optional `X-User-Token` header (UUID) for anonymous user voting, comment tracking, roadmap personalization, and upload session creation (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers — see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28). On `GET /api/v1/feature-requests` the header replaces the deprecated `?userToken=` query parameter, and the feature-request **vote and propose writes** accept the end-user token in either the JSON body field (`userToken`/`requesterToken`) or the `X-User-Token` header, with the body field winning when both are present (SaaS #834) — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). `POST /api/v1/me/link` combines the header with a Clerk session to confirm identity linking, and `POST /api/v1/me/erase` uses it for self-service data erasure — see [Self-Service Data Erasure (PRIV-01)](#self-service-data-erasure-priv-01).
-- **CLI / OAuth Access**: `cupthread auth login` runs Authorization Code + PKCE in a browser (or the RFC 8628 device flow on headless machines) against the OAuth authorization server and stores a rotating 14-day token pair. The whole surface is documented in the OpenAPI spec (tag `OAuth`) — see [OAuth Authorization Server (QUAL-04)](#oauth-authorization-server-qual-04).
 
----
+- **Developer / Console Access**: developer API token / Bearer token (`cpt_...`) or Clerk session header on `/api/v1/console/*`. Console workspace routes enforce role-based capabilities (AUTH-01) and the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `privacy.manage`, `workspace.delete`) rejects `cpt_` tokens outright with `403 interactive_session_required`. Check order: role first (`403 capability_required`), then token type.
+- **End-User / Public SDK Access**: identified by `appKey`, plus the optional `X-User-Token: <uuid>` header for anonymous voting, comments, roadmap personalization, and upload sessions (`/api/v1/public/*`, `/api/v1/feedback`, `/api/v1/feature-requests`, `/api/v1/uploads/*`). The header replaces the deprecated `?userToken=` query parameter, and the feature-request **vote and propose writes** accept the end-user token in either the JSON body field (`userToken`/`requesterToken`) or the `X-User-Token` header, with the body field winning when both are present. On `POST /api/v1/uploads/sessions` the header is **required** for anonymous callers (SEC-28). `POST /api/v1/me/link` confirms identity linking (needs Clerk session too); `POST /api/v1/me/erase` is self-service data erasure.
+- **CLI / OAuth Access**: `cupthread auth login` runs Authorization Code + PKCE in a browser (or the RFC 8628 device flow headless) and stores a rotating 14-day `cpt_` pair (refresh tokens live 180 days, rotate on every use). RFC 8414 metadata at `GET /.well-known/oauth-authorization-server`; full surface under OpenAPI tag `OAuth`. Redirect URIs allow only absolute `https:` or loopback `http:` (SEC-46).
 
-## OAuth Authorization Server (QUAL-04)
+## Reference Files (in this skill)
 
-The OAuth 2.0 authorization-server surface the CLI consumes is now fully documented in the OpenAPI 3.1 spec (`https://api.cupthread.com/api/v1/openapi.json`, browsable at `https://api.cupthread.com/reference`). For automated discovery, **`GET /.well-known/oauth-authorization-server`** serves RFC 8414 metadata: `issuer`, `authorization_endpoint`, `token_endpoint`, `revocation_endpoint`, `device_authorization_endpoint`, the supported response/grant types, `code_challenge_methods_supported: ["S256"]`, token-endpoint auth methods, and `scopes_supported: ["full"]`.
-
-| Endpoint | Contract |
+| File | Topic |
 |---|---|
-| `GET /api/v1/oauth/authorize` | Authorization Code + PKCE start (RFC 6749 §4.1.1 / RFC 7636): validates the request, then **302-redirects to the Console consent page** carrying the OAuth parameters. Validation failures answer RFC 6749 §5.2 JSON errors (`invalid_request`, `unsupported_response_type`, `invalid_client`, `invalid_scope`) **instead of a redirect** — an unregistered `redirect_uri` must never become an open redirect. Only `response_type=code`, `code_challenge_method=S256`, and scope `full` are supported (`code_challenge` must match `^[A-Za-z0-9\-_]{43,128}$`). Redirect URIs must be absolute `https:` URLs or loopback `http://127.0.0.1` / `http://[::1]` / `http://localhost` (any port, RFC 8252 §7.3); custom schemes and non-loopback `http:` are rejected (SEC-46). Rate-limited on the shared per-IP authorize budget (SEC-61, 60 requests/60 s — see [Rate Limiting](#rate-limiting-429-too-many-requests)): the spend lands before the client lookup, so unknown-client probes are metered too, and an over-budget request answers `429` with the RFC 6749 §5.2 `invalid_request` "Too many requests" body **instead of a redirect**. |
-| `POST /api/v1/oauth/authorize` | The signed-in user's consent decision (interactive Clerk session required; a `cpt_` token is rejected with `403`). Parsed fail-closed (#580): only the exact lowercase `allow` or `deny` is accepted. `allow` mints a single-use 10-minute authorization code bound to client, redirect URI, PKCE challenge, and user, and answers `{ redirectTo }` with `?code=…&state=…`; `deny` answers `{ redirectTo }` with `?error=access_denied&state=…`. Any other value (`Allow`, `ALLOW`, `yes`, a missing field, or surrounding whitespace) is `400` `invalid_request` with `error_description` `decision must be 'allow' or 'deny'` and mints no code. The rate-limit budget is spent before the body is parsed (SEC-27), so an over-budget caller sees `429` `invalid_request` without a JSON parse. The budget is the shared per-IP authorize bucket (SEC-61: keyed on the client IP alone — a rotated or unknown `client_id` cannot mint a fresh budget), shared with `GET /oauth/authorize` and `GET /oauth/consent-info`; a legitimate interactive consent journey spends ~3 requests of it. |
-| `POST /api/v1/oauth/token` | The two browser-flow grants: `authorization_code` (send `code`, the matching `redirect_uri`, and the RFC 7636 §4.6 `code_verifier`) and `refresh_token` (rotates the pair; see below). Form-urlencoded per RFC 6749 §2.3.1; a JSON object with string values is accepted as a compatibility encoding; `multipart/form-data` is rejected with `415`. Confidential clients (registered with a secret) must send `client_secret` — a missing or wrong one is `401`. Rate-limited per client id + client IP (`429`). |
-| `POST /api/v1/oauth/device/authorize` | RFC 8628 §3.1 device start: returns `device_code`, `user_code`, `verification_uri`, `verification_uri_complete`, `expires_in` = 900 (15 minutes), and `interval` = 5 (minimum seconds between token polls). |
-| `POST /api/v1/oauth/device/token` | RFC 8628 §3.4/§3.5 polling with `grant_type=urn:ietf:params:oauth:grant-type:device_code`. While the user decides: `400 authorization_pending` (keep polling) and `400 slow_down` — the server enforces §3.5: polls arriving less than the advertised `interval` after the previous allowed poll get `slow_down`, and **every `slow_down` grows the required spacing by 5 seconds, capped at `interval` + 60 seconds**, so clients must honor it by growing their polling interval; a poller that never backs off keeps receiving `slow_down` until the code expires (the CLI's device poller adds 5 seconds per `slow_down`). Terminal answers: `400 access_denied` (user denied), `400 expired_token` (restart the flow), and `invalid_grant` when an already-redeemed code is polled again — approval issues the pair exactly once. |
-| `POST /api/v1/oauth/revoke` | RFC 7009 revocation that authenticates the caller before touching the token (RFC 7009 §2.1, SEC-57): form (or JSON) body `token` plus **required `client_id`** — a missing id is `400 invalid_request` with `error_description` `client_id is required`, and an unknown id is `400 invalid_client` (`Unknown client`). Confidential clients (registered with a secret — the Console-registered apps) must also present the correct `client_secret`; a missing or wrong one is `401 invalid_client`. Public clients (CLIs, native, and single-page apps registered without a secret — including `cupthread-cli`) keep working with `client_id` alone. Only tokens issued to the authenticated client are revocable: a token issued to a different client, or one with no owning client (a Console PAT), gets the usual **empty-body `200` but revokes nothing** — manage PATs through the Console token endpoints. A value with neither the `cpt_` (access) nor `cpr_` (refresh) prefix is `400 unsupported_token_type` (RFC 7009 §2.2.1). The caller's own token is revoked **with its sibling — the whole pair dies together**; unknown or already-revoked `cpt_`/`cpr_` tokens still answer the uniform **`200` with an empty body**, so no existence oracle is added. Rate limiting follows the authorize family (SEC-27): the per-IP budget is spent before the body is read, and the per-(`client_id`, IP) budget applies only once the client is known (`429` `invalid_request`). |
-| `GET /api/v1/oauth/consent-info`, `GET /api/v1/oauth/device/lookup`, `POST /api/v1/oauth/device/decide` | Session-scoped Console helpers backing the consent and device-confirmation pages (`{ error }` bodies, not RFC 6749 §5.2) — not part of the CLI's token flows. `POST /api/v1/oauth/device/decide` uses the same fail-closed `decision` whitelist: only exact `allow` or `deny`. Anything else, including a missing `decision`, is `400 {"error": "decision must be 'allow' or 'deny'"}` and the device code stays `pending`. All three are metered on the same shared per-IP authorize bucket as `GET`/`POST /oauth/authorize` (SEC-61; the device helpers' spend also lands before the first lookup — SEC-65), spent before the body is read: an over-budget `consent-info` call answers `429` with a plain `{"error": …}` body, and an over-budget `device/decide` call sees `429` before its JSON is parsed. |
-
-All three grants answer the same envelope: `{ access_token, refresh_token, token_type: "Bearer", expires_in, scope }`. Access tokens are `cpt_…` bearer tokens living **14 days** (`expires_in` = 1209600); refresh tokens live **180 days** and **rotate on every use** — the old refresh token is revoked atomically, so replaying a rotated token fails with `invalid_grant`. Scope is always `full`. Every grant-endpoint error is the RFC 6749 §5.2 shape `{ error, error_description }` (`error_description` is advisory text, not a stable contract).
-
----
+| [`reference/endpoints.md`](reference/endpoints.md) | Per-endpoint contract tables for every public & SDK route |
+| [`reference/oauth.md`](reference/oauth.md) | OAuth authorization server (QUAL-04) and the redirect-URI scheme policy (SEC-46) |
+| [`reference/email-subscriptions.md`](reference/email-subscriptions.md) | Changelog subscribe/confirm/unsubscribe (#635, SEC-35) and weekly-digest unsubscribe (PRIV-07) |
+| [`reference/rate-limits-and-cache.md`](reference/rate-limits-and-cache.md) | 429 budgets, shared cache, body limits (SEC-36), anonymous-access gates (PRIV-12) |
+| [`reference/uploads-and-attachments.md`](reference/uploads-and-attachments.md) | Upload sessions, content scan (SEC-25), uploader binding (SEC-28), image media-type policy |
+| [`reference/user-identity-and-privacy.md`](reference/user-identity-and-privacy.md) | `X-User-Token` & identity linking (SEC-12), pseudonyms (PRIV-06), avatars (PRIV-19), erasure & redaction (PRIV-01) |
+| [`reference/voting-and-submissions.md`](reference/voting-and-submissions.md) | Votes & ship-notification opt-in, Turnstile gates (SEC-846, #242), 402 quotas, tiers |
+| [`reference/console-and-rbac.md`](reference/console-and-rbac.md) | Console moderation, capability RBAC (AUTH-01), changelog publishing (SEC-40), `X-Request-Id` (OPS-01) |
+| [`reference/payment-attribute-signing.md`](reference/payment-attribute-signing.md) | The DATA-03/DATA-07 HMAC canonical string and full signing contract |
 
 ## Key Public & SDK Endpoints
 
+One line each; schemas and error contracts live in the OpenAPI spec.
+
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/v1/public/config/:appKey` | `GET` | Fetches the `PublicAppConfig`: app metadata, store/website links (`websiteUrl`), branding flags (`hideSiteBranding`), enabled platforms, anonymous-access settings (`allowAnonymousRoadmap`, `allowAnonymousVote`, `allowAnonymousFeedback`, `allowAnonymousChangelog`, and the `requireAnonymousVoteTurnstile` SEC-846 vote-verification gate), and the optional `allowedEmbedOrigins` embed allowlist (SEC-518) — present only when the tenant configured portal embedding (an empty array is never returned): at most 10 exact `https://` origins (no path, query, fragment, userinfo, or wildcard host; an optional non-443 port is allowed) that may embed the app's public portal pages in an iframe (`frame-ancestors`); when the field is absent, embedding is disabled for the app everywhere. Private apps and unknown keys both fail closed with `404 {"error": "App not found"}` (SEC-37). Rate limited per client IP at 60 requests/minute (`PUBLIC_CONFIG_RATE_LIMITER`); the spend is the first statement, before cache or lookup, so an over-budget caller sees `429 {"error": "Too many requests. Please try again shortly."}` with no D1 read. |
-| `/api/v1/public/workspaces/:workspaceSlug/apps/:appSlug/config` | `GET` | Same `PublicAppConfig` (including `allowedEmbedOrigins`) resolved by workspace and app slugs instead of app key; the same fail-closed `404` applies to private apps. Same dedicated 60/minute config limiter, spent first. |
-| `/api/v1/public/showcase` | `GET` | Public app showcase (alias `GET /api/v1/public/apps`), newest first, `{apps, total}`. `limit` default 50, max 100. `offset` above 5000 is clamped to 5000 and still returns `200` — it is not an error. Rate limited per client IP at 60 requests/minute (`PUBLIC_READ_RATE_LIMITER`, generic `429` JSON); the spend is the first statement. That bucket is shared with the public columns, versions, changelog, and comment-thread reads. |
-| `/api/v1/public/columns/:appKey` | `GET` | Roadmap Kanban columns sorted by position. Apps with anonymous roadmap view disabled answer `401` `authentication_required` (PRIV-12) instead of the column list — see [Per-App Anonymous-Access Enforcement (PRIV-12)](#per-app-anonymous-access-enforcement-priv-12). Rate limited per client IP (`429`, shared 60/min public-read bucket); anonymous `200`s may be served from a 30-second shared cache — see [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache). |
-| `/api/v1/public/versions/:appKey` | `GET` | Release versions sorted by position. Only rows whose `released` flag is true are listed (PROD-32) — unreleased versions stay console-private until a developer marks them released, and a request bound to an unreleased version still shows on the board with its version simply absent from this list. Same `401` `authentication_required` (PRIV-12) on sign-in-only roadmaps as the columns route. Same 60/min `429` and 30-second anonymous cache as the columns route. |
-| `/api/v1/public/apps/:appKey/changelog` | `GET` | Published release notes and changelog items. Cursor-paginated: `limit` (integer, 1–100, default 100) and opaque `cursor` (from the previous `nextCursor`); returns `{entries, hasMore, nextCursor}`. Malformed cursors fail with `400` `{"error": "Invalid cursor"}`. Rate limited per client IP (`429`, shared 60/min public-read bucket). Only anonymous `200`s enter the 30-second shared cache; a Clerk session skips it and keeps session-dependent linked-request titles — see [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache). |
-| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Subscribe an email to changelog updates (double opt-in). Success is always `201 {"subscribed": true}` — the former `alreadySubscribed` field was removed, so the response never reveals prior state. The address starts *pending* and a single-use confirmation email is sent (resends within a 15-minute cooldown return `201` without dispatching a duplicate email). The request body (`SubscribeChangelogInput`) accepts an optional `turnstileToken` (string, 10–2048 chars): when the server enforces Turnstile human verification, anonymous subscription requests require a valid token, and one that is missing or fails verification answers `403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}` — signed-in callers subscribing with their session's verified email address are exempt. Changelogs with anonymous access disabled reject anonymous calls with `401` `authentication_required` and bind signed-in calls to the session's verified address: a body `email` that is not one of them fails with `403 {"error": …, "code": "email_not_verified"}` (PRIV-12). Rate limited per client IP (`429`). |
-| `/api/v1/public/apps/:appKey/changelog/confirm` | `GET` | **Non-destructive** confirmation interstitial (SEC-35): validates the emailed token (read-only) and renders an HTML page whose form POSTs the token; a GET **never modifies** the subscription, so email security gateways (SafeLinks/Proofpoint/Mimecast URL detonation) and link prefetchers cannot consume the single-use token. JSON-only clients (`Accept: application/json` without `text/html`) get `405 {"error": "GET does not confirm subscription. POST the token to this endpoint to confirm."}` with `Allow: POST`. Missing token → `400 {"error": "Missing confirmation token"}`; unknown/expired/already-used tokens → `400 {"error": "Invalid or expired confirmation token"}` (uniform, no oracle). A private app returns `403 {"error": "Public surfaces are disabled for this app"}` before the token is considered. Expired confirmation tokens stay this `400` — the unsubscribe grace in #635 does not apply. Rate limited per client IP (`429`). |
-| `/api/v1/public/apps/:appKey/changelog/confirm` | `POST` | **The only mutating double-opt-in confirmation** (SEC-35): consumes the single-use emailed token and flips the subscription to *confirmed*. Token accepted via query string (`?token=...`), JSON body `{"token": "..."}`, or the interstitial form's `token` field (urlencoded/multipart) — query wins when several are present. Replays and expired tokens fail uniformly with `400 {"error": "Invalid or expired confirmation token"}` (single-use, no oracle). A private app returns `403 {"error": "Public surfaces are disabled for this app"}`. Browser form submissions (`Accept: text/html`) get the HTML confirmation landing page; everything else gets `{"confirmed": true}`. Rate limited per client IP (`429`). |
-| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET` | **Non-destructive** confirmation interstitial (PROD-20, #635): renders an HTML form that POSTs the token; the subscription is never modified. Email security gateways and link prefetchers that GET this URL cause no side effect. A signature that matches this app is accepted after `exp` and when public surfaces are disabled. JSON-only clients (`Accept: application/json` without `text/html`) get `405 {"error": "GET does not unsubscribe. POST the token to this endpoint to unsubscribe."}` with `Allow: POST`. On a public app, a missing token is `400 {"error": "Missing unsubscribe token"}` and a token that does not verify is `400 {"error": "Invalid or expired unsubscribe token"}`. On a private app, a missing or non-matching token is `403 {"error": "Public surfaces are disabled for this app"}`. Rate limited per client IP (`429`). See [Changelog Unsubscribe on Private Apps and After Expiry (#635)](#changelog-unsubscribe-on-private-apps-and-after-expiry-635). |
-| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `POST` | The only destructive path (also serves RFC 8058 `List-Unsubscribe=One-Click`, #635): token via query string, JSON body `{"token": "..."}`, or form field. The bare-email unsubscribe (`{"email": "..."}`) was **removed**. A signature that matches this app returns `200 {"unsubscribed": true}` even after `exp` and when public surfaces are disabled (HTML landing page only when `Accept` includes `text/html`). On a public app, no token is `400 {"error": "An unsubscribe token is required"}` and a token that does not verify is `400 {"error": "Invalid or expired unsubscribe token"}` — an authentic signature is not that `400`. On a private app, a missing or non-matching token is `403 {"error": "Public surfaces are disabled for this app"}`. Rate limited per client IP (`429`): a query-string token draws from the dedicated 300/min one-click budget (PRIV-08) before the body is read; a POST without a query token stays on the shared 10/min public-write bucket. See [Changelog Unsubscribe on Private Apps and After Expiry (#635)](#changelog-unsubscribe-on-private-apps-and-after-expiry-635). |
-| `/api/v1/public/digest/unsubscribe` | `GET` | **Non-destructive** weekly-digest unsubscribe confirmation interstitial (PRIV-07): validates the signed token and renders an HTML form that POSTs it back; notification preferences are never modified by a GET. JSON-only clients (`Accept: application/json` without `text/html`) get `405` with `Allow: POST`. Missing token → `400 {"error": "Missing unsubscribe token"}`; invalid/expired → `400 {"error": "Invalid or expired unsubscribe token"}`. Rate limited per client IP (`429`, shared 10/min public-write bucket). See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
-| `/api/v1/public/digest/unsubscribe` | `POST` | The only destructive digest path (serves RFC 8058 `List-Unsubscribe=One-Click`): token via query string (takes precedence), JSON body `{"token": "..."}`, or a `token` form field. Success → `{"unsubscribed": true}` (HTML landing page when `Accept` includes `text/html`); replay is idempotent. `400 {"error": "An unsubscribe token is required"}` without a token; `400 {"error": "Invalid or expired unsubscribe token"}` for bad ones. Clears only the workspace `weekly.digest` **email** event — inbox notifications are unchanged. Rate limited per client IP (`429`): a query-string token draws from the dedicated 300/min one-click budget (PRIV-08) before the body is read; a POST without a query token stays on the shared 10/min public-write bucket. See [Weekly Digest Unsubscribe (PRIV-07)](#weekly-digest-unsubscribe-priv-07). |
-| `/api/v1/public/apps/:appKey/user` | `PUT` | Update host app user attributes (paying, MRR, currency). Bodies reporting any payment attribute (`isPaying`, `mrr`, `plan`, `currency` — an explicit `null` counts) must carry an HMAC-signed `signature` + `timestamp`; a signed update that omits `currency` preserves the stored currency instead of coercing it to `USD` (DATA-07). See [SDK Payment-Attribute Signing (DATA-03)](#sdk-payment-attribute-signing-data-03). Rate limited per client IP: 60 requests/minute, `429` on bursts — retry with exponential backoff when syncing many users behind one shared IP. |
-| `/api/v1/feature-requests` | `GET` | List/search feature requests (`limit` 1–200, default 50; legacy `offset`; `versionId`; `q`). Cursor-paginated (DATA-01): opaque `cursor` from the previous `nextCursor`; returns `{requests, total, hasMore, nextCursor}` with `nextCursor` `null` on the last page; malformed cursors fail with `400` `{"error": "Invalid cursor"}`. `offset` above 10000 is clamped to 10000 and still returns `200`. Plain listings (no `q`) are rate limited per client IP at 60 requests/minute (`BOARD_LIST_RATE_LIMITER`, generic `429` JSON); searches stay on a separate 30/minute bucket (`429 {"error": "Too many searches. Please try again shortly."}`). Boards with anonymous roadmap view disabled answer `401` `authentication_required` to unauthenticated reads. Personalize with the **`X-User-Token` header**; the legacy `?userToken=` query parameter is deprecated (see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)). |
-| `/api/v1/feature-requests/:id` | `GET` | Read one approved feature request by id (SaaS #713: the deep-link read behind the web portal's shareable `/{workspaceSlug}/{appSlug}/requests/{requestId}` URLs) — a client holding a single id (deep link, ship-notify email, notification payload) no longer fetches the whole board to resolve it. The `200` body is `{request}` holding the **same record shape the board listing serves per item**: `id`, `appId`, `title`, `description`, status/column fields, release version label, `voteCount` (live votes plus imported historical total), `importedVotes`, `commentCount`, `recentCommenters`, `createdAt`/`updatedAt` (SaaS #1320 / PR #1323: neither this endpoint nor `GET /api/v1/feature-requests` serves the ten undocumented tenant-internal keys `importSource`, `importRef`, `githubIssueId`, `githubIssueNumber`, `githubIssueUrl`, `githubDiscussionId`, `githubDiscussionNumber`, `githubDiscussionUrl`, `githubLastSyncedAt`, or `githubSyncStatus` — those belong to the Console admin surface only). Optional `X-User-Token` header (UUID, same header as the board listing — see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12)) personalizes the record: `hasVoted` reflects that token's ballot and `isOwnRequest` marks the caller's own request; a malformed token personalizes nothing (silently treated as absent, no error) and a signed-in Clerk session personalizes from the caller's identity instead. Gates mirror the board listing and comment thread, in order: per-client-IP public-read rate limit first (`429`, shared 60/min `PUBLIC_READ_RATE_LIMITER` bucket — the spend is the first statement, before any lookup), then existence hiding — a missing id, an id on an app with public access disabled or deactivated, and an **unapproved** request all answer the same uniform `404 {"error": "Feature request not found"}` (the unapproved requester's own token does **not** un-hide it: deep links resolve approved records only), then the PRIV-12 gate — a board with anonymous roadmap view disabled answers `401` `authentication_required` to anonymous callers (checked before the approved check, so while the flag is off both approved and pending ids answer `401`, never a `404`/`200` distinction). Caching: a fully anonymous `200` is identity-independent and may come from the same 30-second shared cache as the other board reads; a token- or session-bearing caller skips the cache in both directions, so a personalized body is never served stale or cross-user — see [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache) and [Per-App Anonymous-Access Enforcement (PRIV-12)](#per-app-anonymous-access-enforcement-priv-12). |
-| `/api/v1/feature-requests` | `POST` | Submit (propose) a new feature request. Body: `appKey` (8–128 chars, required), `title` (3–160, required), `description` (5–5000, required — image embeds are stripped at intake, PRIV-11), optional `requesterName` (1–120), `requesterToken` (UUID), and `turnstileToken` (10–2048, required only when the API has a Turnstile secret configured); there is no `requesterEmail` field. The requester token may be sent in the body field `requesterToken` **or** the `X-User-Token` header (SaaS #834): the body field wins when both are present, a present-but-invalid body field still fails with `400 Validation failed`, and a payload with **neither** source answers the same `400` shape with `details.fieldErrors.requesterToken: ["Required — send the token in the JSON body or the X-User-Token header"]`. Success answers `201 {featureRequestId, pending: true}` — every public submission starts unapproved. Gates in order: 256 KB body budget (SEC-36), per-client-IP public-submit rate limit (`429 {"error": "Too many submissions. Please try again shortly."}`), Turnstile verification (`403`), workspace tier check (`402` `tier_limit_submissions`/`subscription_inactive`), and a board with anonymous feedback disabled answers `401` `authentication_required` to anonymous callers. |
-| `/api/v1/feature-requests/:id/vote` | `POST` | Cast the caller's vote — insert-only (PROD-36), no longer a toggle. Repeating the request is idempotent: it leaves an existing vote in place and re-serves the same `{voted: true, voteCount}` body, so a retry after a network error can no longer cancel the vote; `DELETE` is the only way to remove it. Body `{appKey, userToken}` plus optional `shipNotifyEmail` (email string, max 254) and optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`) — see [Ship-notification opt-in on vote](#ship-notification-opt-in-on-vote). When the server enforces Turnstile human verification, an anonymous voter that opts in via `shipNotifyEmail` should supply a verified token: on a board whose public config sets `requireAnonymousVoteTurnstile: true`, a missing or failed token rejects the vote outright with the SEC-846 `403` (`turnstile_required` / `turnstile_verification_failed`, see [Turnstile-gated anonymous vote (SEC-846, #243)](#turnstile-gated-anonymous-vote-sec-846-243)); on boards without that flag, a missing or failed token leaves the vote itself at `{voted: true, voteCount}` unchanged while the ship-notification opt-in is silently suppressed — no confirmation email is sent — to protect recipients from abuse. The `userToken` may equally be sent in the `X-User-Token` header (SaaS #834): the body field wins when both are present, a present-but-invalid body field still fails with `400 Validation failed`, and a payload with **neither** source answers the same `400` shape with `details.fieldErrors.userToken: ["Required — send the token in the JSON body or the X-User-Token header"]` — so a header-only vote body carries just `appKey`. Returns `{voted, voteCount}` where `voteCount` includes imported historical votes; omitting `shipNotifyEmail` leaves that shape unchanged. Rate limited per client IP — 20 requests/minute with a vote-specific `429` body (see [Rate Limiting](#rate-limiting-429-too-many-requests)). Roadmap gate (PRIV-12): on a board with anonymous roadmap view disabled, an anonymous `POST` answers the uniform `401 {"error": "Sign in is required to view this roadmap", "code": "authentication_required"}` — even when anonymous voting is enabled — and the gate runs before the feature-request existence lookup, so missing and approved ids are indistinguishable and no `voteCount` is served; see [Per-App Anonymous-Access Enforcement (PRIV-12)](#per-app-anonymous-access-enforcement-priv-12). |
-| `/api/v1/feature-requests/:id/vote` | `DELETE` | Explicitly remove the caller's vote — the only way to un-vote now that POST no longer toggles. Idempotent: removing a vote that is not present still answers `200` with the same `{voted: false, voteCount}` body, not an error. `voteCount` includes imported historical votes. The `DELETE` reads the **same JSON body as the POST**: `appKey` is always required, and the `userToken` follows the same body-or-`X-User-Token`-header rule with the body field winning (SaaS #834) — the published spec previously documented no body on this operation, so a spec-following client that sent none got the `400 Validation failed` above. Same per-client-IP vote rate limit applies (`429`). Body-size note (SEC-36): the JSON body is read through a 256 KB bounded reader **before** the vote rate limit, so an oversized body fails with `413 payload_too_large` instead of `429`. Roadmap gate (PRIV-12): on a board with anonymous roadmap view disabled, an anonymous `DELETE` answers the uniform `401 {"error": "Sign in is required to view this roadmap", "code": "authentication_required"}` — even when anonymous voting is enabled — and the gate runs before the feature-request existence lookup, so missing and approved ids are indistinguishable; see [Per-App Anonymous-Access Enforcement (PRIV-12)](#per-app-anonymous-access-enforcement-priv-12). |
-| `/api/v1/feature-requests/:id/comments` | `GET` | List comments and @replies on a feature request. Keyset-paginated (PROD-31): pages walk `(createdAt, id)` oldest-first with `limit` 1–200 (default 200) and an opaque `cursor` from the previous page's `nextCursor`; returns `{comments, total, hasMore, nextCursor}` where `total` is the thread size under public visibility rules (hidden and deleted excluded — not `comments.length`) and `nextCursor` is `null` on the last page. Clients assuming one fetch returns the whole thread must walk `nextCursor`: the old silent 500-row cap is gone and every request returns at most 200 rows. A malformed cursor fails with `400 {"error": "Invalid cursor"}`. Sign-in-only boards (anonymous roadmap view disabled) answer `401` `authentication_required` to anonymous reads, and threads of **unapproved** requests return `404` — the same existence hiding as the board listing, so never infer "deleted" from a `404` (PRIV-12). Rate limited per client IP (`429`, shared 60/min public-read bucket); the thread body is identity-independent, so every `200` may be served from a 30-second shared cache — see [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache). |
-| `/api/v1/feature-requests/:id/comments` | `POST` | Post a comment or @reply on a feature request. `parentId` must reference a **visible** comment on the feature request in the URL (not hidden, not soft-deleted, same request); any other parent id — one from a different feature request, app, or workspace, one that does not exist, or one that is hidden/deleted — is rejected with `400 {"error": "The comment you are replying to was not found on this feature request", "code": "invalid_parent"}` and nothing is stored (SEC-50). `replyToAuthorName` in the request body is ignored: the replied-to author's display name (and `replyToClerkId`) is always resolved server-side from the parent comment. Authentication is the Clerk end-user session only — the route reads no `X-User-Token`, and the published spec no longer documents one for it (SaaS #834 dropped the decorative header parameter). |
-| `/api/v1/me/link` | `POST` | Explicitly link an anonymous end-user profile to the signed-in Clerk identity (SEC-12). Requires the `X-User-Token` header plus a Clerk session; see [End-User Token Header & Identity Linking (SEC-12)](#end-user-token-header--identity-linking-sec-12). |
-| `/api/v1/me/erase` | `POST` | Self-service data erasure (PRIV-01): erases the caller's own end-user profile for one app — rotates the anonymous token, clears stored PII, and anonymizes feature requests/votes/comments. Authenticates with the `X-User-Token` header or a Clerk session; see [Self-Service Data Erasure (PRIV-01)](#self-service-data-erasure-priv-01). |
-| `/api/v1/users/:userId/profile` | `GET` | Public user profile, owned public apps, and recent comments (`PublicUserProfileResponse`: `{profile, publicApps, recentComments}`, all three keys required; `recentComments` is always emitted, `[]` when hidden or empty — never `apps` or top-level `hideComments`, SaaS #1190; see [User Identifiers on Public Endpoints (PRIV-06)](#user-identifiers-on-public-endpoints-priv-06)). `userId` may be an app-scoped pseudonym (`u_*`); pass `?appKey=` to resolve those. Unknown `u_*` ids return `404` without a reverse-lookup scan (SEC-34). Avatar fields (`profile.avatarUrl`, `recentCommenters[].avatarUrl`) are `null` or a managed `https:` URL — see [Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19). Rate limited per client IP: 60 requests/minute in the same bucket as the `PUT .../user` upsert, `429` on bursts. |
-| `/api/v1/feedback` | `POST` | Submit feedback draft with optional attachments. Every referenced `uploadId` must have passed content scan; a rejected attachment fails the whole submission with `422` `scan_rejected`. Two concurrent submits of the same `uploadId` no longer race into a `500`: the loser gets `409` `already_finalized` and creates nothing (see [Attachment Content-Scan Rejections](#attachment-content-scan-rejections-422-unprocessable-entity)). Every referenced `uploadId` must also come from a session created by the **same identity** (see [Uploader Identity Binding (SEC-28)](#uploader-identity-binding-on-upload-sessions-sec-28)). Free-form `metadata` is sanitized server-side before persistence — shrunk, never rejected (see [Feedback Metadata Redaction (PRIV-01)](#feedback-metadata-redaction-priv-01)). |
-| `/api/v1/uploads/sessions` | `POST` | Create an upload session (session token + reserved per-file upload slots) after Turnstile, app-policy, and byte-quota validation. Anonymous callers **must** send `X-User-Token`; unbound sessions are rejected (SEC-28). See [Feedback Attachment Upload Lifecycle](#feedback-attachment-upload-lifecycle-upload-sessions). |
-| `/api/v1/uploads/:uploadId` | `PUT` | Upload one reserved session slot's bytes. `Authorization: Bearer <sessionToken>` (or `X-Upload-Session-Token`); raw binary body or `multipart/form-data` with a `file` field. `POST` is accepted as an alias. |
-| `/api/v1/uploads/images` | `POST` | Metered feedback image upload — **requires an upload session** (`401` `upload_session_required` without one; `Authorization` header or `sessionToken`/`sessionId` form field). PNG/JPEG/WebP/GIF only — SVG and declared-vs-content mismatches fail with `415` (see the media-type policy below). The image is stored as a **private attachment** (PRIV-02) under `attachments/{workspaceId}/{appId}/{uploadId}/…`. The `200` body is `{kind: "image", uploadId, status: "uploaded", stored, filename, mimeType, size, sha256}` — no `url`, `key`, or `variants`. It is not publicly fetchable. Metered (SEC-21): the workspace **daily storage quota** — bytes actually stored, not declared — and the submit rate limit both answer `429` (`daily_storage_quota_exceeded` for the quota). An unexpected storage failure (R2 / Cloudflare Images / D1) answers the stable, provider-agnostic `500 {"error": "Image upload failed. Please try again.", "code": "image_upload_failed"}` — see the media-type policy below (SaaS PR #793). |
-| `/api/v1/feedback/attachments/:id/download` | `GET` | Private attachment download (authorized). Signed `?token=` link or workspace-member auth; anonymous callers without a valid token get `403`. `GET …/attachments/:id` is an alias of this route. |
-| `/api/v1/files/:key` | `GET` | Public image serving for console asset keys under `images/…` only. Served with the stored content type, `ETag`, `Cache-Control: public, max-age=86400` — keys are content-addressed and never rewritten in place, so clients may reuse the bytes for that lifetime; the response is not `immutable`, so an explicit reload revalidates and can discover a deleted object before the edge TTL lapses; a missing key 404s with `Cache-Control: public, max-age=15` — plus SEC-13 hardening: `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, and legacy pre-screening SVG objects are forced to download via `Content-Disposition` instead of executing. Optional integer `width` query parameter requests a square thumbnail: only the fixed set `16, 32, 36, 56, 64, 72, 80, 112, 128, 160` can create transformations, and any other value (including non-numeric or zero-padded forms) fails with `400 {"error": "Unsupported image width"}`. When the platform image-optimization flag is enabled and the original is PNG/JPEG/WebP, a width-hint response is a WebP thumbnail (width×width, center-cropped, quality 85); when optimization is disabled, unavailable, fails, or has exhausted its monthly transform budget — and for GIF originals — the original bytes are served as the fallback instead. Every width-hint response, thumbnail or original fallback, carries `Cache-Control: public, max-age=300` (five minutes), while requests without `width` keep the same revalidatable one-day policy; the edge cache key is the object key, so query-string rotation and unrelated query parameters do not multiply cache entries. Clients must decode by the response `Content-Type` (`image/webp` when transformed) rather than infer the format from the URL extension, and must treat public image URLs that point at `<PUBLIC_BASE_URL>/api/v1/files/…` as opaque — preserve the path and query string (including any `?width=` hint) rather than reconstructing them. Feedback images from `POST /api/v1/uploads/images` are private attachments and never resolve here — `403 private_attachment_forbidden`; fetch those through the authorized `/api/v1/feedback/attachments/:id/download` endpoint after the submission finalizes. |
-| `/api/v1/uploads/r2` | `POST` | Removed tombstone: always responds `410 Gone` (create an upload session at `/api/v1/uploads/sessions` instead). |
+| `/api/v1/public/config/:appKey` (and the workspace/app-slug variant) | `GET` | `PublicAppConfig`: branding, platforms, anonymous-access flags, `requireAnonymousVoteTurnstile`, optional `allowedEmbedOrigins`. Private apps and unknown keys both fail closed with the same `404` (SEC-37). |
+| `/api/v1/public/showcase` (alias `/api/v1/public/apps`) | `GET` | Public app showcase, newest first; `offset` clamps at 5000. |
+| `/api/v1/public/columns/:appKey`, `/api/v1/public/versions/:appKey` | `GET` | Roadmap columns and released versions; `401 authentication_required` on sign-in-only roadmaps (PRIV-12). |
+| `/api/v1/public/apps/:appKey/changelog` | `GET` | Published changelog feed, cursor-paginated. |
+| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Email double-opt-in subscribe; supports optional `turnstileToken`. |
+| `/api/v1/public/apps/:appKey/changelog/confirm` | `GET`/`POST` | SEC-35 interstitial: `GET` never mutates; only `POST` consumes the single-use token. |
+| `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET`/`POST` | Same interstitial pattern; `POST` serves RFC 8058 one-click. Unsubscribe is the exception to token expiry and the private-app `403` (#635). |
+| `/api/v1/public/digest/unsubscribe` | `GET`/`POST` | Weekly-digest one-click unsubscribe (PRIV-07); `GET` non-destructive, only `POST` mutates. |
+| `/api/v1/feature-requests` | `GET` | List/search the board; keyset cursor pagination (DATA-01), `offset` clamps at 10000. |
+| `/api/v1/feature-requests` | `POST` | Propose a request; every public submission starts unapproved (`201 {featureRequestId, pending: true}`). |
+| `/api/v1/feature-requests/:id` | `GET` | Deep-link read of one approved request; unapproved/missing/private all answer the same uniform `404`. |
+| `/api/v1/feature-requests/:id/vote` | `POST`/`DELETE` | Insert-only idempotent vote; `DELETE` (same JSON body as the POST) is the only un-vote. Optional `shipNotifyEmail` + `turnstileToken`. |
+| `/api/v1/feature-requests/:id/comments` | `GET` | Keyset-paginated thread; unapproved requests `404` (existence hiding). |
+| `/api/v1/feature-requests/:id/comments` | `POST` | Clerk-session comment/@reply; `parentId` must reference a visible comment on the same request (SEC-50). |
+| `/api/v1/me/link` | `POST` | Bind an anonymous `X-User-Token` profile to the signed-in Clerk identity (SEC-12); `409 already_linked` is never hijacked. |
+| `/api/v1/me/erase` | `POST` | Self-service erasure (PRIV-01): rotates the token immediately, anonymizes attribution, keeps aggregates. |
+| `/api/v1/users/:userId/profile` | `GET` | Public profile `{profile, publicApps, recentComments}`; `u_*` pseudonym ids require `?appKey=` (PRIV-06). |
+| `/api/v1/public/apps/:appKey/user` | `PUT` | Sync end-user attributes; payment attributes (`isPaying`, `mrr`, `plan`, `currency`) require HMAC `signature` + `timestamp` (DATA-03). |
+| `/api/v1/uploads/sessions` | `POST` | Create an upload session (1–8 reserved slots); anonymous callers must send `X-User-Token` (SEC-28). |
+| `/api/v1/uploads/:uploadId` | `PUT`/`POST` | Fill one reserved slot with raw bytes or multipart; `Authorization: Bearer <sessionToken>`. |
+| `/api/v1/uploads/images` | `POST` | Session-metered feedback image upload; PNG/JPEG/WebP/GIF only, stored as a private attachment (PRIV-02). |
+| `/api/v1/feedback` | `POST` | Submit feedback referencing finalized `uploadId`s (≤ 8); `422 scan_rejected` fails the whole submission (SEC-25). |
+| `/api/v1/feedback/attachments/:id/download` (alias `GET …/attachments/:id`) | `GET` | Private attachment download via signed `?token=` or workspace-member auth. |
+| `/api/v1/files/:key` | `GET` | Public serving of console image assets only; optional fixed `width` thumbnail set. Private feedback attachments answer `403 private_attachment_forbidden`. |
+| `/api/v1/uploads/r2` | `POST` | Removed tombstone — always `410 Gone`. |
+| `/api/v1/console/workspaces/:wsId/...` | various | Console surface (feature requests, submissions, columns, versions, changelog, moderation, members, billing, integrations, exports). Moderation: list/hide/delete comments. |
 
-> **Changelog double opt-in flow (SEC-14 + SEC-35, as shipped):** `POST /changelog/subscribe` stores the address as *pending* and emails a single-use confirmation link. That link is a `GET /changelog/confirm?token=...` URL, but since SEC-35 **GET is strictly non-destructive** — it validates the token and renders an HTML interstitial whose form POSTs the token back; only `POST /changelog/confirm` consumes the token and flips the subscription to *confirmed* (browser form submissions with `Accept: text/html` get the HTML landing page; other clients get `{"confirmed": true}`). Email-scanner URL detonation (SafeLinks/Proofpoint) is therefore harmless for confirmation links: fetching the link leaves the subscription *pending* with the token intact, so links no longer need to be treated as single-shot or protected from prefetchers. The same interstitial pattern applies to unsubscribe (`GET .../unsubscribe?token=` is safe, only `POST` unsubscribes) and the weekly digest (PRIV-07). Responses across all three flows are uniform (no membership oracle). Unsubscribe is the exception to token expiry and to the private-app `403`: an authentic signature for that app is accepted after `exp` and when public surfaces are disabled (#635). Confirmation tokens are not. Rate budgets: subscribe, both confirms, and every GET share the per-IP `PUBLIC_WRITE_RATE_LIMITER` (10 requests/60 s); the one-click unsubscribe **POSTs** split off — a POST carrying the token in the query string draws from the dedicated `DIGEST_UNSUBSCRIBE_RATE_LIMITER` at 300 requests/60 s (PRIV-08, sized for mailbox providers that POST from shared egress IPs). The budget is chosen before the body is read, so a POST whose token arrives only in the body stays on the 10/min public-write bucket. Retry `429`s with exponential backoff. PRIV-12: on changelogs with anonymous access disabled, subscribe additionally requires a signed-in session bound to a verified address — see [Per-App Anonymous-Access Enforcement (PRIV-12)](#per-app-anonymous-access-enforcement-priv-12). Turnstile: when the server enforces human verification, anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed` (signed-in verified-address callers are exempt) — see the subscribe row above.
+## Cross-Cutting Concerns
 
-> **Private-app config fail-closed (SEC-37):** both config routes return `404 {"error": "App not found"}` for private apps (`allowPublic = false`) — identical to the unknown-key response, so callers cannot distinguish the two and must treat 404 as "not found or not public". Do not expect a `200` body with `allowPublic: false`; only public apps get a `200 PublicAppConfig` (with `allowPublic: true`, schema unchanged). Other public data endpoints (columns, versions, feature requests, the changelog feed, feedback, uploads) reject private apps with `403`. Changelog unsubscribe is the exception: a token whose signature matches the app still succeeds when public surfaces are disabled — see [Changelog Unsubscribe on Private Apps and After Expiry (#635)](#changelog-unsubscribe-on-private-apps-and-after-expiry-635).
+### Rate limiting (`429 Too Many Requests`)
 
-> **Public changelog pagination (PROD-28, `ListPublicChangelogResponse`):** `GET /api/v1/public/apps/:appKey/changelog` is keyset-cursor-paginated. Read `hasMore` / `nextCursor` from the response and pass `nextCursor` back as the `cursor` query parameter until `hasMore` is `false` (`nextCursor` is `null` on the last page). Treat the cursor as opaque — never parse, construct, or persist one beyond a forwarding step; malformed cursors return `400` `{"error": "Invalid cursor"}`. Entries are ordered newest-first, `limit` is clamped server-side to 1–100 (default 100), and keyset semantics keep an in-progress walk stable even if new entries are published mid-walk. Clients that only read `.entries` remain fully compatible. Anonymous reads of this feed may be served from a 30-second shared cache, so a publish can take that long to appear; a Clerk session bypasses the cache (see [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache)).
+All public endpoints are budgeted **per client IP** (`CF-Connecting-IP`). Throttled bodies are generic `429 {"error": "Too many requests. Please try again shortly."}` except: votes (`Too many votes…`), searches (`Too many searches…`), and OAuth grant/consent endpoints (RFC 6749 `invalid_request` at `429`).
 
-> **Public feature-request list pagination (DATA-01, `PaginatedFeatureRequests`):** `GET /api/v1/feature-requests` accepts an opaque keyset `cursor` over the `(createdAt DESC, id DESC)` order alongside the legacy `offset` parameter. The response always includes `hasMore` and `nextCursor` next to `requests`/`total` — `hasMore` is exact (the server fetches one extra row) and `nextCursor` is `null` on the last page. Walk large boards by starting without a cursor and echoing `nextCursor` back as `?cursor=` until it is `null`; a request that supplies `cursor` ignores `offset` entirely. Treat the cursor as opaque — never parse, construct, or persist one beyond a forwarding step; malformed cursors return `400` `{"error": "Invalid cursor"}`. `offset` above 10000 is clamped to 10000 and still returns `200` — it is not an error; deep pages belong on the cursor. The public showcase (`GET /api/v1/public/showcase` and its alias `GET /api/v1/public/apps`) clamps `offset` at 5000 the same way. `total` is computed for the current filters independently of the cursor, so it stays constant across pages; `limit` stays clamped to 1–200 (default 50), and `q`/`versionId` filters compose with cursor paging. Keyset semantics keep an in-progress walk stable even when new requests are submitted mid-walk, and clients that only read `requests`/`total` remain fully compatible.
-
-Each public feature request's `voteCount` is the displayed total: in-app votes plus historical votes imported from the source provider. The optional `importedVotes` field reports only that historical portion; it is already included in `voteCount` and is `0` for requests created in CupThread. Both `GET /api/v1/feature-requests` (board listing/search) and `GET /api/v1/feature-requests/{id}` (request detail) serve only the documented public `FeatureRequest` schema (SaaS #1320 / PR #1323): ten undocumented tenant-internal keys previously leaked as `null` — `importSource`, `importRef`, `githubIssueId`, `githubIssueNumber`, `githubIssueUrl`, `githubDiscussionId`, `githubDiscussionNumber`, `githubDiscussionUrl`, `githubLastSyncedAt`, and `githubSyncStatus` — are never served on public surfaces (drop them from any SDK or client model that declared them; `importedVotes`, `voteCount`, `hasVoted`, `isOwnRequest`, and the column/version fields remain unchanged).
-
----
-
-## Changelog Unsubscribe on Private Apps and After Expiry (#635)
-
-`GET` and `POST /api/v1/public/apps/{appKey}/changelog/unsubscribe` (OpenAPI tag `Changelog`, SaaS #635). No request or response field was added or removed. The success JSON is still `{ "unsubscribed": true }`.
-
-A token whose signature matches this app unsubscribes even when public surfaces are disabled for the app, and even after `exp`. POST returns HTTP 200 `{ "unsubscribed": true }`. An HTML landing page is returned only when `Accept` includes `text/html`. A successful POST also revokes that address's ship-notification consent; the JSON body does not change.
-
-GET stays non-destructive. A browser GET renders the confirmation page. `Accept: application/json` without `text/html` still returns `405 {"error": "GET does not unsubscribe. POST the token to this endpoint to unsubscribe."}` with `Allow: POST`. Nothing is removed until POST.
-
-| Situation | Status | Body |
+| Bucket | Budget | Shares |
 |---|---|---|
-| Signature matches this app, including after `exp`, on a public or private app | GET: `200` HTML, or `405` for JSON-only clients. POST: `200` | POST JSON `{ "unsubscribed": true }` (HTML only when `Accept` includes `text/html`) |
-| Private app, token missing, malformed, or signed for a different app | `403` | `{ "error": "Public surfaces are disabled for this app" }` — that response does not say whether the app exists |
-| Public app, token missing | `400` | GET `{ "error": "Missing unsubscribe token" }`; POST `{ "error": "An unsubscribe token is required" }` |
-| Public app, token does not verify | `400` | `{ "error": "Invalid or expired unsubscribe token" }` |
+| `PUBLIC_WRITE_RATE_LIMITER` | 10 / 60 s | Changelog subscribe/confirm/unsubscribe GETs, digest-unsubscribe GET, most public writes |
+| `DIGEST_UNSUBSCRIBE_RATE_LIMITER` (PRIV-08) | 300 / 60 s | One-click unsubscribe POSTs **with a query token only** (RFC 8058 mailbox providers); budget chosen before the body is read (SEC-27) |
+| `PUBLIC_USER_RATE_LIMITER` | 60 / 60 s | `PUT …/user` attribute sync + `GET /users/:userId/profile` |
+| Vote limiter (SEC-09) | 20 / 60 s | Vote `POST`/`DELETE` |
+| `PUBLIC_READ_RATE_LIMITER` | 60 / 60 s | Showcase, board detail/comments, changelog feed, columns, versions |
+| `BOARD_LIST_RATE_LIMITER` / `SEARCH_RATE_LIMITER` | 60 / 60 s / 30 / 60 s | Board listing (no `q`) / board search |
+| `PUBLIC_CONFIG_RATE_LIMITER` | 60 / 60 s | Both config GETs (spend is the first statement) |
+| `OAUTH_TOKEN_RATE_LIMITER` (SEC-61) | 60 / 60 s | Shared per-IP authorize bucket (key omits `client_id`, so id rotation buys nothing) |
 
-An authentic signature for this app is not that `400`, including after `exp`. Unknown `appKey` values are still `404 {"error": "App not found"}` from the app lookup, before the token is considered.
+Retry guidance: treat `429` as transient — exponential backoff with jitter, never a tight loop. Batch attribute syncs behind shared IPs; surface a friendly message for vote `429`s; poll no faster than the 30-second cache TTL.
 
-New links are minted with a 90-day `exp`. Links already in inboxes keep working after that date when the signature still matches.
-
-Changelog confirm (`GET`/`POST .../changelog/confirm`) and ship-notification confirm (`GET`/`POST .../ship-notifications/confirm`) are unchanged: expired or invalid confirmation tokens stay `400 {"error": "Invalid or expired confirmation token"}`, and those routes still return `403 {"error": "Public surfaces are disabled for this app"}` when public surfaces are disabled.
-
-Rate limiting is unchanged and still runs before the POST body is read. One-click POSTs that carry the token in the query string stay on the dedicated unsubscribe budget (300 requests / 60 s). A POST with no query token stays on the shared 10/min public-write bucket.
-
-Clients that treated HTTP 403 or HTTP 400 as the final result for a token copied from a changelog email should treat HTTP 200 as unsubscribed in the two cases above (private app with a matching signature, and an authentic token past `exp`). When public surfaces are disabled, describe `403` on this route as "token missing or not valid for this app". Do not drop a signed link solely because `exp` has passed or because the board is no longer public. No new field needs decoding. The SDK skills do not map this error; follow the OpenAPI descriptions.
-
----
-
-## Submission Quota Errors (`402 Payment Required`)
-
-`POST /api/v1/feature-requests` (and, with the same contract, `POST /api/v1/feedback`) responds with `402 Payment Required` and an `ErrorResponse` body (`{"error": string, "code"?: string}`) when the app's workspace cannot accept new submissions:
-
-| `code` | Meaning | Actionable guidance |
-|---|---|---|
-| `tier_limit_submissions` | The workspace reached its monthly submission quota. | Do not retry automatically. Tell the user to upgrade the workspace plan (Console → Billing) or wait for the quota to reset, then resubmit. |
-| `subscription_inactive` | The workspace subscription is inactive or canceled. | Do not retry automatically. Tell the user to renew/reactivate the subscription (Console → Billing); submissions keep failing until then. |
-
-Agents and SDK clients should parse the `code` field, treat `402` as a deterministic business rule (never a transient error), and surface the guidance above to the end user.
-
----
-
-## Subscription Tier (`free` | `pro`)
-
-`SubscriptionTier` on billing and workspace subscription payloads is `free` or `pro` only (BILL-553). The unprovisioned `business` value was removed from the shared enum: checkout, dev-set-tier, and platform subscription writes reject `tier: "business"` with `400`, and a legacy `business` row is coerced to `free` (`resolveTier`, migration `0064`). Do not model a third tier, and do not branch on the string `business`.
-
-Every import source — GitHub issues, GitHub discussions, Linear, Notion, and Slack — requires Pro. A free workspace gets `402` `tier_limit_import_pro` (`Import from <source> requires the Pro plan.`). A canceled or past-due subscription gets `402` `subscription_inactive` (`Subscription is <status>. Fix billing to run imports.`). `cupthread billing show` reports the coerced tier.
-
----
-
-## Ship-notification opt-in on vote
-
-`POST /api/v1/feature-requests/:id/vote` accepts an optional `shipNotifyEmail` (an email string, max 254). When it is present, the address is enrolled in double-opt-in ship notifications ("email me when this ships"): a confirmation email with a single-use token is sent, the consent row starts *pending*, and only a confirmed address is ever mailed. The successful vote response stays `{voted, voteCount}` — it does not say whether that address was already enrolled. Omitting the field leaves the request and the response unchanged.
-
-On a board that requires sign-in to vote, the address must be one of the session's verified emails (compared case-insensitively). Any other address still records the vote and adds a warning. No consent row is written and no confirmation email is sent. The warning body is the same whether or not that address already has a consent row:
-
-```json
-{
-  "voted": true,
-  "voteCount": 1,
-  "warning": {
-    "code": "email_not_verified",
-    "error": "Ship notifications on this board are bound to your signed-in email address"
-  }
-}
-```
-
-Boards that allow anonymous voting accept any address and do not return this warning. A value that is not an email, or longer than 254 characters, fails validation with `400 {"error": "Validation failed"}`.
-
-### Turnstile-gated anonymous vote (SEC-846, #243)
-
-`PublicAppConfig` carries a `requireAnonymousVoteTurnstile` flag (boolean, always served, defaults to `false`) alongside the other anonymous-access settings. When a board sets it to `true`, an anonymous voter (no end-user session) must supply a verified `turnstileToken` (string, 10–2048 chars) on `POST /api/v1/feature-requests/:id/vote` — minted for action `vote` with cdata bound to the board's `appKey` — or the endpoint rejects the vote outright with `403` and nothing is recorded:
-
-- token missing → `403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`
-- token fails verification (invalid, expired, wrong action/cdata, already spent) → `403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`
-
-Signed-in voters are exempt: the guard is `requireAnonymousVoteTurnstile && !identity`, so a request carrying a valid end-user session never needs the token for this gate. Read the flag off the public config (`GET /api/v1/public/config/{appKey}` or the workspace/app-slug route) before rendering a ballot and surface the host app's Turnstile challenge up front when it is `true`. The flag gates only the vote itself; the ship-notification opt-in guard below applies to every anonymous opt-in regardless of the flag.
-
-### Turnstile-gated ship-notification opt-in (#242)
-
-The vote body also accepts an optional `turnstileToken` (string, 10–2048 chars). When the server enforces Turnstile human verification, an anonymous voter that opts in via `shipNotifyEmail` should supply a verified token alongside the address. On boards whose `requireAnonymousVoteTurnstile` flag is `false`, a token that is missing or fails verification does **not** fail the vote: the response is still the plain `200 {voted: true, voteCount}` with no warning field, but the ship-notification opt-in is silently suppressed — no consent row is written and no confirmation email is sent — so recipients cannot be enrolled by an abusive bot. Because the suppression is invisible in the response, a client must never treat a `200` as proof the address was enrolled. When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that silent state: the SEC-846 gate rejects the vote outright with the `403`s documented above, so nothing is recorded at all. The flag gates only the vote itself — the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it (the server verifies the single token once) — while signed-in voters on sign-in-required boards bypass the check entirely (their address is already bound to a verified session email), and when the server has no Turnstile enforcement the field is ignored. Signed-in voters on sign-in-required boards bypass the check (their address is already bound to a verified session email), and when the server has no Turnstile enforcement the field is ignored.
-
----
-
-## Rate Limiting (`429 Too Many Requests`)
-
-Public write endpoints, the unauthenticated profile read (SEC-34), and the public reads (showcase, board listing, public config, comment threads, changelog feed, columns, versions) are budgeted **per client IP** (keyed on `CF-Connecting-IP`). Throttled requests get `429 {"error": "Too many requests. Please try again shortly."}` — except the feature-request vote endpoints, which return a vote-specific body: `429 {"error": "Too many votes. Please try again shortly."}`, searches, which return `429 {"error": "Too many searches. Please try again shortly."}`, and OAuth grant/consent endpoints, which return RFC 6749 `invalid_request` at `429`. Ordering: most intake routes check the declared body size **before** spending a rate-limit slot (SEC-36), so an oversized `Content-Length` is `413` (see [Request Body Limits (SEC-36)](#request-body-limits-sec-36)) even where a `429` would otherwise come first. Public config GETs, the showcase, the board listings, the five public board reads (comment threads, single-request detail, changelog feed, columns, versions), changelog POSTs, digest unsubscribe POSTs, and the OAuth consent POSTs spend their budget first, so an over-budget caller sees `429` before any body parse or lookup. The board-read GETs have no body:
-
-| Endpoints | Budget | Why |
-|---|---|---|
-| `POST .../changelog/subscribe`, `GET`/`POST .../changelog/confirm`, `GET .../changelog/unsubscribe`, `GET .../public/digest/unsubscribe` | 10 requests / 60 s | Subscribe emails third parties and confirm/unsubscribe mutate subscription state, so the budget is tight. These endpoints **share one per-IP bucket** (`PUBLIC_WRITE_RATE_LIMITER`). |
-| `POST .../changelog/unsubscribe` and `POST .../public/digest/unsubscribe` **with a query token** | 300 requests / 60 s | RFC 8058 one-click unsubscribes (PRIV-08): mailbox providers POST from a handful of shared egress IPs, so a POST whose query `?token=` is a whitespace-trimmed non-empty string gets its own per-IP budget (`DIGEST_UNSUBSCRIBE_RATE_LIMITER`) — 30× the interactive bucket above. The budget is selected **before the body is read** (SEC-27, unchanged by #635), so a POST with no query token — including one whose token arrives only in the JSON or form body — stays on the 10/min public-write bucket. Same generic `429` body. |
-| `PUT /api/v1/public/apps/{appKey}/user`, `GET /api/v1/users/{userId}/profile` | 60 requests / 60 s | Every never-seen `userToken` mints an end-user row, and the unauthenticated profile GET resolves `u_*` ids; both share one per-IP bucket (`PUBLIC_USER_RATE_LIMITER`, SEC-14/SEC-34), so a profile-heavy hovercard can exhaust the attribute-sync budget and vice versa. |
-| `POST`/`DELETE /api/v1/feature-requests/{id}/vote` | 20 requests / 60 s | The anonymous voter identity is a client-minted `userToken` UUID, so votes get their own per-IP cap (SEC-09) — one IP minting fresh tokens must not be able to inflate vote counts. |
-| `GET /api/v1/public/showcase`, `GET /api/v1/public/apps`, `GET /api/v1/feature-requests/{id}`, `GET /api/v1/feature-requests/{id}/comments`, `GET /api/v1/public/apps/{appKey}/changelog`, `GET /api/v1/public/columns/{appKey}`, `GET /api/v1/public/versions/{appKey}` | 60 requests / 60 s | One shared per-IP bucket (`PUBLIC_READ_RATE_LIMITER`). Showcase `offset` above 5000 is clamped to 5000. A board page is a handful of the comment-thread, changelog, columns, and versions calls; a deep link adds one detail read; automated hammering is what spends the budget. Anonymous `200`s on those five may come from a 30-second shared cache. See [Public Board Read Limits and Shared Cache](#public-board-read-limits-and-shared-cache). |
-| `GET /api/v1/public/config/{appKey}` and the slug config variant | 60 requests / 60 s | Dedicated `PUBLIC_CONFIG_RATE_LIMITER`. The spend is the first statement, before cache or D1, on both the `200` and the fail-closed `404`. |
-| `GET /api/v1/feature-requests` (no `q`) | 60 requests / 60 s | Plain board listing (`BOARD_LIST_RATE_LIMITER`), separate from search so one page view does not share a bucket with typing. `offset` above 10000 is clamped to 10000. |
-| `GET /api/v1/feature-requests?q=` | 30 requests / 60 s | Search stays on `SEARCH_RATE_LIMITER` and answers `429 {"error": "Too many searches. Please try again shortly."}`. |
-| `GET`/`POST /api/v1/oauth/authorize`, `GET /api/v1/oauth/consent-info`, `GET /api/v1/oauth/device/lookup`, `POST /api/v1/oauth/device/decide` (+ the first per-IP spend on `POST /api/v1/oauth/token` and `POST /api/v1/oauth/revoke`) | 60 requests / 60 s | One shared per-IP authorize bucket (`OAUTH_TOKEN_RATE_LIMITER`, SEC-61): the key deliberately omits the presented `client_id`, so unknown-client probes cannot rotate ids for a fresh budget. `token` and `revoke` additionally spend a per-(client id, IP) key once the client row resolves (SEC-57). An over-budget `authorize` answer is the RFC 6749 §5.2 shape `429 {"error": "invalid_request", "error_description": "Too many requests"}`; the Console helpers answer `429` with a plain `{"error": …}` body. A legitimate interactive consent journey (GET authorize → consent-info → POST authorize) spends ~3 requests, so normal logins never hit the budget — automated hammering does. |
-
-Budget-before-parse (SEC-27): `POST .../changelog/subscribe`, `POST .../changelog/confirm`, `POST .../changelog/unsubscribe`, `POST .../public/digest/unsubscribe`, `POST /api/v1/oauth/authorize`, and `POST /api/v1/oauth/device/decide` spend the rate-limit budget before reading the body. An over-budget caller on those routes sees `429` even when the body would also have been a `413`.
-
-Retry guidance: treat `429` as transient — wait and retry with exponential backoff and jitter, never in a tight loop. SDKs syncing attributes for many users behind one shared IP (office NAT, CI farm) are the typical source of `429`s; batch or spread those syncs. Profile/hovercard rendering draws from the same 60/minute bucket: cache profile responses client-side instead of refetching per render. For votes, `429` is a recoverable user-facing condition: surface a friendly "you're voting too fast, try again in a minute" message instead of auto-retrying; normal tapping across a roadmap stays well under the 20/minute budget. For the five public board reads, back off for the rest of the minute and retry; their anonymous `200`s can be up to 30 seconds stale, so polling faster does not make a fresh write appear. On the OAuth consent journey (GET authorize → consent-info → POST authorize), a `429` is transient within the per-minute window — wait a few seconds and retry rather than treating it as a fatal protocol error. The CLI itself never calls consent-info or POST authorize (the browser-driven Console consent page does) and only opens the browser at the authorize URL, so interactive logins are unaffected; scripted consent automation — and `api request` GETs against these routes, which the CLI retries as idempotent body-less requests — needs the back-off.
-
----
-
-## Public Board Read Limits and Shared Cache
-
-Five public GETs document `429` and a short shared cache. No request or response body schema changed, and no existing status code was removed.
-
-| Endpoint | Cache |
-|---|---|
-| `GET /api/v1/feature-requests/{id}/comments` | The thread body is the same for every caller who passed the gates, so every `200` may be cached. Each `cursor` page is its own entry. |
-| `GET /api/v1/feature-requests/{id}` | Only an **anonymous** `200` is cached: with no token and no session the record is identity-independent (`hasVoted`/`isOwnRequest` constant false). A token- or session-bearing caller personalizes the record and skips the cache in **both** directions (SEC-15: the Cache API keys by URL and ignores `Vary`, so a personalized body must never share the anonymous URL's entry), and 404s are never cached — each hidden id (missing, unapproved, private, deactivated) pays its own lookup. |
-| `GET /api/v1/public/columns/{appKey}` | The column list is identity-independent, so every `200` may be cached. |
-| `GET /api/v1/public/versions/{appKey}` | The released-version list is identity-independent, so every `200` may be cached. |
-| `GET /api/v1/public/apps/{appKey}/changelog` | Only an anonymous `200` is cached. A Clerk session skips the cache on both read and write, and that response sets `Vary: Authorization`. Linked feature-request titles stay session-dependent (`roadmapVisible`): an anonymous caller sees them only when `allowAnonymousRoadmap` is on. |
-
-- **Budget.** The five routes share `PUBLIC_READ_RATE_LIMITER`: **60 requests / 60 s** per client IP (`CF-Connecting-IP`). `GET /api/v1/public/showcase` and its alias `GET /api/v1/public/apps` draw from the same bucket. Over budget the body is `429 {"error": "Too many requests. Please try again shortly."}` with no `code`. The limiter runs before the lookup.
-- **Retry.** Treat that `429` as transient and back off for the rest of the minute. SDKs that already handle non-2xx need no new status mapping. The CLI retries body-less GETs, including `comments list` and `apps public-changelog`; once the minute is spent, the command still exits with the rate-limited hint.
-- **Cache TTL.** An anonymous `200` may be served from the shared cache for up to **30 seconds**. A response served from that cache carries `Cache-Control: public, max-age=30`. The cache key is the full URL, so `limit` and `cursor` select different entries. A comment just posted, a column just edited, a version just marked released, a changelog just published, or an approval just flipped (a request becoming resolvable by deep link) can take that long to show up on an anonymous read.
-- **Gates run before the cache read.** A sign-in-required board still answers `401` `authentication_required`, a private app still answers `403`, and an unknown app or an unapproved comment thread still answers `404`, even while an older `200` sits in the cache.
-- **Session split is the changelog feed only.** Columns, versions, and comment threads have one body, so a `200` filled by any caller can be reused. A signed-in changelog payload is never stored and never returned to an anonymous caller. A developer `cpt_` token is not a Clerk end-user session, so it takes the anonymous cache path on the changelog feed.
-- **Console listings are different routes.** `columns list`, `versions list`, `changelog list`, and `comments moderation list` are authenticated console reads. They are not this limiter and not this cache.
-- **Console listing offsets are capped at 10,000.** The authenticated offset-paginated console listings — `GET /api/v1/console/workspaces/:wsId/feature-requests`, `/submissions`, `/notifications`, and `/changelog` — clamp `?offset=` at the shared `CONSOLE_LIST_MAX_OFFSET` of 10,000 (`apps/api/src/lib/pagination.ts`) exactly like the public board's legacy offset: an offset above 10,000 degrades to 10,000 and still returns `200`, and an unparseable or negative one degrades to `0`. A walk past the cap therefore keeps re-serving the same final page instead of erroring, so deep paging belongs on a keyset cursor where a surface offers one (the public feature-request feed's DATA-01 `cursor`); the CLI rewrites an out-of-range `--offset` locally and prints a `⚠` notice (see the `cupthread-cli` skill).
-
----
-
-## Request Body Limits (SEC-36)
-
-Intake routes that still follow SEC-36 parse JSON, form, and multipart bodies through bounded readers **before** rate limiting, signature checks, or validation — a request over the limit is rejected with no rate-limit counter tick and no database work. Changelog POSTs, digest unsubscribe POSTs, and the OAuth consent POSTs are the exception: they spend the limiter first (see [Rate Limiting](#rate-limiting-429-too-many-requests)). On `POST .../changelog/unsubscribe` that order is unchanged by #635: an over-budget one-click POST is `429` and the body is never parsed. The 256 KB cap still applies once that budget allows the read:
+### Request body limits (SEC-36)
 
 | Surface | Limit |
 |---|---|
-| Webhooks (GitHub / Polar / Clerk) and public token endpoints | 1 MB |
-| Public JSON intake — feature requests, votes, comments, `PUT .../user`, `POST /feedback`, upload sessions, changelog subscribe/confirm/unsubscribe, digest unsubscribe | 256 KB |
-| Console JSON (authenticated `cupthread` surfaces) | 1 MB |
-| Console image multipart (app icon upload) | 11 MB (10 MB image + multipart envelope) |
+| Webhooks and public token endpoints | 1 MB |
+| Public JSON intake (feature requests, votes, comments, `PUT …/user`, `/feedback`, uploads, changelog/digest unsubscribe) | 256 KB |
+| Console JSON | 1 MB |
+| Console image multipart (app icon) | 11 MB |
 
-- Over-limit → `413 {"error": "Payload exceeds size limit", "code": "payload_too_large"}`.
-- Malformed `Content-Length` header (negative or non-integer) → `400 {"error": "Invalid Content-Length header", "code": "invalid_content_length"}`.
+Over-limit → `413 {"error": "Payload exceeds size limit", "code": "payload_too_large"}`; malformed `Content-Length` → `400 invalid_content_length`. Most intake routes check the declared body size **before** spending a rate-limit slot; the exceptions (changelog POSTs, digest-unsubscribe POSTs, OAuth consent POSTs) spend the limiter first (SEC-27).
 
-The ordering is wire-observable: `DELETE /api/v1/feature-requests/:id/vote` with an oversized body returns `413` **before** the vote rate limit can return `429`. Client guidance: keep end-user-generated JSON bodies well under the 256 KB public budget — truncate or drop oversized free-text fields before submitting rather than discovering the limit via `413`. The CLI shares the same surfaces: `cupthread apps update --icon` pre-checks the 10 MB image cap client-side (inside the server's 11 MB multipart envelope), and every file/stdin body the CLI sends (`api request --input`, `apps settings set --input`, `imports create --options`, `changelog create/update --body-file`, …) is read through a bounded reader against the route's cap first — over-limit input fails locally with `input_too_large` and nothing is sent, so a live `413` on those commands means the local check and the server disagreed.
+### Public board reads: shared cache + gates
 
----
+Five public GETs (board detail, comment threads, changelog feed, columns, versions) may serve anonymous `200`s from a **30-second shared cache** (`Cache-Control: public, max-age=30`). Token- or session-bearing callers skip the cache in both directions — a personalized body is never served stale or cross-user. Gates run before the cache read: sign-in-only boards still answer `401`, private apps `403`, hidden ids `404`. A just-posted comment or just-published entry can take up to 30 s to appear on anonymous reads.
 
-## Attachment Content-Scan Rejections (`422 Unprocessable Entity`)
+### Per-app anonymous-access enforcement (PRIV-12)
 
-`POST /api/v1/feedback` requires every referenced `uploadId` to have **passed content inspection** at submission time (SEC-25). If an attachment was rejected during upload inspection (prohibited file type, malware signature, …), the whole submission fails with `422 Unprocessable Entity` instead of binding the invalid file:
+`PublicAppConfig` flags (`allowAnonymousRoadmap`, `allowAnonymousChangelog`, `allowAnonymousVote`, `allowAnonymousFeedback`) are enforced server-side on **every** surface of the family. A disabled flag turns the family's reads/writes into `401 {"error": …, "code": "authentication_required"}` for anonymous callers — surface the host app's sign-in flow, do not retry. The vote gates run **ahead of** the existence lookup, so missing and approved ids are indistinguishable. `404` on a detail read or comment thread means "not available" (missing, private, or not yet approved) — never tell the user the request never existed (existence hiding).
 
-```json
-{
-  "error": "Upload object <uploadId> was rejected by content scan: <reason>",
-  "code": "scan_rejected"
-}
-```
+### User identifiers (PRIV-06)
 
-Contract:
+Public payloads identify users with app-scoped pseudonyms: `u_` + 32 hex chars. Stable within one app, unlinkable across apps — never join or correlate ids between `appKey`s. `GET /api/v1/users/:userId/profile` resolves `u_*` ids only with `?appKey=`; unknown ids answer `404` with no reverse-lookup oracle (SEC-34). Never assume a legacy `user_` prefix on user ids.
 
-- The `: <reason>` suffix is present only when the scanner recorded a reason. Parse the `code` field, never the message text.
-- `422` is reserved for `scan_rejected`. Two concurrent `POST /api/v1/feedback` requests that reference the same `uploadId` both pass the read-then-act checks; an atomic claim lets exactly one proceed. The loser returns `409 {"error": "Upload object <uploadId> has already been finalized into another submission", "code": "already_finalized"}` and creates no submission, notification, or quota write. Do not retry that `uploadId` — the winner owns it. A later submit that finds the upload already bound to a submission returns `400` with the same `code`. Every other attachment-validation failure (unknown `uploadId`, object from another workspace or app, non-`uploaded` state, expired session, uploader mismatch, more than 8 attachments) remains `400` with the same `{"error": string, "code"?: string}` shape.
-- All attachments are validated before any is bound, so a scan-rejected submission binds none of its attachments — the scan-passing `uploadId`s stay unbound and reusable for a corrected resubmission.
-- Rejection is deterministic — the same file fails again on retry, so never retry automatically. Tell the end user that the referenced attachment could not be uploaded because content inspection rejected it, and let them remove or replace the file before resubmitting.
+### Payment-attribute signing (DATA-03 / DATA-07)
 
-The OpenAPI document exposes this `422` response on `POST /api/v1/feedback`.
+`PUT /api/v1/public/apps/:appKey/user` requires HMAC-SHA256 `signature` (64-hex) + `timestamp` (epoch seconds) whenever the body carries any of `isPaying`, `mrr`, `plan`, `currency` (explicit `null` counts). The key is the app's SDK signing secret; timestamp window ±300 s (`401 stale_signature`), mismatch → `401 invalid_signature`, missing signature/secret → `422`. Sign the exact newline-joined canonical string documented in the OpenAPI spec (`cpt-user-attrs-v1` prefix; absent fields sign as `unset`, JSON null as `null`; the literal plan strings `"unset"`/`"null"` are reserved and rejected). A signed update that omits `currency` preserves the stored value (DATA-07). Cross-check implementations with `cupthread api sign-user-attrs` (see the `cupthread-cli` skill).
 
----
+### Pagination conventions
 
-## Uploader Identity Binding on Upload Sessions (SEC-28)
+List endpoints are keyset-cursor-paginated: read `hasMore`/`nextCursor`, pass `nextCursor` back as `?cursor=` until `null`. Treat cursors as opaque — never parse, construct, or persist beyond forwarding; malformed cursors → `400 {"error": "Invalid cursor"}`. A supplied `cursor` ignores `offset`; legacy `offset` clamps (board 10000, showcase 5000) still return `200`. `total` is computed per current filters, independent of the cursor.
 
-Every upload session is bound to an uploader identity at creation time, and feedback submission must present the **same identity**. Unbound sessions can no longer be created (fail-closed).
+### Upload sessions lifecycle
 
-**Session creation — `POST /api/v1/uploads/sessions`:**
+Always: **create session → fill each reserved slot → submit feedback referencing the `uploadId`s**. There is no un-sessioned upload path. Sessions bind to the creator's identity (SEC-28): anonymous callers must present the **same `X-User-Token`** on session create and feedback submit, or the submission fails `400 uploader_mismatch`. Slots are single-shot (`409 already_uploaded`); content scan runs on stored bytes (`415` on rejection); a scan-rejected referenced attachment fails the whole submission with `422 scan_rejected` (SEC-25); a lost concurrent submit gets `409 already_finalized` and must not be retried. Direct attachment URLs/keys are forbidden (`400 direct_attachment_forbidden`).
 
-- **Anonymous callers** must send a valid `X-User-Token` UUID header (any UUID version, case-insensitive, surrounding whitespace ignored). Missing or malformed tokens are rejected with `400`:
+### Feedback intake details
 
-```json
-{ "error": "A valid X-User-Token UUID is required to create an upload session when not signed in", "code": "uploader_identity_required" }
-```
+- Submission quota (`402 Payment Required`): parse `code` — `tier_limit_submissions` (upgrade or wait) and `subscription_inactive` (renew). Deterministic business rules, never transient errors; do not auto-retry.
+- Free-form `metadata` is sanitized server-side before persistence, never rejected (PRIV-01): key allowlist (24 keys), credential redaction (`"[redacted]"`), 512-char string truncation, depth cap 4, 8 KB budget. Pre-sanitize client-side for immediate feedback.
+- Feedback images: `POST /api/v1/uploads/images` accepts PNG/JPEG/WebP/GIF only (SVG and declared-vs-content mismatches → `415`), stores a **private attachment**, and answers a stable provider-agnostic `500 image_upload_failed` on storage failure (SaaS PR #793). Console app-icon uploads accept screened SVG instead.
+- The 402 tier enum is `free` | `pro` only (BILL-553) — never model `business`. All import sources require Pro.
 
-- **Signed-in Clerk callers** are bound to their Clerk user id; `X-User-Token` is optional for them and ignored for identity resolution.
+### Request correlation IDs (OPS-01)
 
-**Feedback submission — `POST /api/v1/feedback`:**
+Every response carries `X-Request-Id` (caller-supplied if it matches `^[A-Za-z0-9._-]{8,64}$`, else server-generated). Quote it verbatim in bug reports. The CLI sends `cli-<uuid>` and echoes `request-id=…` on errors.
 
-- Requests referencing `uploadId`s must present the identity that created the session: the same `X-User-Token`, or the same Clerk session. The check is **fail-closed** — a session that stored an identity plus a submitter with no identity is also a mismatch. Failures return `400`:
+### Error-handling conventions (all endpoints)
 
-```json
-{ "error": "Upload session was created by a different uploader", "code": "uploader_mismatch" }
-```
+- Parse the machine-readable `code` field of `{"error": string, "code"?: string}` bodies — never the message text.
+- Deterministic client errors (`402`, `409`, `422`, `413`, validation `400`s): fix the request or surface to the user; never auto-retry. Transient (`429`, `500 image_upload_failed`): retry with exponential backoff.
+- Uniform `404`s are deliberate existence hiding (private apps, unapproved requests, unknown ids) — no client may infer existence from a `404` vs `403` distinction.
 
-- The referenced file is **not** attached and is left unfinalized, so a corrected resubmission (with the matching identity) can succeed without re-uploading.
+## Maintainer note — size budget
 
-Contract for clients and SDKs:
-
-1. When creating an upload session for an anonymous end user, send the **same** `X-User-Token` already used for feedback submit and voting — never create sessions without an identity.
-2. Never submit feedback with a different token (or a Clerk session) than the one used at session create.
-3. Parse the `code` field and surface `uploader_identity_required` and `uploader_mismatch` as deterministic client errors (fix the identity, then retry), never as generic retryable `400`s.
-4. The OpenAPI document exposes the `X-User-Token` header parameter on `POST /api/v1/uploads/sessions`.
-
----
-
-## Feedback Attachment Upload Lifecycle (Upload Sessions)
-Feedback attachments are uploaded through **pre-allocated upload sessions**; direct external URLs and raw storage keys are rejected at submission time. The flow is always: **create session → upload each reserved slot → submit feedback referencing the `uploadId`s**. Agents and automated tools must create the session first — there is no un-sessioned upload path left on the API.
-
-**Step 1 — create the session: `POST /api/v1/uploads/sessions`** (JSON body):
-
-```json
-{
-  "appKey": "app_xxx",
-  "files": [
-    { "clientFileId": "local-file-1", "filename": "screenshot.png", "mimeType": "image/png", "size": 102400 }
-  ]
-}
-```
-
-- 1–8 `files` per session. Each entry takes an optional `clientFileId` (echoed back for client-side correlation), a `filename`, and MIME/size in either the `mimeType`/`size` or the legacy `contentType`/`sizeBytes` spelling. An optional `purpose` field selects `feedback_attachment` (default) or `branding`; `turnstileToken` is optional and only checked when the app has Turnstile configured.
-- `201` response: `{ "sessionId", "sessionToken", "expiresAt", "uploads": [...] }`. The `sessionToken` (prefix `cpt_up_`) authorizes the uploads and expires in about **1 hour**; each `uploads[]` item is `{ "clientFileId", "uploadId", "uploadUrl", "filename", "mimeType", "maxBytes" }` with `uploadId`s shaped `upl_<32hex>` and `uploadUrl` the relative `PUT` path. Treat `maxBytes` as the per-file cap.
-- Per-file policy failures surface at creation: `413` `file_too_large` (over the app's configured attachment limit), `400` `executable_extension_prohibited`, `400` `unsupported_mime_type`, and `429` `daily_storage_quota_exceeded` (workspace daily upload bytes). Shared submission-endpoint errors also apply (`402` quotas, `403` Turnstile, `404` unknown app, `401` when the app disables anonymous feedback).
-
-**Step 2 — fill each reserved slot: `PUT /api/v1/uploads/{uploadId}`** (`POST` works too). Send the raw bytes with `Content-Type: <file mime>` and a binary body, or `multipart/form-data` with a `file` field. Authorize with `Authorization: Bearer <sessionToken>` (an `X-Upload-Session-Token` header is also accepted).
-
-- Success `200`: `{ "uploadId", "status": "uploaded", "stored": true, "filename", "mimeType", "size", "sha256" }`.
-- Uploads are bounded streams: an over-cap body fails with `413` `file_too_large` (the `Content-Length` header is checked before a byte is read).
-- Content inspection (magic bytes, malware sniffing) runs on the stored bytes: a rejected file is marked scan-rejected and answers `415` with the inspection reason. Deterministic — never retry; drop or replace the file.
-- Session/slot errors: `401` `unauthorized` (no token), `401` `session_invalid_or_expired`, `401` `session_expired`, `404` `upload_not_found` (that `uploadId` is not in this session), `409` `already_uploaded` (slots are single-shot), `409` `session_not_pending` (the session was already finalized into a submission). The item write is metered per client IP like session creation, so `429` can occur.
-
-**Step 3 — submit feedback with the finalized ids: `POST /api/v1/feedback`**:
-
-```json
-{
-  "appKey": "app_xxx",
-  "title": "Issue title",
-  "description": "Issue description",
-  "platform": "universal",
-  "uploadIds": ["upl_xxx"]
-}
-```
-
-- Up to 8 `uploadIds`. The legacy `attachments` array is still accepted when every entry carries an `uploadId`; an attachment supplying a raw `url` or storage `key` instead is rejected with `400` `{"error": "Direct attachment URLs and keys are forbidden. Attachments must reference verified upload sessions via uploadId.", "code": "direct_attachment_forbidden"}`.
-- Every referenced upload must be in `uploaded` state, unbound to another submission, belong to the same app/workspace, have passed content scan (`422` `scan_rejected`, SEC-25), and come from a session created by the **same identity** (`400` `uploader_mismatch`, SEC-28). All validation happens before anything binds, so a failed submission leaves its good `uploadId`s reusable for a corrected resubmission. A concurrent duplicate submit of the same `uploadId` loses the atomic claim and returns `409` `already_finalized` with nothing created; do not resubmit that id.
-- A successful submission finalizes the uploads (they can never be re-bound) and answers `201` (or `202` when GitHub delivery is queued, `200` when forwarded inline) with `{ "submissionId", "forwardedToGithub", "githubDiscussionId"?, "githubDiscussionUrl"?, "warning"?, "warningCode"? }` — no attachment payloads. `warningCode` is the stable machine-readable counterpart to the optional human-readable `warning` (for example, `attachment_signing_unconfigured`); clients should prefer it for structured handling and localization. Download links are issued separately through the workspace Console; when the workspace lacks signing configured the API logs a warning and omits the links.
-
-**Private attachment download — `GET /api/v1/feedback/attachments/{id}/download`** (`GET …/attachments/{id}` is an alias). Authorized by either a signed download token (`?token=<HMAC>`; tokens are bounded, at most 30 days) or workspace-member auth (`workspace.read`, e.g. a `cpt_` token in the owning workspace). Without either: `403` `{"error": "Authentication or valid download token required", "code": "unauthorized"}`. Unknown attachment → `404` `attachment_not_found`; missing storage object → `404` `file_not_found`. Responses are `Content-Disposition: attachment` with `private, no-store` caching — do not proxy or pre-fetch these URLs.
-
-Client guidance:
-
-1. Create the session **before** uploading anything, and reuse one session for all files of a single composer submission (1–8 slots).
-2. Present the **same identity** on session creation and feedback submission — for anonymous users that means the same `X-User-Token` on both calls (SEC-28).
-3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user.
-4. Never fabricate, guess, or pre-assign `uploadId`s, and never send raw attachment URLs or storage keys — `direct_attachment_forbidden` is a hard rejection.
-
----
-
-## End-User Token Header & Identity Linking (SEC-12)
-
-### `X-User-Token` replaces the `userToken` query parameter
-
-`GET /api/v1/feature-requests` personalizes responses (own submissions, vote state) when an end-user token is presented. Send it as a request **header**:
-
-```
-X-User-Token: <uuid>
-```
-
-- The legacy `?userToken=<uuid>` query parameter still works but is **deprecated** — tokens in URLs leak into access logs, referrers, and network traces. Requests that rely on it succeed, but the response carries `Warning: 299 - "userToken query parameter is deprecated; send X-User-Token header instead"` and `X-Deprecated-Query-Token: deprecated`.
-- When both are sent, the **header takes precedence** and no deprecation headers are returned.
-- The token is honored only when it is a valid UUID (any version, case-insensitive, surrounding whitespace trimmed); anything else is treated as an anonymous request.
-- Search responses set `Vary: X-User-Token`; only fully anonymous searches are cache-shared, so never route token-authenticated searches through a shared URL-keyed cache.
-
-### Vote and propose writes accept the header too (SaaS #834)
-
-`POST /api/v1/feature-requests/:id/vote`, `DELETE /api/v1/feature-requests/:id/vote`, and `POST /api/v1/feature-requests` read the end-user token from **either** the JSON body field (`userToken` on the votes, `requesterToken` on the propose) **or** the `X-User-Token` header — the same transport the read paths use:
-
-- The **body field wins** when both are present: only an *absent* body field is replaced with the header value (surrounding whitespace trimmed).
-- A body field that is **present but invalid** keeps failing schema validation exactly as before (`400 Validation failed` with the Zod `flatten()` shape) — the header never overrides or repairs it.
-- A payload with **neither** source answers the same `400` shape with `details.fieldErrors.<field>: ["Required — send the token in the JSON body or the X-User-Token header"]` (`userToken` on the votes, `requesterToken` on the propose).
-- Unlike the read paths — where a malformed header token silently degrades to an anonymous request — a header token merged into a write is validated by the same body schema, so a non-UUID header value is a hard `400`, not a silent fallthrough.
-- The vote `DELETE` still requires a JSON body carrying `appKey`: the header can carry the token but not the app key, and the published spec previously documented no body on that operation, so a spec-following client that sent none got the `400` above.
-
-No existing valid request stops working: every body-token payload accepted before is accepted byte-for-byte on the old validation path, and clients that can only attach the header (a `DELETE` with no JSON body support, for example) can now send the token header-only. The corrected OpenAPI components also match the implemented bodies now — `CreateFeatureRequestInput` requires `appKey`/`title`/`description` with optional `requesterName`/`requesterToken`/`turnstileToken` and no `requesterEmail`, `VoteResponse` is `voted` + `voteCount` with an optional `warning` (no `featureRequestId`/`hasVoted`), the vote `DELETE` documents its JSON body, and all three writes document their `400`s — so clients regenerated from `/api/v1/openapi.json` stop sending the dead header and the missing `DELETE` body.
-
-### `POST /api/v1/me/link` — confirm identity linking
-
-Explicitly binds an authenticated end-user identity to an anonymous profile (OpenAPI tag `Privacy`, "Link End-User Identity (Self-Service)"). Rate limited per client IP like other public writes: throttled calls get `429 {"error": "Too many submissions. Please try again shortly."}` — retry with exponential backoff.
-
-- **Headers**: `X-User-Token: <uuid>` (**required**, must be a valid UUID) and `Authorization: Bearer <Clerk session JWT>` (**required**). Developer `cpt_` API tokens are **not** accepted — the caller must be the signed-in end user.
-- **Body**: `{"appKey": "<8-128 chars>"}` — the app the profile belongs to.
-
-| Status | When | Body |
-|---|---|---|
-| `200` | Profile linked; also idempotent when already bound to the same identity | `{"linked": true, "endUserId": "…", "clerkUserId": "…"}` |
-| `400` | Missing/malformed `X-User-Token` (`{"error": "A valid X-User-Token header is required"}`), malformed body, or link failure | `{"error": string, "code"?: string}` |
-| `401` | No valid Clerk session | `{"error": "Authentication required", "code": "authentication_required"}` |
-| `404` | Unknown `appKey` | `{"error": "App not found"}` |
-| `409` | Profile already confirmed to a **different** account | `{"error": "End-user profile is already linked and confirmed to another account", "code": "already_linked"}` |
-
-Linking semantics:
-
-- No profile exists for (`appKey`, `X-User-Token`) yet → one is created already bound to the authenticated identity and marked confirmed. There is **no** `404` for a missing profile — `404` is reserved for an unknown `appKey`.
-- An **anonymous** row (created earlier by voting/feedback with only `X-User-Token`, no Clerk binding) is claimed by the authenticated user and marked confirmed — this is the recovery path for unclaimed profiles.
-- A row already bound to the **same** Clerk user resolves idempotently with `200` (the binding is re-confirmed).
-- A row already bound to a **different** Clerk user is never hijacked: `409 already_linked`, deterministic — never retry automatically.
-
-Client guidance: call this once when the end user signs in to the host app (at that moment the client holds both the anonymous `X-User-Token` and a Clerk session), then keep using the same `X-User-Token` for voting, feedback, comments, and upload sessions.
-
----
-
-## User Identifiers on Public Endpoints (PRIV-06)
-
-Public board and comment payloads identify users with **deterministic app-scoped pseudonyms**, never raw identity-provider ids:
-
-- `GET /api/v1/feature-requests`: `requesterClerkId`, `recentCommenters[].clerkUserId`
-- `GET` / `POST /api/v1/feature-requests/:id/comments`: `authorClerkId`, `replyToClerkId`
-
-Contract:
-
-- Values are `u_` followed by 32 lowercase hex chars (e.g. `u_9f2c…`). Field names are unchanged — only the value format changed. Legacy `user_*` Clerk ids may still appear in old cached payloads, so **never validate or assume a `user_` prefix** on user id strings.
-- Ids are stable for a given (app, user) pair, so reply threading (`replyToClerkId`) and author attribution keep working **within one app**. They are **unlinkable across apps**: never join, deduplicate, or correlate user ids between two different `appKey`s.
-- `GET /api/v1/users/:userId/profile` accepts `u_*` ids **only together with the `appKey` query parameter** (the id can only be reversed within its app). Without `appKey`, a `u_*` request returns `404`, and an unknown (unmapped) `u_*` id returns the same `404 {"error": "User profile not found"}` — since SEC-34 the endpoint never runs the full-app candidate scan (unique unknown ids are cache-busting), so an indexed miss is terminal and retrying cannot change the answer. Legacy `user_*` ids remain accepted without `appKey` for existing `/u/` links, and the endpoint is additionally rate limited per client IP (see [Rate Limiting](#rate-limiting-429-too-many-requests)).
-- Public profiles are opt-in. A user who never created a public profile resolves to a placeholder — the requested id echoed back with `displayName: null` and empty `publicApps` / `recentComments` — and there is no existence oracle for raw ids. `publicApps` lists only apps of workspaces where the user is an **owner**; the response has no top-level `hideComments` (comment visibility is applied server-side).
-- **Exact `PublicUserProfileResponse` shape (OpenAPI 3.1, SaaS #1190 / PR #1192):** the top-level response is always `{profile, publicApps, recentComments}` — all three keys required (`recentComments` is always emitted across every branch, as an empty array `[]` when comments are hidden or absent; the server never emits `apps` or a top-level `hideComments`). Inner schemas:
-  - `profile` (`UserProfile` component): `{clerkUserId, displayName, avatarUrl, bio, websiteUrl, createdAt}` — all six keys required (`displayName`, `avatarUrl`, `bio`, `websiteUrl` nullable; `createdAt` ISO 8601 `date-time`). Neither `hideComments` (the privacy flag gates `recentComments` server-side and is never disclosed) nor `updatedAt` is ever emitted on `profile`.
-  - `publicApps` items (`PublicUserProfileApp` component — the workspace-owner member-of shape, **not** the showcase `PublicAppSummary` `{appId, slug, storeUrl, storeKind}` shape): `{id, workspaceSlug, workspaceName, appSlug, name, description, iconUrl}` — all seven keys required (`description`, `iconUrl` nullable).
-  - `recentComments` items: `{id, body, createdAt, featureRequestId, featureRequestTitle, workspaceSlug, appSlug, appName}` — all eight keys required (attributed via `workspaceSlug`, `appSlug`, and `appName`; `appId` is never emitted on comment items).
-  - Clients generated from `/api/v1/openapi.json` or hand-written strict decoders (`Codable`, `kotlinx.serialization`) must decode `publicApps` (not `apps`) and must not require the removed phantom keys (`apps`, top-level or inner `hideComments`, inner `updatedAt`, or comment `appId`).
-
----
-
-## Per-App Anonymous-Access Enforcement (PRIV-12)
-
-The per-app `PublicAppConfig` anonymous-access flags (`allowAnonymousRoadmap`, `allowAnonymousChangelog`) are enforced **server-side on every surface of the family**, not just the primary listing GET. When a tenant disables a flag, the other previously-public reads and writes of that family go behind sign-in immediately; response schemas are unchanged — only new error conditions appear (source: SaaS PR #330, issue #324).
-
-| Endpoint | Condition | Response |
-|---|---|---|
-| `GET /api/v1/feature-requests` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` (pre-existing) |
-| `GET /api/v1/public/columns/:appKey` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |
-| `GET /api/v1/public/versions/:appKey` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |
-| `GET /api/v1/feature-requests/:id` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |
-| `GET /api/v1/feature-requests/:id` | request exists but is **unapproved** | `404` `{"error": "Feature request not found"}` — existence hiding, indistinguishable from a missing id; the unapproved requester's own token does not un-hide it |
-| `GET /api/v1/feature-requests/:id/comments` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |
-| `GET /api/v1/feature-requests/:id/comments` | request exists but is **unapproved** | `404` `{"error": "Feature request not found"}` — existence hiding, indistinguishable from a missing id |
-| `POST /api/v1/feature-requests/:id/vote` | anonymous write, `allowAnonymousRoadmap` off | `401` `authentication_required` — uniform body, no `voteCount`; the gate runs ahead of the feature-request existence lookup, so missing and approved ids are indistinguishable, and it fires even when `allowAnonymousVote` is on |
-| `DELETE /api/v1/feature-requests/:id/vote` | anonymous write, `allowAnonymousRoadmap` off | `401` `authentication_required` — same uniform body, same ordering ahead of the existence lookup, same independence from `allowAnonymousVote` |
-| `POST /api/v1/public/apps/:appKey/changelog/subscribe` | anonymous call, `allowAnonymousChangelog` off | `401` `authentication_required` |
-| `POST /api/v1/public/apps/:appKey/changelog/subscribe` | signed-in, body `email` is not the session's verified address | `403` `{"error": "Subscriptions on this changelog are bound to your signed-in email address", "code": "email_not_verified"}` |
-
-The `401` body is uniform across the roadmap surfaces: `{"error": "Sign in is required to view this roadmap" | "Sign in is required to view this changelog", "code": "authentication_required"}`. Note that the comments-thread and single-request-detail `401` checks run **after** existence hiding, so while the flag is off anonymous probers cannot distinguish existing ids from missing ones either. The two vote-write gates are the strictest of the family: they run **ahead of** the feature-request existence lookup, so a gated board also keeps its missing-vs-approved oracle shut on the write paths — missing and approved ids both answer the `401`, never a `404`, and no `voteCount` is served.
-
-Client guidance:
-
-- Treat `401` + `code: "authentication_required"` on these previously-public reads as **"sign-in required"** and surface the host app's sign-in flow instead of a hard error — the same handling the feature-request list has always needed.
-- Treat `401` + `code: "authentication_required"` on a vote `POST`/`DELETE` the same way: it is **sign-in required**, not a credentials bug — surface the host app's sign-in flow instead of retrying, and do not loop the request; a signed-in voter keeps voting on the same board under both `allowAnonymousVote` states.
-- Treat `404` on a comments thread or a single-request detail read as **"not available"**: the request may be gone, private, or simply not approved yet. Never tell the user the request never existed.
-- On `403` + `code: "email_not_verified"` from changelog subscribe, prompt for the **signed-in account's own email** — third-party addresses are not accepted on sign-in-only changelogs.
-
----
-
-## Profile Avatar URLs Are Managed-Host-Only (PRIV-19)
-
-A profile avatar renders as `<img src>` on public boards and in the developer console, so every visitor's browser fetches whatever URL the author saved — the same tracking-pixel channel PRIV-11 closed for feature-request descriptions. Avatars are therefore pinned to product-managed image URLs, on both the write and the read paths (source: SaaS PR #397, issue #387).
-
-**Writes are validated** — `PUT /api/v1/console/me/profile` accepts an `avatarUrl` only when it is one of:
-
-- the first-party re-hosting path on the API origin: `<PUBLIC_BASE_URL>/api/v1/files/images…`, including the `%2F`-encoded R2 fallback form; or
-- an absolute `https:` URL with **no userinfo** (`user:pass@`) whose hostname is exactly `imagedelivery.net`, or whose href is under the deployment's configured images delivery host (`IMAGES_DELIVERY_URL`).
-
-Everything else — `http:`, `javascript:`, `data:`, relative or protocol-relative URLs, any foreign host, unparseable values — is rejected with `400 {"error": "Validation failed", "code": "avatar_url_not_allowed", "details": …}` (the same validation shape answers `code: "website_url_not_allowed"` for the profile's `websiteUrl`). SEC-60: a profile write is a published-identity change, so it additionally requires an **interactive Clerk session** — a `cpt_` API token is rejected with `403` — while profile reads stay token-safe.
-
-**Reads fail closed.** On every public payload that carries an avatar — `requesterAvatarUrl` on `GET /api/v1/feature-requests`, `authorAvatarUrl`/`recentCommenters[].avatarUrl` on comment payloads, and `profile.avatarUrl` on `GET /api/v1/users/{userId}/profile` — the value is **either `null` or a managed `https:` URL**. Legacy stored values that no longer satisfy the policy are served as `null`, never passed through. Clients must render a placeholder on `null` and must not assume a value's host. Managed URLs on the API origin (`<PUBLIC_BASE_URL>/api/v1/files/…`) may be fetched with an appended `?width=` thumbnail hint — one of the documented sizes only (16, 32, 36, 56, 64, 72, 80, 112, 128, 160), appended to the stored URL rather than reconstructed, and always with a fallback to the original URL since a width-hint response may be the original bytes (see the `/api/v1/files/:key` row above); URLs on other hosts (`imagedelivery.net`, the deployment's images delivery host) must be passed through untouched. Attribution is server-resolved: the `authorName` and `authorAvatarUrl` a client sends on `POST /api/v1/feature-requests/{id}/comments` are ignored — the signed-in user's stored profile display name and avatar (or `null`) are published instead.
-
----
-
-## SDK Payment-Attribute Signing (DATA-03)
-
-`PUT /api/v1/public/apps/:appKey/user` is reachable with nothing but the public `appKey`, so self-declared payment attributes cannot be trusted: whenever the body contains any of `isPaying`, `mrr`, `plan`, or `currency` (**an explicit JSON `null` counts too**), the request must also carry two extra body fields, `signature` (64-char hex HMAC-SHA256, case-insensitive) and `timestamp` (epoch-seconds integer). Both are transport fields — they are never persisted. Verification runs before any `end_users` row is minted, so rejected requests leave no trace. Since DATA-07 `currency` sits behind the same gate as the other payment attributes (it is the unit of `mrr` — relabeling it changes what revenue totals mean), so identity-only writes are the only unsigned path left.
-
-The HMAC key is the app's **SDK signing secret**, generated by the developer in the console (*App Access → App Credentials → SDK signing secret*). Unsigned payment attributes fail as follows:
-
-| Status | `code` | Trigger |
-|---|---|---|
-| `422` | `payment_attributes_require_signature` | Payment attribute (including `currency`) in the body without `signature` + `timestamp`. |
-| `422` | `sdk_signing_secret_not_configured` | The app has no SDK signing secret yet. |
-| `401` | `stale_signature` | `timestamp` more than ±300 seconds from the server clock. |
-| `401` | `invalid_signature` | Signature mismatch — wrong key or tampered values. |
-
-### Omitted `currency` keeps the stored value (DATA-07)
-
-`currency` is the unit of `mrr`, so the server no longer relabels it on partial updates. A signed update that omits `currency` **preserves the stored currency** — previously an omitted `currency` was coerced to `USD`, silently re-denominating a stored `mrr`. `USD` is applied only when a profile is **created** with no stored currency (including a creating request that omits the field). To change the currency unit, send the new `currency` in a signed update — ideally together with the re-denominated `mrr` so the pair stays consistent. The signature canonical string is unchanged by DATA-07: `currency` signs exactly as sent (before the server's uppercase normalization) and an absent field signs as `unset`.
-
-### Canonical string
-
-HMAC-SHA256-sign the exact bytes of this newline-joined string (no trailing newline) and hex-encode the digest:
-
-```
-cpt-user-attrs-v1
-<appKey>
-<userToken>
-<isPaying: true|false|unset>
-<plan: value|null|unset>
-<mrr: canonicalNumber|null|unset>
-<currency: valueAsSent|unset>
-<timestamp: epochSeconds>
-```
-
-- Absent fields sign as `unset`; explicit JSON `null` signs as `null`. Omitting `plan` and sending `"plan": null` produce different signatures. Because of that, a plan string exactly equal to `"unset"` or `"null"` is reserved and rejected with `400 plan_reserved_sentinel` before the signature check — never send those two literals as plan values.
-- `canonicalNumber`: render the raw JSON number with two-fraction-digit `toFixed(2)` semantics, then strip trailing `0`s and a trailing `.` (`1200.00 → "1200"`, `99.50 → "99.5"`). Ties pick the larger n on the exact binary value: `10.125 → "10.13"`, and `1200.005 → "1200.01"` because its binary double sits *above* the decimal value while `99.995` carries to `"100"`.
-- Values are signed **as sent**: `currency` before the server's uppercase normalization, `plan` verbatim including Unicode.
-- `userToken` is the resolved token — the body `userToken` when present, else the `X-User-Token` header value; sign whichever identifies the user in this request.
-- Sign immediately before sending: a `timestamp` older or newer than ±300 s from server time fails with `stale_signature`.
-
-### Request-body field constraints run before the signature gate
-
-Signature verification only ever sees bodies that first passed `EndUserAttributesInputSchema`, so a signature computed over any other shape is dead on arrival (HTTP 400 `Validation failed` — the signature is never checked). The constraints: `userToken` an RFC 4122 UUID when present (and the resolved body/header token must be an 8-4-4-4-12 hex UUID), `isPaying` a boolean with **no** explicit `null`, `plan` a 1–64-character string (counted in Unicode code points) or `null`, `mrr` a number between 0 and `1000000` or `null`, and `currency` a 3-letter alphabetic code (`[A-Za-z]{3}`) with **no** explicit `null` — omit the key instead. One `plan` value rule sits in the same parse (issue #235): the exact strings `"unset"` and `"null"` are **reserved signature sentinels** (an absent field signs as `unset`, an explicit null as `null`, so a literal equal to either would be byte-indistinguishable from leave-unchanged/clear inside the signed payload) and are rejected with `400 {"error": "Validation failed", "details": {"fieldErrors": {"plan": ["plan_reserved_sentinel"]}}}` before the signature is checked — treat that as a normal validation error, do not retry. Send JSON `null` to clear the stored plan or omit the key to keep it; the reservation is byte-exact (case-sensitive, whole string), so `"UNSET"`, `"Unset"`, `"unsettled"`, `"nullify"` remain valid. Unknown keys are stripped. `cupthread api sign-user-attrs` mirrors these constraints locally and refuses to sign bodies that cannot pass (issue #196), so a reference signature always corresponds to a sendable body.
-
-Coding agents can generate reference signatures to cross-check platform implementations with `cupthread api sign-user-attrs` (see the `cupthread-cli` skill).
-
----
-
-## Console Moderation Endpoints
-
-Workspace-scoped comment moderation (OpenAPI tag `Console Moderation`), authenticated with a developer `cpt_` token or Clerk session:
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/v1/console/workspaces/:wsId/feature-requests/:frId/comments` | `GET` | List every comment on a feature request (including hidden) for moderation. Returns `404` when the feature request is not in the workspace, otherwise `{"comments": [...]}`. |
-| `/api/v1/console/workspaces/:wsId/comments/:commentId/hide` | `PATCH` | Toggle visibility with body `{"isHidden": bool}`. Returns `404` when the comment is not in the workspace, `200 {"success": true}` on success. |
-| `/api/v1/console/workspaces/:wsId/comments/:commentId` | `DELETE` | Permanently delete a comment. Returns `404` when the comment is not in the workspace, `200 {"success": true}` on success. |
-
-**Workspace id semantics**: on all `/api/v1/console/workspaces/{wsId}/...` endpoints the path id is authoritative. The `X-Workspace-Id` header is optional; when sent it must match the path id, otherwise the API answers `400`. Prefer omitting the header on these routes.
-
----
-
-## Workspace Capability RBAC (AUTH-01)
-
-Every `/api/v1/console/workspaces/{wsId}/...` route declares one capability (upstream CupThread/SaaS#55, `apps/api/src/lib/capabilities.ts`), checked server-side against the caller's workspace role. Unknown or corrupted roles fail closed with no capabilities:
-
-| Capability | member | admin | owner |
-|---|---|---|---|
-| `workspace.read` (all read-only GET/list endpoints) | ✅ | ✅ | ✅ |
-| `triage` (submissions, feature requests, forwarding) | ✅ | ✅ | ✅ |
-| `content.manage` (changelog drafts & edits, columns, versions, imports, comment moderation, deletions) | ✅ | ✅ | ✅ |
-| `changelog.publish` (publish/schedule changelog entries → subscriber email blast, SEC-40) | ❌ | ✅ | ✅ |
-| `app.configure` (app create/update, icon, SDK settings, per-app repo link) | ❌ | ✅ | ✅ |
-| `integration.manage` (connect/disconnect integrations, manual tokens, sync) | ❌ | ✅ | ✅ |
-| `billing.manage` (checkout, portal, add-ons) | ❌ | ✅ | ✅ |
-| `members.manage` (member add/set-role/remove, invitation revoke) | ❌ | ✅ | ✅ |
-| `privacy.manage` (end-user erase/anonymize, attachment delete, export create / download-token / download — PRIV-01) | ❌ | ✅ | ✅ |
-| `workspace.delete` | ❌ | ❌ | ✅ (declared; no route uses it yet) |
-
-Two structured 403 codes can come back from these routes (both with HTTP 403):
-
-- `capability_required` — the caller's role does not include the route's capability:
-  `{"error": "Access denied: your workspace role does not include the '<capability>' capability", "code": "capability_required"}`
-- `interactive_session_required` — the route's capability is in the interactive-only set (`changelog.publish`, `members.manage`, `billing.manage`, `integration.manage`, `privacy.manage`, `workspace.delete`) and the caller authenticated with a `cpt_` API token, regardless of role (mirroring the `/api/v1/console/tokens` management rule):
-  `{"error": "This action requires an interactive session; API tokens are not permitted", "code": "interactive_session_required"}`
-
-The checks are ordered: **role first, then token type**. A member-role `cpt_` token on a `members.manage` route therefore gets `capability_required` (role too low), while an admin/owner `cpt_` token gets `interactive_session_required` (role sufficient, token type rejected). Interactive Clerk web sessions (Console web UI) never see `interactive_session_required` — note that the CLI's `auth login` OAuth flow issues a `cpt_` access token too, so from the CLI every interactive-only capability is unreachable.
-
-Unaffected for `cpt_` tokens: all `workspace.read` lookups (including `GET .../members`, `GET .../invitations`, `GET .../billing`, and integration status reads), `triage`, `content.manage` (changelog **drafts and edits** included — only publishing/scheduling moved out into `changelog.publish`, see the next section), `app.configure`, and imports. Three GET exceptions are interactive-session-only despite being reads: `GET .../billing/portal` (billing portal redirect, `billing.manage`), `GET .../integrations/:provider/authorize` (OAuth authorize URL, `integration.manage`), and `GET .../export/:jobId/download` (export artifact download, `privacy.manage`). Public feedback/SDK endpoints are unchanged.
-
----
-
-## Changelog Publishing Capability (SEC-40)
-
-Publishing or scheduling a changelog entry emails every confirmed subscriber (a blast), so it carries its own `changelog.publish` capability — admin/owner only — on top of the `content.manage` access the routes already require (upstream CupThread/SaaS#286, merge `0bc77d6`). Gate per endpoint:
-
-| Endpoint | Gated request shape | Requirement |
-|---|---|---|
-| `POST .../changelog` | body has `publishNow: true` or non-null `scheduledAt` | `changelog.publish` (checked **in addition to** the route's `content.manage` access) |
-| `PUT .../changelog/:entryId` | body has a string `scheduledAt` (setting a schedule only) | `changelog.publish` |
-| `POST .../changelog/:entryId/publish` | always | `changelog.publish` (route-wide; **changed** from `content.manage`) |
-
-Not gated: creating/updating/deleting **drafts** without publish/schedule intent, listing, unpublishing, and **clearing** a schedule stay under plain `content.manage` (members and `cpt_` tokens keep full draft workflow access). The clear semantics on `PUT`: `scheduledAt: null` clears the schedule and is **not** gated — the gate checks `typeof scheduledAt === "string"`, so a JSON `null` skips it entirely and plain `content.manage` suffices (a member or `cpt_` token **can unschedule**); `""` never reaches the route — the schema is `z.string().datetime().nullable().optional()`, so an empty string fails validation with `400 {"error": "Validation failed"}`. The CLI's `changelog update <id> --schedule-at ""` sends exactly `{"scheduledAt": null}`.
-
-Denials follow the AUTH-01 order (role first, then token type):
-
-- member (any auth type) on a gated path → `403 capability_required` naming `'changelog.publish'`
-- admin/owner with a `cpt_` API token on a gated path → `403 interactive_session_required` — publish from the Console web UI instead (the CLI's OAuth login also issues a `cpt_` token, so no CLI credential can publish)
-
-Server side, every denial emits a structured `authz_denied` audit event (`reason: missing_capability` or `interactive_session_required`), and a successful publish records the publishing Clerk user and enqueues the blast job. The console publish routes are not declared in the OpenAPI document (only the public read/subscribe paths are), so there is no spec surface to regenerate.
-
----
-
-## Feedback Image Media-Type and Storage-Failure Policy (415 / 500)
-
-`POST /api/v1/uploads/images` (end-user feedback image upload) enforces a strict media-type policy:
-
-- **Accepted types**: `image/png`, `image/jpeg`, `image/webp`, `image/gif` only. Any other declared type fails earlier with `400 {"error": "Only PNG, JPEG, WebP, and GIF images are supported."}`; empty files also fail with `400`, and files over 10 MB with `413`.
-- **The stored image is a private attachment (PRIV-02).** Success is `200` `{ "kind": "image", "uploadId", "status": "uploaded", "stored": true, "filename", "mimeType", "size", "sha256" }` — no `url`, `key`, or `variants`. The object lives under `attachments/{workspaceId}/{appId}/{uploadId}/…` and `GET /api/v1/files/:key` rejects it with `403 private_attachment_forbidden`. After `POST /api/v1/feedback` finalizes the upload, download it through `GET /api/v1/feedback/attachments/:id/download`. Do not treat the upload as publicly fetchable.
-- **SVG is rejected with `415`** — when the upload declares `image/svg+xml`, or when a `.svg` filename falls through the server's extension fallback (clients that send no per-part content type). SVG executes script in browsers and is never stored from end-user uploads: `415 {"error": "SVG images are not supported. Upload a PNG, JPEG, WebP, or GIF image."}`
-- **Declared MIME must match the file content.** The server sniffs magic bytes (PNG, JPEG, GIF87a/GIF89a, WebP/RIFF). An unrecognized signature, or a mismatch with the declared type (e.g. HTML or SVG bytes named `.png`), fails with `415 {"error": "File content does not match declared image type (<declared>)."}`
-
-The `415` bodies carry no `code` field — match on the status, not on an error code. The one coded body this endpoint answers with is the storage-failure `500`: any failure inside the route that is not one of the platform-authored validation errors above (a raw R2 / Cloudflare Images response body, transport error text, a D1 statement error) is replaced with the stable, provider-agnostic `500 {"error": "Image upload failed. Please try again.", "code": "image_upload_failed"}` — the same no-context rule the console icon route applies (SEC-69). The `error` field is fixed text (it previously could echo internal provider response fragments and transport errors), so existing display code keeps working unchanged, and the provider/infrastructure detail is logged server-side only with the request id — it never reaches the caller (SaaS PR #793).
-
-Client guidance:
-
-- Restrict client-side image pickers / file-type allowlists to PNG, JPEG, WebP, and GIF (drop SVG for feedback screenshots).
-- Treat `415` as a deterministic client error: surface a user-facing "unsupported image type" message and let the user pick a different file; never retry automatically.
-- On a `500`, branch on `code == "image_upload_failed"` to show a retry prompt and retry with backoff — never parse the `error` text (it is deliberately stable and opaque), and never treat the storage failure as a validation problem with the file.
-
-**Console-configured app icons are exempt.** `POST /api/v1/console/workspaces/{wsId}/apps/{appId}/icon` (capability `app.configure`, so workspace admin/owner; `cpt_` API tokens are accepted) still accepts SVG icons, but screens them for active content — markers like `<script`, `javascript:`, `onload`/`onerror`/`onclick` handlers, `<!entity`, and `<foreignObject` fail with `415 {"error": "SVG contains prohibited active scripts or external entity references"}` — and applies the same magic-byte check. The endpoint stores the image and updates the app record (`iconUrl`) in the same request, returning the updated `AppRecord`.
-
----
-
-## Request Correlation IDs (`X-Request-Id`, OPS-01)
-
-**Every response — all endpoints, all status codes — carries an `X-Request-Id` response header** (OpenAPI shared component `XRequestId`): the caller's ID when the request supplied a format-valid one, otherwise a server-generated UUID. It is a correlation handle for server logs, telemetry, and support flows — never an authentication or authorization primitive.
-
-Contract:
-
-- Callers MAY send an `X-Request-Id` request header on any endpoint. It is honored only when it matches `^[A-Za-z0-9._-]{8,64}$` (a UUID qualifies); any other value is ignored and replaced server-side, and the response always echoes the effective value.
-- CORS exposes the header to cross-origin browsers on every route class (`Access-Control-Expose-Headers: X-Request-Id`) and allowlists it as a request header on console and public preflights.
-- Quote the response's `X-Request-Id` verbatim in bug reports and support requests so the exact request can be found server-side. The `cupthread` CLI does this for you: it sends `cli-<uuid>` per request and quotes the echoed value as `request-id=…` on errors (and on `api request` success lines).
-
----
-
-## Weekly Digest Unsubscribe (PRIV-07)
-
-Weekly digest emails now carry RFC 8058 one-click unsubscribe: a `List-Unsubscribe: <https://api.cupthread.com/api/v1/public/digest/unsubscribe?token=…>` header, a `List-Unsubscribe-Post: List-Unsubscribe=One-Click` header, and an in-body footer link to the same URL. The path is driven from the email footer / mail client, **not** from in-app SDK session calls — OpenAPI-generated clients pick up the new route, but runtime SDK methods are not required unless a client wants to drive the flow itself.
-
-Both verbs live on `POST`/`GET /api/v1/public/digest/unsubscribe` (OpenAPI tag `Privacy`).
-
-### `GET` is strictly non-destructive (PROD-20)
-
-A browser GET validates the token and renders an interstitial confirmation page whose form POSTs the token to the same path. Email-security gateways and link prefetchers that GET the footer URL therefore cause **no side effect** — fetching never changes notification preferences.
-
-- JSON-only clients (`Accept: application/json` **without** `text/html`) get `405 {"error": "GET does not unsubscribe. POST the token to this endpoint to unsubscribe."}` with an `Allow: POST` header.
-- Missing token → `400 {"error": "Missing unsubscribe token"}`; invalid/expired token → `400 {"error": "Invalid or expired unsubscribe token"}` (uniform — token errors never reveal which case failed).
-
-### `POST` is the only destructive path
-
-Accepts the token from, in precedence order: query string (`?token=…`, what RFC 8058 one-click mail clients hit), JSON body `{"token": "…"}`, or a `token` field of an `application/x-www-form-urlencoded`/`multipart/form-data` body (what the GET confirmation form submits).
-
-- Success → `200 {"unsubscribed": true}` (JSON), or an HTML landing page when `Accept` includes `text/html` (browser form submissions).
-- Replay is idempotent — re-POSTing a consumed token still returns the same `200`.
-- Missing token → `400 {"error": "An unsubscribe token is required"}`; invalid/expired → `400 {"error": "Invalid or expired unsubscribe token"}`.
-- Effect: removes only `weekly.digest` from the workspace **email** channel's event mask (an empty mask is materialized as "all events except `weekly.digest`"). The email channel, all other events, and **inbox notifications are unchanged** — this is not a global notification kill switch.
-
-Both verbs are rate limited per client IP (`429 {"error": "Too many requests. Please try again shortly."}`). The GET stays on the shared 10 requests / 60 s public-write budget; since PRIV-08 a POST carrying the token in the query string (whitespace-trimmed non-empty) draws from the dedicated `DIGEST_UNSUBSCRIBE_RATE_LIMITER` at 300 requests / 60 s — sized for mailbox providers one-click-unsubscribing from shared egress IPs. The budget is chosen before the body is read, so a POST whose token arrives only in the body stays on the 10/min public-write bucket.
-
-### Token contract
-
-- Shape: base64url(`payload`).base64url(`HMAC-SHA256 signature`) — exactly two dot-separated parts; the signature covers the purpose prefix `digest.unsubscribe.v1.` plus the payload, so tokens are domain-separated from changelog-unsubscribe and attachment-download tokens.
-- Payload: `{"workspaceId", "email", "exp"}` — the owner email is lowercased at mint time and `exp` is a Unix millisecond timestamp ~**90 days** out, so a delayed click on a recent weekly mail still works.
-- A token verifies only while the workspace still exists **and** its owner email still matches the payload — rotating the workspace owner invalidates outstanding tokens.
-- Signing secret resolution is fail-closed: `DIGEST_EMAIL_TOKEN_SECRET`, then `CHANGELOG_EMAIL_TOKEN_SECRET`, then `JWT_SECRET`. With no usable secret, verification fails (`400`) **and** the digest cron skips the email entirely — a digest whose unsubscribe token cannot be minted is never sent.
-
-Client guidance: never pre-fetch or "validate" footer URLs with a GET from automation (safe, but pointless — only POST mutates); don't fabricate, cache beyond 90 days, or attempt to parse tokens (they are opaque to clients); retry `429`s with exponential backoff.
-
----
-
-## Self-Service Data Erasure (PRIV-01)
-
-`POST /api/v1/me/erase` (OpenAPI tag `Privacy`, "Erase My Data (Self-Service)") lets the data subject erase their **own** end-user profile for one app. Anyone holding the secret anonymous token — or the matching signed-in Clerk user — may call it; developer `cpt_` API tokens are **not** an identity here.
-
-**Request**: JSON body `{"appKey": "<8-128 chars>"}` plus identity — `X-User-Token: <uuid>` header (any UUID version; a malformed value is treated as absent) or a Clerk session (header optional for signed-in callers).
-
-**Effect** (aggregates survive, attribution does not):
-
-- The anonymous token is **rotated immediately** to an `erased-…` value: the old token stops working at once, and replaying the erase with it returns `404`.
-- Stored PII is cleared: display name, email, the Clerk link, end-user attributes, and IP/user agent on feedback submissions matching the profile's email.
-- Feature requests, votes, and comment attribution are anonymized; changelog subscriptions of the identity are removed. Feedback content and vote counts are preserved without personal attribution.
-
-| Status | When | Body |
-|---|---|---|
-| `200` | Profile erased | `{"erased": true, "endUserId": "…"}` |
-| `400` | Missing/empty `appKey` in the body | `{"error": "appKey is required"}` |
-| `401` | Neither a valid `X-User-Token` header nor a Clerk session was presented | `{"error": "Authentication required"}` |
-| `404` | Unknown `appKey`, no profile for this identity, or already erased (replay) | `{"erased": false, "error": "No profile found for this identity"}` |
-| `429` | Rate limited (per-IP or per-token) | see below |
-
-Rate limiting is two-layered. First the shared **per-IP** public-submit budget (10 requests / 60 s): `429 {"error": "Too many submissions. Please try again shortly."}` — note this check runs **before** authentication, so even unauthenticated probes consume the IP budget. Then a **per-token** erasure budget for anonymous callers (the same limiter keyed by the token): `429 {"error": "Too many erasure requests for this token. Please try again shortly."}`.
-
-Client guidance for SDKs (expose an "erase my data" entry point, e.g. a settings action):
-
-1. Confirm with the user before calling — erasure is immediate and **irreversible** for that profile.
-2. On `200`, discard the stored `X-User-Token` locally and mint a fresh token for any further activity; the old one is dead.
-3. Treat `404` as "nothing left to erase" (the expected replay/no-profile response) — never retry it. Retry `429` with exponential backoff; treat `400`/`401` as deterministic client errors.
-
----
-
-## Feedback Metadata Redaction (PRIV-01)
-
-The free-form `metadata` field on feedback submissions (`POST /api/v1/feedback` and every other feedback write path) is **sanitized server-side before persistence**. Sanitization never throws and never rejects the submission — oversized or suspicious payloads are shrunk — so the contract is non-breaking for existing SDKs. Pre-sanitizing client-side with the same rules is encouraged so users get local feedback:
-
-1. **Key allowlist**: only keys matching `[A-Za-z0-9_.:-]{1,64}` are kept, at most **24** keys; non-conforming or surplus keys are silently dropped. Nested objects and arrays are also capped at 24 entries per level.
-2. **Credential redaction**: values under credential-looking keys are replaced with the literal string `"[redacted]"` — regardless of the value's type. The match runs on a normalized key (camelCase/PascalCase split, lowercased) against a broad pattern covering `password`, `secret`, `token`, `apiKey`, `accessKey`, `clientSecret`, `credential`, `authorization`, `cookie`, `session`, `bearer`, `privateKey`, `signature`, `jwt`, `otp`, `ssn`, and credit-card-like keys — so `github_token`, `api-key`, `sessionCookie`, and `SECRET` all hit.
-3. **String truncation**: string values longer than 512 chars are cut to 512 and suffixed with `…[truncated]`.
-4. **Depth cap**: the top-level metadata object is depth 0; object/array values at depth 4 or deeper collapse to `null`.
-5. **8 KB budget**: the total serialized object is capped at 8192 bytes. Whole keys are dropped — never sliced mid-value — in deterministic **sorted-key order**: a key that does not fit is skipped, and a smaller later key can still be kept.
-
-Sanitization is deterministic (same input always yields the same output) and runs **before any other validation**, so even submissions that later fail (`402` quota, `403` public feedback disabled, `401` anonymous feedback disabled, `404` unknown app, `422` `scan_rejected`) never persist unsanitized metadata. Console triage reads back only the sanitized result: pre-rendered string entries carrying `redacted` / `truncated` flags.
-
----
-
-## OAuth Redirect-URI Scheme Policy (SEC-46)
-
-The OAuth authorization server enforces a scheme policy on every `redirect_uri` — at application registration, on the authorize endpoints, and again on the authorization-code exchange (legacy rows registered before the policy fail closed). The shared rule (`isAllowedRedirectUri` in the SaaS `packages/shared/src/oauthUrlPolicy.ts`):
-
-- **Allowed:** absolute `https:` URLs (any host, any port — no userinfo, no fragment), or loopback `http://127.0.0.1` / `http://[::1]` / `http://localhost` with **any port** (RFC 8252 §7.3, the native-app/CLI exception). A query string is allowed — the authorization response appends `?code=…&state=…` on top of it.
-- **Rejected:** `javascript:`, `data:`, `file:`, `vbscript:`, custom app schemes (`myapp://callback`), non-loopback `http:` (including look-alikes like `http://localhost.evil.com`), protocol-relative URLs (`//host/cb`), userinfo (`https://user:pass@…`), fragments, and relative paths.
-
-Wire behavior:
-
-- `GET` / `POST /api/v1/oauth/authorize` answer a disallowed `redirect_uri` with `400` and the RFC 6749 §5.2 JSON error `invalid_request` (the `error_description` names the https/loopback rule) — **never a redirect**. The scheme check runs *before* the client's registered-URI list is consulted, so a legacy registered row cannot authorize a bad scheme either.
-- `GET /api/v1/oauth/authorize` forwards only the seven recognized OAuth query parameters (`response_type`, `client_id`, `redirect_uri`, `scope`, `state`, `code_challenge`, `code_challenge_method`) to the Console consent page; arbitrary extra query parameters are dropped instead of reflected.
-- Application registration (`POST /api/v1/console/oauth/applications`) applies the same policy to each `redirectUris` entry (1–10 items, each ≤ 500 chars). `homepageUrl` / `logoUrl` are deliberately stricter — absolute `https:` only, loopback `http:` rejected — because they render as a link / `<img>` on the consent page (`isAllowedDisplayUrl`).
-- The OpenAPI 3.1 spec (`GET /api/v1/openapi.json`) documents the scheme rule on the authorize endpoints.
-
-**CLI/SDK impact: none.** The CLI's authorization-code flow binds a random loopback port and uses `http://127.0.0.1:<port>/cupthread/callback`, which stays fully supported; the device flow (`cupthread auth login --device`) uses no redirect URI at all. A third-party integration that pointed a redirect at a non-loopback `http:` host now fails fast with `invalid_request` — switch it to `https:`.
+Agent-skill hosts refuse to load a `SKILL.md` at or above **100 KB**, rejecting the whole skill (issue #318). This file must stay under the soft budget of **80 KB** — enforced by `TestSkillMDSizeBudgets` in `skills/skill_size_test.go` on every CI run. The other five skills live at 21–43 KB; aim for the same ballpark. **Per-endpoint contract detail belongs in `reference/*.md` next to this file or in the live OpenAPI spec (SaaS repo), not here** — appending contract tables to `SKILL.md` is what pushed it over the limit. Keep this file an index: surface map, cross-cutting invariants, pointers to the reference files and the authoritative references. Content pinned by the docs-sync tests in `internal/cmd/skill_docs_test.go` may live in either `SKILL.md` or a `reference/*.md` file — the tests read both.
