@@ -133,43 +133,32 @@ func TestUsersProfileScopedIDRequiresAppKey(t *testing.T) {
 	}
 }
 
-// TestUsersProfileLegacyIDWithoutAppKey covers the legacy path: raw user_*
-// ids (old /u/ bookmarks) stay accepted without appKey, and the opt-in
-// placeholder response renders as an empty profile with no app section.
-func TestUsersProfileLegacyIDWithoutAppKey(t *testing.T) {
+// TestUsersProfileLegacyClerkIDRejectedLocally covers the issue-#261 sync:
+// since SaaS #1322 the public profile endpoint resolves app-scoped u_* ids
+// only, and any raw Clerk user_* id just answers the anonymous placeholder —
+// so the CLI rejects it locally with an actionable error instead of
+// rendering a misleading empty profile.
+func TestUsersProfileLegacyClerkIDRejectedLocally(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
-	var gotAppKey string
+	hits := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAppKey = r.URL.Query().Get("appKey")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"profile": {
-				"clerkUserId": "user_legacy_1",
-				"displayName": null,
-				"avatarUrl": null,
-				"bio": null,
-				"websiteUrl": null,
-				"createdAt": "2026-01-15T10:00:00.000Z"
-			},
-			"publicApps": [],
-			"recentComments": []
-		}`))
+		hits++
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 
-	out, err := runRoot(t, server.URL, "users", "profile", "user_legacy_1")
-	if err != nil {
-		t.Fatalf("users profile: %v", err)
+	for _, legacyID := range []string{"user_legacy_1", "user_2Zm9kYc8pQr1StUv"} {
+		_, err := runRoot(t, server.URL, "users", "profile", legacyID)
+		if err == nil {
+			t.Fatalf("users profile %s: expected a local rejection", legacyID)
+		}
+		if !strings.Contains(err.Error(), "u_") || !strings.Contains(err.Error(), "--app-key") {
+			t.Errorf("error = %v, want it to point at the app-scoped u_* id and --app-key", err)
+		}
 	}
-	if gotAppKey != "" {
-		t.Errorf("appKey query param = %q, want it unset for legacy ids", gotAppKey)
-	}
-	if strings.Contains(out, "Apps (") {
-		t.Errorf("placeholder profile should render no app section:\n%s", out)
-	}
-	if !strings.Contains(out, "user_legacy_1") {
-		t.Errorf("output should echo the requested id:\n%s", out)
+	if hits != 0 {
+		t.Errorf("server hit %d time(s), want legacy Clerk ids rejected with no request", hits)
 	}
 }
 
@@ -275,7 +264,7 @@ func TestUsersProfileWorksLoggedOut(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"profile": {
-				"clerkUserId": "user_legacy_1",
+				"clerkUserId": "u_9f2ca1b3d4e5f60718293a4b5c6d7e8f",
 				"displayName": "Ada Lovelace",
 				"avatarUrl": null,
 				"bio": null,
@@ -288,7 +277,7 @@ func TestUsersProfileWorksLoggedOut(t *testing.T) {
 	}))
 	defer server.Close()
 
-	out, err := runRoot(t, server.URL, "users", "profile", "user_legacy_1")
+	out, err := runRoot(t, server.URL, "users", "profile", "u_9f2ca1b3d4e5f60718293a4b5c6d7e8f", "--app-key", "key_live_1")
 	if err != nil {
 		t.Fatalf("users profile logged out: %v", err)
 	}
@@ -407,7 +396,7 @@ func TestUsersProfileResponseEnvelopeContractPin(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"profile": {
-					"clerkUserId": "user_placeholder_1190",
+					"clerkUserId": "u_0123456789abcdef0123456789abcdef",
 					"displayName": null,
 					"avatarUrl": null,
 					"bio": null,
@@ -420,7 +409,7 @@ func TestUsersProfileResponseEnvelopeContractPin(t *testing.T) {
 		}))
 		defer server.Close()
 
-		out, err := runRoot(t, server.URL, "users", "profile", "user_placeholder_1190", "--json")
+		out, err := runRoot(t, server.URL, "users", "profile", "u_0123456789abcdef0123456789abcdef", "--app-key", "key_live_1", "--json")
 		if err != nil {
 			t.Fatalf("users profile --json: %v", err)
 		}
