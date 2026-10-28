@@ -1376,19 +1376,20 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"signed-in callers subscribing with their session's verified email address are exempt",
 		// Changelog flow blockquote: the same gate in the flow summary.
 		"anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed`",
-		// Vote POST row: the field and the silent suppression.
+		// Vote POST row: the field and the observable refusal warning.
 		"optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`)",
 		"on a board whose public config sets `requireAnonymousVoteTurnstile: true`, a missing or failed token rejects the vote outright with the SEC-846 `403`",
-		"on boards without that flag, a missing or failed token leaves the vote itself at `{voted: true, voteCount}` unchanged while the ship-notification opt-in is silently suppressed",
-		// Ship-notification section: the invisible-suppression contract.
+		"on boards without that flag, a missing or failed token leaves the vote itself at `{voted: true, voteCount}` unchanged but the refusal is observable",
+		// Ship-notification section: the observable-warning contract (SaaS
+		// #1472 replaced the old silent suppression).
 		"### Turnstile-gated ship-notification opt-in (#242)",
-		"the response is still the plain `200 {voted: true, voteCount}` with no warning field",
+		"the response carries a `warning` object with `code: \"ship_notify_verification_failed\"`",
 		"no consent row is written and no confirmation email is sent",
-		"a client must never treat a `200` as proof the address was enrolled",
-		// Issue #243 correction: the silent-200 suppression is qualified by
+		"a client must never treat a bare `200` as proof the address was enrolled",
+		// Issue #243 correction: the observable refusal is qualified by
 		// the vote gate — it only applies while the vote itself passes
 		// (flag false); flag-on boards reject the vote instead.
-		"When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that silent state",
+		"When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that warning state",
 		"the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it",
 	} {
 		if !strings.Contains(doc, marker) {
@@ -1410,7 +1411,8 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 
 	// Every SDK skill's vote section must warn custom-voting-UI authors that a
 	// 200 does not prove the ship-notify address was enrolled when Turnstile
-	// verification suppresses the opt-in.
+	// verification fails: the refusal now rides the 200 as the observable
+	// ship_notify_verification_failed warning (SaaS #1472).
 	for _, skill := range []string{
 		"cupthread-swift-sdk",
 		"cupthread-android-sdk",
@@ -1422,12 +1424,13 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
 			for _, marker := range []string{
 				"an anonymous vote that opts in via `shipNotifyEmail` should carry a verified `turnstileToken` (string, 10–2048 chars)",
-				// Both suppression consequences in one pinned phrase: a loose
+				// Both refusal consequences in one pinned phrase: a loose
 				// "no confirmation email" marker would also match the
 				// preceding email_not_verified bullet, hiding an omission
 				// from the Turnstile bullet.
-				"(no consent row, no confirmation email)",
-				"never treat a `200` as proof the address was enrolled",
+				"no consent row is written and no confirmation email is sent",
+				"ship_notify_verification_failed",
+				"a `200` **without** a `warning` means the opt-in was recorded",
 			} {
 				if !strings.Contains(vote, marker) {
 					t.Errorf("%s/SKILL.md vote section is missing required issue-#242 marker %q", skill, marker)
@@ -2560,6 +2563,64 @@ func TestSkillDocsIssue256IntakeResponseShapes(t *testing.T) {
 	} {
 		if !strings.Contains(commentsRow, marker) {
 			t.Errorf("comment-create row is missing required issue-#256 marker %q; got: %s", marker, commentsRow)
+		}
+	}
+}
+
+// TestSkillDocsIssue319ShipNotifyVerificationFailedWarning pins the
+// SaaS#1472/#1387 warning on the vote response (issues #319/#320): when an
+// anonymous voter opts in via shipNotifyEmail but the single Turnstile
+// verdict (SEC-90) is missing or rejected on a board without the hard SEC-846
+// vote gate, the vote still answers 200 {voted, voteCount} — but the refusal
+// now rides the 200 as warning.code "ship_notify_verification_failed" (same
+// shape as the signed-in email_not_verified mismatch) instead of the old
+// silent suppression. The cupthread-api skill must document the observable
+// warning and must no longer claim "no warning field" / "silently
+// suppressed", and each SDK skill's repeated shipNotify bullet must carry the
+// new code. Red-before/green-after: reverting any of the doc phrases below
+// must fail this test.
+func TestSkillDocsIssue319ShipNotifyVerificationFailedWarning(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	const warningCode = "`ship_notify_verification_failed`"
+	const warningError = "Human verification failed, so the ship-notification opt-in was not recorded. Complete the verification and try again."
+
+	for _, marker := range []string{
+		"the refusal is observable (SaaS #1472): the response carries a `warning` object with `code: \"ship_notify_verification_failed\"`",
+		"Treat `ship_notify_verification_failed` as \"opt-in refused (verification)\"",
+		warningError,
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#319 marker %q", marker)
+		}
+	}
+
+	voteRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests/:id/vote` | `POST` |")
+	if !strings.Contains(voteRow, "the response gains `warning {\"code\": \"ship_notify_verification_failed\", \"error\": …}` (SaaS #1472)") {
+		t.Errorf("vote POST row is missing required issue-#319 warning marker; got: %s", voteRow)
+	}
+
+	for _, stale := range []string{
+		"with no warning field",
+		"with no `warning` field",
+		"silently suppressed",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api docs still claim %q (issue #319: the refusal now rides the 200 as warning.code ship_notify_verification_failed)", stale)
+		}
+	}
+
+	for _, sdk := range []string{"cupthread-swift-sdk", "cupthread-android-sdk", "cupthread-react-native-sdk", "cupthread-flutter-sdk"} {
+		sdkDoc := readSkill(t, sdk)
+		for _, marker := range []string{warningCode, warningError} {
+			if !strings.Contains(sdkDoc, marker) {
+				t.Errorf("%s docs are missing required issue-#319 marker %q", sdk, marker)
+			}
+		}
+		for _, stale := range []string{"with no `warning` field", "silently suppressed"} {
+			if strings.Contains(sdkDoc, stale) {
+				t.Errorf("%s docs still claim %q (issue #319: the refusal is observable now)", sdk, stale)
+			}
 		}
 	}
 }
