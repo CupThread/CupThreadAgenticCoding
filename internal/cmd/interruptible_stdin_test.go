@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,32 @@ type failReader struct{}
 
 func (failReader) Read(p []byte) (int, error) {
 	return 0, errors.New("a cancelled context must not reach the underlying reader")
+}
+
+// enteredReader signals entry into Read, so the mid-read cancellation tests
+// can prove the read was genuinely parked in the source when the context was
+// cancelled — a fixed sleep cannot, and would silently degrade to the
+// already-canceled fast path on a loaded machine.
+type enteredReader struct {
+	r       io.Reader
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (e *enteredReader) Read(p []byte) (int, error) {
+	e.once.Do(func() { close(e.entered) })
+	return e.r.Read(p)
+}
+
+// waitEntered blocks until the test's reader observed Read entry, bounded so
+// a wrapper that never reaches the source fails instead of hanging.
+func waitEntered(t *testing.T, entered chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the read never entered the underlying source; cannot exercise the mid-read cancellation branch")
+	}
 }
 
 // TestInterruptibleReaderAlreadyCanceled pins the fast path: a read on a
@@ -65,7 +92,8 @@ func TestInterruptibleReaderReturnsOnCancelMidRead(t *testing.T) {
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { pw.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	ir := interruptibleReader{ctx: ctx, r: pr}
+	entered := make(chan struct{})
+	ir := interruptibleReader{ctx: ctx, r: &enteredReader{r: pr, entered: entered}}
 	type readOutcome struct {
 		n   int
 		err error
@@ -75,7 +103,7 @@ func TestInterruptibleReaderReturnsOnCancelMidRead(t *testing.T) {
 		n, err := ir.Read(make([]byte, 8))
 		done <- readOutcome{n, err}
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitEntered(t, entered)
 	cancel()
 	select {
 	case res := <-done:
@@ -94,16 +122,17 @@ func TestReadConfirmLineAbortsOnContextCancel(t *testing.T) {
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { pw.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
 	type lineOutcome struct {
 		line string
 		err  error
 	}
 	done := make(chan lineOutcome, 1)
 	go func() {
-		line, err := readConfirmLine(ctx, pr)
+		line, err := readConfirmLine(ctx, &enteredReader{r: pr, entered: entered})
 		done <- lineOutcome{line, err}
 	}()
-	time.Sleep(50 * time.Millisecond)
+	waitEntered(t, entered)
 	cancel()
 	select {
 	case res := <-done:
