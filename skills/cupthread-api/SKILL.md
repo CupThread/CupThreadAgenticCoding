@@ -115,7 +115,7 @@ Over-limit → `413 {"error": "Payload exceeds size limit", "code": "payload_too
 
 ### Public board reads: shared cache + gates
 
-Five public GETs (board detail, comment threads, changelog feed, columns, versions) may serve anonymous `200`s from a **30-second shared cache** (`Cache-Control: public, max-age=30`). Token- or session-bearing callers skip the cache in both directions — a personalized body is never served stale or cross-user. Gates run before the cache read: sign-in-only boards still answer `401`, private apps `403`, hidden ids `404`. A just-posted comment or just-published entry can take up to 30 s to appear on anonymous reads.
+Five public GETs (board detail, comment threads, changelog feed, columns, versions) may serve anonymous `200`s from a **30-second shared cache** (`Cache-Control: public, max-age=30`). Token- or session-bearing callers skip the cache in both directions — a personalized body is never served stale or cross-user. Gates run before the cache read: sign-in-only boards still answer `401`; since SaaS #1165/#1171 a disabled app and a hidden id both answer the uniform `404` on the roadmap surfaces (board, columns, versions — `{"error": "App not found"}` vs `{"error": "Feature request not found"}`), while the changelog feed keeps `403 {"error": "Public surfaces are disabled for this app"}` for a private app. A just-posted comment or just-published entry can take up to 30 s to appear on anonymous reads.
 
 ### Per-app anonymous-access enforcement (PRIV-12)
 
