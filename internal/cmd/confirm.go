@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,7 +46,11 @@ func confirmDestructive(cmd *cobra.Command, action string) error {
 		r = os.Stdin
 	}
 	fmt.Fprintf(w, "About to %s. This cannot be undone. Continue? [yN] ", action)
-	answer := strings.ToLower(strings.TrimSpace(readConfirmLine(r)))
+	answer, err := readConfirmLine(cmd.Context(), r)
+	if err != nil {
+		return fmt.Errorf("aborted: interrupted — %s was not confirmed, nothing was changed", path)
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
 	if answer == "y" || answer == "yes" {
 		return nil
 	}
@@ -62,13 +68,23 @@ func stdinIsTerminal() bool {
 
 // readConfirmLine reads one answer line without buffering past the newline,
 // so input the caller typed ahead is left unread for the rest of the process.
-func readConfirmLine(r io.Reader) string {
+// The read goes through interruptibleReader: behind Execute's NotifyContext
+// handlers a raw byte-at-a-time stdin read can never be interrupted, so
+// Ctrl-C at the prompt would park forever (issue #315). A context
+// cancellation returns the context error — surfaced as the aborted-without-
+// mutation error — while EOF still yields whatever was typed, keeping the
+// Ctrl-D escape working.
+func readConfirmLine(ctx context.Context, r io.Reader) (string, error) {
+	ir := interruptibleReader{ctx: ctx, r: r}
 	var sb strings.Builder
 	buf := make([]byte, 1)
 	for {
-		n, err := r.Read(buf)
+		n, err := ir.Read(buf)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
 		if n == 0 || err != nil || buf[0] == '\n' {
-			return sb.String()
+			return sb.String(), nil
 		}
 		sb.WriteByte(buf[0])
 	}

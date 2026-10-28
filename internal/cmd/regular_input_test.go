@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 func TestReadInputFileRejectsNonRegularFile(t *testing.T) {
 	dir := t.TempDir()
 	for _, arg := range []string{dir, "@" + dir} {
-		_, err := readInputFile(arg, 1024)
+		_, err := readInputFile(context.Background(), arg, 1024)
 		var nrf *NotRegularFileError
 		if !errors.As(err, &nrf) {
 			t.Fatalf("readInputFile(%q) err = %v, want NotRegularFileError", arg, err)
@@ -53,7 +54,7 @@ func TestReadInputFileRegularFilesUnchanged(t *testing.T) {
 		{"@path to empty file", "@" + emptyPath, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := readInputFile(tc.arg, maxConsoleBodyBytes)
+			out, err := readInputFile(context.Background(), tc.arg, maxConsoleBodyBytes)
 			if err != nil {
 				t.Fatalf("readInputFile(%q): %v", tc.arg, err)
 			}

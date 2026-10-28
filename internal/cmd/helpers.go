@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,20 +107,70 @@ func humanBytes(n int64) string {
 // writer-less FIFO cannot park open(2) past SIGTERM, and the descriptor's own
 // kind is verified before the first read, so a FIFO, character device, or
 // other non-regular source fails fast with NotRegularFileError instead of
-// hanging. Stdin stays a plain bounded read — a blocking stdin read is
-// conventional and signal-interruptible. Every form reads exactly one byte
-// past the cap to detect overflow, so an unbounded source is cut off instead
-// of being read into memory to exhaustion; the error is returned before any
-// request is built or sent. A file whose literal name starts with "@" is
-// referenced via the plain-path branch, e.g. ./@name.
-func readInputFile(path string, max int64) ([]byte, error) {
+// hanging. Stdin goes through interruptibleReader: once Execute installs the
+// NotifyContext handlers the default SIGINT/SIGTERM disposition is gone for
+// the whole process, so a plain blocking stdin read can never be interrupted
+// — only the command's context observes the signal (issue #315). Every form
+// reads exactly one byte past the cap to detect overflow, so an unbounded
+// source is cut off instead of being read into memory to exhaustion; the
+// error is returned before any request is built or sent. A file whose literal
+// name starts with "@" is referenced via the plain-path branch, e.g. ./@name.
+func readInputFile(ctx context.Context, path string, max int64) ([]byte, error) {
 	if path == "@" || path == "-" {
-		return readBounded(os.Stdin, max)
+		return readBounded(interruptibleReader{ctx: ctx, r: os.Stdin}, max)
 	}
 	if strings.HasPrefix(path, "@") {
 		path = path[1:]
 	}
 	return readRegularFile(path, max)
+}
+
+// interruptibleReader makes a blocking reader — always os.Stdin in
+// production, or the confirm prompt's stdin — observe the command's context:
+// Execute runs every command under signal.NotifyContext, which replaces the
+// default SIGINT/SIGTERM disposition process-wide, so the raw read itself is
+// never interrupted and would stay parked until EOF or SIGKILL (issue #315).
+// Each Read parks in a goroutine and selects on ctx.Done(), returning the
+// context error on cancellation. The parked goroutine reads into its own
+// buffer, never the caller's: after a cancellation wins the select, a
+// late-completing read cannot race a caller that has already moved on, and
+// the buffered result channel lets the goroutine exit instead of leaking.
+// The goroutine itself only unblocks on data, EOF, or process exit — fine
+// for a CLI, which is exiting by the time this matters.
+type interruptibleReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (ir interruptibleReader) Read(p []byte) (int, error) {
+	// A nil ctx (a hand-built cobra command never run through Execute)
+	// degrades to the pre-#315 behavior instead of panicking: there is no
+	// context to observe, exactly like the plain read this wrapper replaced.
+	ctx := ir.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	type readResult struct {
+		n   int
+		buf []byte
+		err error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, len(p))
+		n, err := ir.r.Read(buf)
+		ch <- readResult{n: n, buf: buf[:n], err: err}
+	}()
+	select {
+	case res := <-ch:
+		copy(p, res.buf)
+		return res.n, res.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 // readBounded is readInputFile's core, split out so tests can drive it with

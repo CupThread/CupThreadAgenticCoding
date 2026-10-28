@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +58,7 @@ include that value in bug reports and support requests.`,
 
 			var body json.RawMessage
 			if inputPath != "" {
-				data, err := readInputFile(inputPath, bodyLimitForPath(path))
+				data, err := readInputFile(cmd.Context(), inputPath, bodyLimitForPath(path))
 				if err != nil {
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
@@ -183,13 +184,13 @@ const signingEnvSecret = "CUPTHREAD_SDK_SIGNING_SECRET"
 // $CUPTHREAD_SDK_SIGNING_SECRET environment fallback (trimmed), and an error
 // names every accepted source when none is set. inputPath is checked first so
 // --secret and --input cannot both consume stdin in one invocation.
-func resolveSigningSecret(secretFlag, inputPath string) (string, error) {
+func resolveSigningSecret(ctx context.Context, secretFlag, inputPath string) (string, error) {
 	readsStdin := func(v string) bool { return v == "-" || v == "@" }
 	if readsStdin(secretFlag) {
 		if readsStdin(inputPath) {
 			return "", errors.New("--secret and --input cannot both read stdin; pass at least one as a file path")
 		}
-		data, err := readInputFile(secretFlag, maxSecretBytes)
+		data, err := readInputFile(ctx, secretFlag, maxSecretBytes)
 		if err != nil {
 			return "", err
 		}
@@ -276,7 +277,7 @@ to the body without changing the signed values.`,
 			if inputPath == "" {
 				return errors.New("--input is required (the exact JSON body you will send)")
 			}
-			secret, err := resolveSigningSecret(secretFlag, inputPath)
+			secret, err := resolveSigningSecret(cmd.Context(), secretFlag, inputPath)
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
@@ -285,7 +286,7 @@ to the body without changing the signed values.`,
 			}
 			// The signed body targets PUT /api/v1/public/apps/{appKey}/user,
 			// so it is capped at the public route's 256 KB intake limit.
-			body, err := readInputFile(inputPath, maxPublicBodyBytes)
+			body, err := readInputFile(cmd.Context(), inputPath, maxPublicBodyBytes)
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr

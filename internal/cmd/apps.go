@@ -792,7 +792,7 @@ with input_too_large before any request is sent.`,
 			// integers a float64 cannot represent exactly.
 			body := map[string]json.RawMessage{}
 			if inputPath != "" {
-				data, err := readInputFile(inputPath, maxConsoleBodyBytes)
+				data, err := readInputFile(cmd.Context(), inputPath, maxConsoleBodyBytes)
 				if err != nil {
 					if perr := A.reportInputTooLarge(err); perr != nil {
 						return perr
