@@ -2380,3 +2380,41 @@ func TestSkillDocsIssue259PublicChangelogFeedSchema(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillDocsIssue248FeedbackIntakeContract pins the corrected public
+// intake contracts (issue #248, SaaS #1117 / PR #1119): POST /api/v1/feedback
+// requires `platform` (exactly ios/macos/android/universal — never the
+// documented-but-rejected web/other) and `appKey`, carries the corrected
+// field bounds with no `systemVersion`, and documents its full deterministic
+// status-code set (400/401/402/403/404/413/429) — while POST
+// /api/v1/feature-requests/{id}/comments takes a `body` of at most 2000
+// chars and no author identity fields (the server derives and strips them).
+func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// Corrected FeedbackSubmissionInput schema (reference/endpoints.md).
+		"Corrected request schema `FeedbackSubmissionInput` (SaaS #1117 / PR #1119)",
+		"`platform` is **required** and accepts exactly `\"ios\"`, `\"macos\"`, `\"android\"`, or `\"universal\"`",
+		"the documented-but-rejected `\"web\"`/`\"other\"` values are removed and `\"universal\"` is the only cross-platform value",
+		"`appKey` (8–128 chars) is **required**",
+		"`systemVersion` was never accepted and is removed from the schema",
+		"`title` 3–160, `description` 5–10000, `reporterName` 1–120 (optional, non-nullable), `reporterEmail` optional email (non-nullable)",
+		"`appVersion`/`buildNumber` 1–64 (optional), `uploadIds` items 1–128 chars with at most 8 entries, `attachments` at most 8 entries",
+		"omitting `metadata`, `uploadIds`, or `attachments` is equivalent to sending `{}`/`[]`/`[]`",
+		// Full deterministic status-code set for POST /api/v1/feedback.
+		"`402` the workspace's monthly submission quota is exceeded or its subscription is inactive (`tier_limit_submissions`)",
+		"`413` request body over the public JSON size limit (`payload_too_large`)",
+		"`403` Turnstile verification failures **and**, additionally, \"public feedback is disabled for the app\"",
+		"`400` schema validation only (including a `platform` value the app does not allow) — it no longer covers rate limiting",
+		// Corrected CreateFeatureRequestCommentInput schema.
+		"Corrected request schema `CreateFeatureRequestCommentInput` (SaaS #1117 / PR #1119)",
+		"`body` max length is **2000** (the previously documented 4000 was wrong)",
+		"the author fields `authorName`, `authorEmail`, `authorAvatarUrl`, and `replyToClerkId` are removed from the schema",
+		"the server always derives author identity server-side and silently strips such request fields, so sending them is accepted but never stored",
+		"`parentId` and `replyToAuthorName` remain optional string fields",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#248 marker %q", marker)
+		}
+	}
+}
