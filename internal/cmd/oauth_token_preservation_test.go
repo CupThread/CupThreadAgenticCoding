@@ -110,6 +110,25 @@ func TestApplyTokenSetPreservesCarriedFieldsOnly(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("degraded refresh memo follows the advertised expiry", func(t *testing.T) {
+		a := &app{out: output.New(io.Discard, output.FormatTable), cfg: &config.Config{Auth: &config.Auth{
+			Method: "oauth", AccessToken: "cpt_old", RefreshToken: "cpr_keep", ExpiresAt: futureExpiry,
+		}}}
+		stderr := captureStderr(t, func() {
+			a.applyTokenSet(&auth.TokenSet{AccessToken: "cpt_degraded"})
+			if a.degradedRefreshAccessToken != "cpt_degraded" {
+				t.Errorf("degradedRefreshAccessToken = %q, want the degraded access token recorded", a.degradedRefreshAccessToken)
+			}
+			a.applyTokenSet(&auth.TokenSet{AccessToken: "cpt_full", ExpiresIn: 3600})
+			if a.degradedRefreshAccessToken != "" {
+				t.Errorf("degradedRefreshAccessToken = %q, want it cleared once an expiry is advertised again", a.degradedRefreshAccessToken)
+			}
+		})
+		if stderr != "" {
+			t.Errorf("stderr = %q, want no warning while a still-future expiry is stored", stderr)
+		}
+	})
 }
 
 // TestRefreshKeepsCredentialWhenResponseOmitsFields is the issue #314
@@ -338,4 +357,113 @@ func TestLoginKeepsStoredCredentialWhenResponseOmitsFields(t *testing.T) {
 			t.Errorf("stderr does not name the omitted expires_in:\n%s", stderr)
 		}
 	})
+}
+
+// TestLoginAcrossIssuersDropsPreviousRefreshCredential pins the issue #314
+// review follow-up: a fresh login against a different issuer is a
+// replacement, so when its response omits refresh_token the previous
+// issuer's refresh token must not survive applyTokenSet's preservation —
+// otherwise the next transparent refresh would send the old issuer's
+// refresh token to the newly pinned issuer.
+func TestLoginAcrossIssuersDropsPreviousRefreshCredential(t *testing.T) {
+	oldIssuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer oldIssuer.Close()
+	server := oauthProbeServer(t, http.StatusOK, 0)
+	defer server.Close()
+
+	t.Run("degraded response does not carry the old issuer's refresh token over", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		seedOAuthConfig(t, cfgPath, oldIssuer.URL, "cpt_old_access", "cpr_old_issuer_refresh", time.Now().Add(time.Hour))
+		stopStdout := captureStdStream(t, &os.Stdout)
+		stopStderr := captureStdStream(t, &os.Stderr)
+		installOAuthApp(t, cfgPath, server.URL)
+
+		if err := finishOAuthLogin(context.Background(), &auth.TokenSet{AccessToken: "cpt_login_access"}, loginResult{Method: "oauth"}); err != nil {
+			t.Fatalf("finishOAuthLogin: %v", err)
+		}
+		stopStdout()
+		stopStderr()
+
+		disk := readConfigFile(t, cfgPath).Auth
+		if disk == nil {
+			t.Fatal("on-disk auth is nil after login")
+		}
+		if disk.RefreshToken != "" {
+			t.Errorf("on-disk RefreshToken = %q, want the old issuer's refresh token dropped", disk.RefreshToken)
+		}
+		if disk.IssuedBaseURL != server.URL {
+			t.Errorf("on-disk IssuedBaseURL = %q, want the new issuer %q", disk.IssuedBaseURL, server.URL)
+		}
+		if disk.AccessToken != "cpt_login_access" {
+			t.Errorf("on-disk AccessToken = %q, want the freshly issued one", disk.AccessToken)
+		}
+	})
+
+	t.Run("a full response still rotates the pair across issuers", func(t *testing.T) {
+		cfgPath := filepath.Join(t.TempDir(), "config.json")
+		seedOAuthConfig(t, cfgPath, oldIssuer.URL, "cpt_old_access", "cpr_old_issuer_refresh", time.Now().Add(time.Hour))
+		stopStdout := captureStdStream(t, &os.Stdout)
+		stopStderr := captureStdStream(t, &os.Stderr)
+		installOAuthApp(t, cfgPath, server.URL)
+
+		set := &auth.TokenSet{AccessToken: "cpt_login_access", RefreshToken: "cpr_new_issuer_refresh", ExpiresIn: 3600}
+		if err := finishOAuthLogin(context.Background(), set, loginResult{Method: "oauth"}); err != nil {
+			t.Fatalf("finishOAuthLogin: %v", err)
+		}
+		stopStdout()
+		stopStderr()
+
+		disk := readConfigFile(t, cfgPath).Auth
+		if disk == nil {
+			t.Fatal("on-disk auth is nil after login")
+		}
+		if disk.RefreshToken != "cpr_new_issuer_refresh" {
+			t.Errorf("on-disk RefreshToken = %q, want the new issuer's rotation applied", disk.RefreshToken)
+		}
+	})
+}
+
+// TestDegradedRefreshRunsOncePerProcess pins the issue #314 review follow-up:
+// with no advertised expiry the stored expiry stays stale, and without the
+// degraded-refresh memo every later request of the same process would re-POST
+// the token endpoint. The memo makes the minted access token skip proactive
+// refresh until it changes, while a fresh process (a new invocation) still
+// refreshes, keeping the guard reachable across invocations.
+func TestDegradedRefreshRunsOncePerProcess(t *testing.T) {
+	var tokenPosts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/oauth/token" {
+			tokenPosts.Add(1)
+			_, _ = w.Write([]byte(noRotateTokenSetBody))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	withRaceTestEnv(t, server.URL)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	seedOAuthConfig(t, cfgPath, server.URL, staleAccess, staleRefresh, time.Now().Add(-time.Hour))
+
+	a := raceTestApp(t, cfgPath, server.URL)
+	var first, second string
+	var firstErr, secondErr error
+	stderr := captureStderr(t, func() {
+		first, firstErr = a.client.Token(context.Background())
+		second, secondErr = a.client.Token(context.Background())
+	})
+	if firstErr != nil || secondErr != nil {
+		t.Fatalf("token provider: %v / %v", firstErr, secondErr)
+	}
+	if got := tokenPosts.Load(); got != 1 {
+		t.Errorf("token endpoint POSTs after two same-process requests = %d, want 1 (the degraded refresh memo must skip the repeat)", got)
+	}
+	if first != "cpt_norotate_access" || second != first {
+		t.Errorf("tokens = %q / %q, want the minted access token both times", first, second)
+	}
+	if n := strings.Count(stderr, "warning:"); n != 1 {
+		t.Errorf("stderr has %d warning lines, want exactly 1 for the single degraded refresh:\n%s", n, stderr)
+	}
 }

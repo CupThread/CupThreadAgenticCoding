@@ -263,6 +263,19 @@ func finishOAuthLogin(ctx context.Context, set *auth.TokenSet, res loginResult) 
 	if set == nil || set.AccessToken == "" {
 		return errors.New("login flow returned no access token; the stored credential was left unchanged")
 	}
+	// A fresh login over a credential from a different issuer is a
+	// replacement, not a refresh. applyTokenSet's preservation (issue #314)
+	// keeps a stored refresh token the response omits — right for a
+	// same-issuer re-login, but across issuers the old token would stay
+	// attached to a credential rememberLoginBaseURL re-pins to the new
+	// issuer, and the next transparent refresh would send the old issuer's
+	// refresh token there. Drop the previous credential's refresh state
+	// first; the new issuer can only ever receive its own tokens.
+	if prev := A.cfg.Auth; prev != nil && prev.Method == "oauth" && prev.RefreshToken != "" &&
+		prev.IssuerBaseURL(A.cfg.BaseURL) != A.baseURL() {
+		prev.RefreshToken = ""
+		prev.ExpiresAt = ""
+	}
 	A.applyTokenSet(set)
 	A.rememberLoginBaseURL()
 	// Persist the freshly issued pair BEFORE the session check: the pair was
