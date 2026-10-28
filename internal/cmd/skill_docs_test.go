@@ -697,7 +697,7 @@ func TestAPISkillIssue132(t *testing.T) {
 		"`code: \"website_url_not_allowed\"`",
 		"either `null` or a managed `https:` URL",
 		"served as `null`",
-		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](#profile-avatar-urls-are-managed-host-only-priv-19)",
+		"[Profile Avatar URLs Are Managed-Host-Only (PRIV-19)](user-identity-and-privacy.md#profile-avatar-urls-are-managed-host-only-priv-19)",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#132 marker %q", marker)
@@ -1135,7 +1135,7 @@ func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
 		// PRIV-12 matrix rows and the ordering note.
 		"| `GET /api/v1/feature-requests/:id` | anonymous read, `allowAnonymousRoadmap` off | `401` `authentication_required` |",
 		"| `GET /api/v1/feature-requests/:id` | request exists but is **unapproved** |",
-		"the comments-thread and single-request-detail `401` checks run **after** existence hiding",
+		"the `401` gate runs **after** the missing/private existence `404` but **before** the approved `404`",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#231 marker %q", marker)
@@ -1151,6 +1151,9 @@ func TestAPISkillIssue231SingleFeatureRequestRead(t *testing.T) {
 		"those four may come from a 30-second shared cache",
 		// The pre-sync ordering note, which named only the comments thread.
 		"the comments-thread `401` check runs **after** existence hiding",
+		// The pre-sync ordering conclusion, which missed that a missing id
+		// still answers 404 (gate sits between the two 404 checks).
+		"cannot distinguish existing ids from missing ones",
 	} {
 		if strings.Contains(doc, stale) {
 			t.Errorf("cupthread-api/SKILL.md still says %q", stale)
