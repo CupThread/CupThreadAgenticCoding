@@ -434,10 +434,23 @@ func newInboxRetryCmd() *cobra.Command {
 	}
 }
 
+// deliveryJobsPageSize is the delivery-queue listing's hardcoded server
+// window: the route takes no query parameters and passes a literal 50 to
+// listDeliveryJobsForWorkspace (SaaS apps/api/src/domains/jobs/routes.ts,
+// ORDER BY created_at DESC LIMIT ?), so the newest 50 jobs are all any
+// client can see (issue #352).
+const deliveryJobsPageSize = 50
+
 func newInboxDeliveriesCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                   "deliveries",
-		Short:                 "Show GitHub delivery queue jobs",
+		Use:   "deliveries",
+		Short: "Show GitHub delivery queue jobs (newest first)",
+		Long: `Show GitHub delivery queue jobs (newest first).
+
+The server caps this listing at the newest 50 jobs and offers no paging or
+total, so older jobs — including failed or dead ones — can be missing from
+the view. When the cap is hit the command says so, in table mode on stdout
+and in --json/-o yaml mode on stderr.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -449,7 +462,11 @@ func newInboxDeliveriesCmd() *cobra.Command {
 				return err
 			}
 			if A.structured() {
-				return A.out.Structured(resp)
+				if err := A.out.Structured(resp); err != nil {
+					return err
+				}
+				A.warnDeliveryJobsTruncation(&resp)
+				return nil
 			}
 			rows := make([][]string, 0, len(resp.Jobs))
 			for _, j := range resp.Jobs {
@@ -464,8 +481,29 @@ func newInboxDeliveriesCmd() *cobra.Command {
 				})
 			}
 			A.out.Table([]string{"Job", "Submission", "Status", "Attempts", "Next attempt", "Last error"}, rows)
+			if resp.Total != nil {
+				A.out.Printf("(%d shown, %d total)", len(resp.Jobs), *resp.Total)
+			}
+			A.warnDeliveryJobsTruncation(&resp)
 			return nil
 		},
+	}
+}
+
+// warnDeliveryJobsTruncation discloses the delivery-queue listing's
+// server-side window so a full page is never indistinguishable from the
+// whole queue (issue #352, the #346 disclosure discipline). Today's route
+// sends no total, so a cap-sized answer is the only honest truncation signal
+// and carries a "may be" (a queue of exactly 50 jobs trips it too); once the
+// SaaS side adds total, the notice keys off total > shown instead. warnf
+// routes the notice: stdout in table mode, stderr in --json/-o yaml mode so
+// the structured document stays byte-faithful.
+func (a *app) warnDeliveryJobsTruncation(resp *api.ListDeliveryJobsResponse) {
+	switch {
+	case resp.Total != nil && *resp.Total > len(resp.Jobs):
+		a.warnf("⚠ Delivery queue is truncated: showing the %d newest of %d jobs; older jobs (including failed or dead ones) are not retrievable through this listing", len(resp.Jobs), *resp.Total)
+	case resp.Total == nil && len(resp.Jobs) >= deliveryJobsPageSize:
+		a.warnf("⚠ Delivery queue may be truncated: this listing serves only the newest %d jobs (server cap, no paging or total); older jobs — including failed or dead ones — are not shown", deliveryJobsPageSize)
 	}
 }
 

@@ -239,13 +239,20 @@ cupthread inbox triage <feedback-id> in_progress   # Set triage status: open | i
 cupthread inbox assign <feedback-id> <clerk-user-id>  # Assign to a workspace member (omit ID to unassign)
 cupthread inbox bulk-triage <id1> <id2> --triage-status resolved  # Bulk update 1-50 submissions (also --assignee / --unassign)
 cupthread inbox retry <feedback-id>        # Retry GitHub forwarding for a failed delivery
-cupthread inbox deliveries                 # Show the GitHub delivery queue (status, attempts, last error)
+cupthread inbox deliveries                 # Show the GitHub delivery queue (newest 50 only; status, attempts, last error)
 ```
 The whole `inbox` group is `[token-safe]` (workspace.read / content.manage).
 
 > Delivery `status` (`received` / `forwarded` / `forward_failed`) is managed by
 > the platform and is separate from the triage lifecycle — use `inbox triage`
 > (never a `--status` flag) to change triage state.
+
+`inbox deliveries` is **not paginated**: the server answers only the newest
+**50** jobs of the workspace queue (no `total`, no `--limit`/`--offset`), so
+older jobs — including `failed`/`dead` ones — can be missing from the view.
+The CLI prints a `⚠` truncation advisory whenever a cap-sized answer comes
+back (on stderr in `--json`/`-o yaml` mode); treat an advisory as "the queue
+may have older failures", not as a complete history.
 
 `inbox list` is offset/limit-paginated with a server page cap of **200**:
 the CLI clamps `--limit` into 1–200 locally (a value outside the range is

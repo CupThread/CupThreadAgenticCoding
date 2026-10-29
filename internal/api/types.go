@@ -232,6 +232,10 @@ type DeliveryJob struct {
 
 type ListDeliveryJobsResponse struct {
 	Jobs []DeliveryJob `json:"jobs"`
+	// Total is absent from today's route (issue #352); the pointer keeps
+	// decoding and structured output byte-faithful until the SaaS side adds
+	// it, at which point the CLI prints the sibling (N shown, M total) footer.
+	Total *int `json:"total,omitempty"`
 }
 
 // ─── Feature requests ────────────────────────────────────────────────────────

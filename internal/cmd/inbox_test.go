@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -565,5 +566,132 @@ func TestInboxListClampsOffset(t *testing.T) {
 	assertNoTableOutput(t, stdout)
 	if !strings.Contains(stderr, "⚠ --offset 15000 is outside the server's 0-10000 page range; requesting 10000 instead") {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}
+
+// deliveryJobsArray renders n minimal delivery jobs as a JSON array body
+// (without brackets), half of them failed so the truncation advisory's
+// "including failed or dead ones" stakes are visible in the rows under test.
+func deliveryJobsArray(n int) string {
+	jobs := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		status := "succeeded"
+		lastError := "null"
+		if i%2 == 1 {
+			status = "failed"
+			lastError = `"github 500"`
+		}
+		jobs = append(jobs, fmt.Sprintf(
+			`{"id":"job_%03d","submissionId":"sub_%03d000000000000","workspaceId":"ws_1","status":%q,"attempts":3,"maxAttempts":3,"nextAttemptAt":"","lastError":%s,"createdAt":"2026-10-%02dT00:00:00.000Z","updatedAt":"2026-10-%02dT00:00:00.000Z"}`,
+			i, i, status, lastError, (i%28)+1, (i%28)+1))
+	}
+	return strings.Join(jobs, ",")
+}
+
+// deliveryJobsFixture wraps deliveryJobsArray as today's route answer: a
+// {"jobs": [...]} document with no total (issue #352).
+func deliveryJobsFixture(n int) string {
+	return `{"jobs":[` + deliveryJobsArray(n) + `]}`
+}
+
+// TestInboxDeliveriesDisclosesServerCap pins the issue #352 client-side half:
+// the route hardcodes a newest-50 window with no total and no paging, so a
+// cap-sized answer must say so instead of reading as a complete queue. A
+// 50-job response renders the advisory after the table; a 49-job response
+// stays advisory-free (stable output shape).
+func TestInboxDeliveriesDisclosesServerCap(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var captured capturedRequest
+	server := inboxServer(t, http.StatusOK, deliveryJobsFixture(deliveryJobsPageSize), &captured)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "inbox", "deliveries", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox deliveries: %v", err)
+	}
+	if !strings.Contains(out, "job_000") || !strings.Contains(out, "failed") {
+		t.Errorf("table output missing job rows:\n%s", out)
+	}
+	if !strings.Contains(out, "⚠ Delivery queue may be truncated: this listing serves only the newest 50 jobs (server cap, no paging or total); older jobs — including failed or dead ones — are not shown") {
+		t.Errorf("cap-sized output missing truncation advisory:\n%s", out)
+	}
+	if strings.Contains(out, "shown,") {
+		t.Errorf("no-total response must not print the shown/total footer:\n%s", out)
+	}
+
+	server2 := inboxServer(t, http.StatusOK, deliveryJobsFixture(deliveryJobsPageSize-1), &captured)
+	defer server2.Close()
+	out, err = runRoot(t, server2.URL, "inbox", "deliveries", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox deliveries (49 jobs): %v", err)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("sub-cap output produced an advisory:\n%s", out)
+	}
+}
+
+// TestInboxDeliveriesJSONNoticeOnStderr pins the structured half of #352:
+// stdout stays a single byte-faithful jobs document (no total key, no human
+// markers) and the advisory moves to stderr.
+func TestInboxDeliveriesJSONNoticeOnStderr(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := inboxServer(t, http.StatusOK, deliveryJobsFixture(deliveryJobsPageSize), &capturedRequest{})
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"inbox", "deliveries", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("inbox deliveries --json: %v", err)
+	}
+	assertNoTableOutput(t, stdout)
+	doc := unmarshalOneJSON(t, stdout)
+	jobs, ok := doc["jobs"].([]any)
+	if !ok || len(jobs) != deliveryJobsPageSize {
+		t.Fatalf("stdout jobs = %T len %v, want %d entries", doc["jobs"], len(jobs), deliveryJobsPageSize)
+	}
+	if _, present := doc["total"]; present {
+		t.Errorf("structured stdout grew a total key the server never sent:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "⚠ Delivery queue may be truncated: this listing serves only the newest 50 jobs") {
+		t.Errorf("json stderr missing truncation advisory:\n%s", stderr)
+	}
+}
+
+// TestInboxDeliveriesTotalFooterAndNotice pins the forward-compatible half of
+// #352: once the SaaS route answers total, the CLI prints the sibling
+// (N shown, M total) footer and keys the notice off total > shown — present
+// only when rows were actually cut.
+func TestInboxDeliveriesTotalFooterAndNotice(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var captured capturedRequest
+	server := inboxServer(t, http.StatusOK, `{"jobs":[`+deliveryJobsArray(2)+`], "total": 57}`, &captured)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "inbox", "deliveries", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox deliveries (total 57): %v", err)
+	}
+	if !strings.Contains(out, "(2 shown, 57 total)") {
+		t.Errorf("output missing sibling footer:\n%s", out)
+	}
+	if !strings.Contains(out, "⚠ Delivery queue is truncated: showing the 2 newest of 57 jobs; older jobs (including failed or dead ones) are not retrievable through this listing") {
+		t.Errorf("output missing truncation notice:\n%s", out)
+	}
+
+	server2 := inboxServer(t, http.StatusOK, `{"jobs":[`+deliveryJobsArray(2)+`], "total": 2}`, &captured)
+	defer server2.Close()
+	out, err = runRoot(t, server2.URL, "inbox", "deliveries", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox deliveries (total 2): %v", err)
+	}
+	if !strings.Contains(out, "(2 shown, 2 total)") {
+		t.Errorf("output missing sibling footer:\n%s", out)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("complete queue produced a truncation notice:\n%s", out)
 	}
 }
