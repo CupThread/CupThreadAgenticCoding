@@ -484,6 +484,10 @@ type ImportJob struct {
 
 type ListImportJobsResponse struct {
 	Jobs []ImportJob `json:"jobs"`
+	// Total is absent from today's routes (issue #346); the pointer keeps
+	// decoding and structured output byte-faithful until the SaaS side adds
+	// it, at which point the CLI prints the sibling (N shown, M total) footer.
+	Total *int `json:"total,omitempty"`
 }
 
 type GetImportJobResponse struct {
