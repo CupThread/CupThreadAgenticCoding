@@ -2637,7 +2637,7 @@ func TestSkillDocsIssue322ErrorResponseDetails(t *testing.T) {
 	doc := readSkill(t, "cupthread-api")
 	for _, marker := range []string{
 		"Validation `400`s (`\"error\": \"Validation failed\"`) additionally carry an optional `details` object",
-		"the zod `flatten()` output `{formErrors: string[], fieldErrors: {field: string[]}}` (SaaS #1475)",
+		"the zod `flatten()` output `{formErrors: string[], fieldErrors: Record<fieldName, string[]>}` (SaaS #1475)",
 		"it is absent on every other error",
 		"render the per-field reasons from it when present instead of only the generic message",
 		"The CLI's `APIError` already exposes it verbatim as `Details`",
