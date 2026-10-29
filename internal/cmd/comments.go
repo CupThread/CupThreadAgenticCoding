@@ -104,6 +104,17 @@ func notFoundErr(kind, id, ws string) error {
 	return fmt.Errorf("%s %q not found in workspace %s", kind, id, ws)
 }
 
+// apiNotFound reports whether err is (or wraps) an API 404. errors.As is the
+// required idiom — not a direct err.(*api.APIError) assertion, as the sibling
+// command files use — because the client wraps selected statuses (402 tier
+// limit, 429 rate limited, hinted 401/403), and a future wrap of the 404 path
+// must keep the not-found conversions above working instead of silently
+// degrading every moderation message to the raw APIError (issue #360).
+func apiNotFound(err error) bool {
+	var apiErr *api.APIError
+	return errors.As(err, &apiErr) && apiErr.NotFound()
+}
+
 func newCommentsModerationListCmd() *cobra.Command {
 	list := &cobra.Command{
 		Use:   "list <feature-request-id>",
@@ -124,7 +135,7 @@ func newCommentsModerationListCmd() *cobra.Command {
 				}
 				var page api.ListCommentsResponse
 				if err := A.client.Do(cmd.Context(), "GET", path, q, nil, &page); err != nil {
-					if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+					if apiNotFound(err) {
 						return nil, notFoundErr("feature request", args[0], ws)
 					}
 					return nil, err
@@ -164,7 +175,7 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 			var resp api.SuccessResponse
 			body := api.HideCommentInput{IsHidden: hidden}
 			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+pathID(args[0])+"/hide"), nil, body, &resp); err != nil {
-				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+				if apiNotFound(err) {
 					return notFoundErr("comment", args[0], ws)
 				}
 				return err
@@ -202,7 +213,7 @@ before anything is sent; non-interactive callers must pass --yes.`,
 			}
 			var resp api.SuccessResponse
 			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+pathID(args[0])), nil, nil, &resp); err != nil {
-				if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+				if apiNotFound(err) {
 					return notFoundErr("comment", args[0], ws)
 				}
 				return err
@@ -252,7 +263,7 @@ disabled answer 401.`,
 					// missing id and for an unapproved request (existence
 					// hiding), so the message must not imply the request never
 					// existed.
-					if apiErr, ok := err.(*api.APIError); ok && apiErr.NotFound() {
+					if apiNotFound(err) {
 						return nil, fmt.Errorf("comments for feature request %q are not available: the request may not exist, may be private, or may not be approved yet (unapproved requests are hidden from the public board)", args[0])
 					}
 					return nil, err
