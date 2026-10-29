@@ -382,6 +382,114 @@ func TestChangelogCreatePublishNowInteractiveSessionRequired(t *testing.T) {
 	}
 }
 
+// TestChangelogCreatePublishNowScheduleAtMutuallyExclusive is the issue #369
+// guard: with both flags passed, the server silently resolved the pair in
+// favor of --publish-now (createChangelogEntry drops scheduledAt when
+// publishNow is set), so the entry published immediately and notified every
+// board subscriber while the requested schedule was dropped, with exit code
+// 0 — the opposite of what the invocation asked for, and irreversible once
+// the notification fan-out ran. The pair is now refused before any request,
+// mirroring the --enable/--disable and --events/--all-events guards in
+// notifications prefs set (issues #364, #367). The contradiction also
+// outranks the --schedule-at datetime validation, so a caller with a
+// badly-formatted datetime sees the conflict first instead of fixing the
+// format and hitting the same refusal on the next run.
+func TestChangelogCreatePublishNowScheduleAtMutuallyExclusive(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var refused []byte
+	refuseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refused, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
+	}))
+	t.Cleanup(refuseServer.Close)
+
+	_, err := runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--title", "v1.2.0", "--body", "Hello", "--publish-now", "--schedule-at", "2026-11-05T09:00:00Z")
+	if err == nil || !strings.Contains(err.Error(), "--publish-now and --schedule-at are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal", err)
+	}
+	if len(refused) != 0 {
+		t.Errorf("conflicting flags reached the API: %s", refused)
+	}
+
+	_, err = runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--title", "v1.2.0", "--body", "Hello", "--publish-now", "--schedule-at", "2026-11-05")
+	if err == nil || !strings.Contains(err.Error(), "--publish-now and --schedule-at are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal to outrank the datetime check", err)
+	}
+	if len(refused) != 0 {
+		t.Errorf("conflicting flags reached the API: %s", refused)
+	}
+
+	// A passed-but-empty --schedule-at is not a contradiction: on create ""
+	// is simply omitted from the body, so the invocation is just
+	// --publish-now and must still send publishNow: true with no scheduledAt
+	// key rather than being refused.
+	var gotBody []byte
+	publishServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cl_new_1"}`))
+	}))
+	t.Cleanup(publishServer.Close)
+
+	if _, err := runRoot(t, publishServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+		"--title", "v1.2.0", "--body", "Hello", "--publish-now", "--schedule-at", ""); err != nil {
+		t.Fatalf(`create --publish-now --schedule-at "": %v`, err)
+	}
+	if string(gotBody) != `{"appId":"app_1","body":"Hello","linkedRequestIds":[],"publishNow":true,"title":"v1.2.0"}` {
+		t.Errorf("request body = %s, want publishNow: true with no scheduledAt key", gotBody)
+	}
+}
+
+// TestChangelogCreateSinglePublishFlagWireShapes pins the two
+// non-contradictory create bodies the issue #369 guard must not reshape:
+// --publish-now alone sends publishNow: true with no scheduledAt key, and
+// --schedule-at alone sends the datetime with publishNow: false — the
+// server resolves an absent scheduledAt to null either way, so only the
+// contradictory pair may be refused.
+func TestChangelogCreateSinglePublishFlagWireShapes(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	for _, tc := range []struct {
+		name string
+		flag []string
+		want string
+	}{
+		{
+			name: "publish-now alone",
+			flag: []string{"--publish-now"},
+			want: `{"appId":"app_1","body":"Hello","linkedRequestIds":[],"publishNow":true,"title":"v1.2.0"}`,
+		},
+		{
+			name: "schedule-at alone",
+			flag: []string{"--schedule-at", "2026-11-05T09:00:00Z"},
+			want: `{"appId":"app_1","body":"Hello","linkedRequestIds":[],"publishNow":false,"scheduledAt":"2026-11-05T09:00:00Z","title":"v1.2.0"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"cl_new_1"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			args := append([]string{"changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+				"--title", "v1.2.0", "--body", "Hello"}, tc.flag...)
+			if _, err := runRoot(t, server.URL, args...); err != nil {
+				t.Fatalf("changelog create %v: %v", tc.flag, err)
+			}
+			if string(gotBody) != tc.want {
+				t.Errorf("request body = %s, want %s", gotBody, tc.want)
+			}
+		})
+	}
+}
+
 // TestChangelogUpdateScheduleAtCapabilityRequired covers the last SEC-40
 // gate: scheduling via update --schedule-at requires changelog.publish, so a
 // member-role credential gets 403 capability_required.

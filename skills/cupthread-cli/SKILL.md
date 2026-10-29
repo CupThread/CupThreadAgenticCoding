@@ -458,6 +458,10 @@ cupthread changelog delete <entry-id> --yes  # Permanently delete a draft (confi
 ```
 Draft editing, `unpublish`, and `delete` are `[token-safe]` (content.manage;
 clearing a schedule with `--schedule-at ""` stays token-safe too).
+On `create`, `--publish-now` and `--schedule-at` are mutually exclusive — the
+server silently resolves the contradictory pair in favor of `--publish-now`
+(publish immediately and notify subscribers, dropping the schedule), so the
+CLI refuses the combination before any request.
 `changelog list` (console) is offset/limit-paginated and reports `total` +
 `hasMore`; the table view prints the next `--offset` when more pages remain.
 The page size caps at **100** (`--limit` is clamped into 1–100 locally, with
