@@ -634,3 +634,109 @@ func TestFeaturesForwardInRangeStillPosts(t *testing.T) {
 		t.Errorf("label = %d runes, want the full 60-rune boundary label", len([]rune(n)))
 	}
 }
+
+// --- Issue #349: --schedule-at is pre-flighted against zod's default
+// strict-UTC datetime shape on both changelog create and update. Date-only,
+// free-text, and numeric-offset values — plus impossible calendar datetimes
+// the shape regex alone would accept — fail locally naming the flag with
+// zero HTTP requests, while whole- and fractional-second UTC values keep
+// the wire bodies byte-identical and the "" clear still sends the explicit
+// null.
+
+func TestChangelogCreateValidatesScheduleAtLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"free text", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "tomorrow"}, `invalid --schedule-at "tomorrow": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"date only", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-11-05"}, `invalid --schedule-at "2026-11-05": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"numeric offset", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-11-05T09:00:00+02:00"}, `invalid --schedule-at "2026-11-05T09:00:00+02:00": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"prose datetime", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "Nov 5, 2026 9am"}, `invalid --schedule-at "Nov 5, 2026 9am": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"no timezone marker", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-11-05T09:00:00"}, `invalid --schedule-at "2026-11-05T09:00:00": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"space separator", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-11-05 09:00:00Z"}, `invalid --schedule-at "2026-11-05 09:00:00Z": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"lowercase t and z", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-11-05t09:00:00z"}, `invalid --schedule-at "2026-11-05t09:00:00z": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"impossible month passes the shape", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-13-05T09:00:00Z"}, `invalid --schedule-at "2026-13-05T09:00:00Z": must be a real calendar datetime`},
+		{"impossible day passes the shape", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2026-02-30T09:00:00Z"}, `invalid --schedule-at "2026-02-30T09:00:00Z": must be a real calendar datetime`},
+		{"leap second passes the shape", []string{"changelog", "create", "--title", "Release 2.0", "--schedule-at", "2016-12-31T23:59:60Z"}, `invalid --schedule-at "2016-12-31T23:59:60Z": must be a real calendar datetime`},
+	})
+}
+
+func TestChangelogCreateScheduleAtInRangeStillPosts(t *testing.T) {
+	for name, value := range map[string]string{
+		"whole seconds":      "2026-11-05T09:00:00Z",
+		"fractional seconds": "2026-11-05T09:00:00.123Z",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+			var probe writeProbe
+			server := serveWriteProbe(t, &probe, nil)
+			if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+				"changelog", "create", "--title", "Release 2.0", "--schedule-at", value); err != nil {
+				t.Fatalf("changelog create: %v", err)
+			}
+			if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/changelog") {
+				t.Fatalf("wire = %d request(s), %s %s, want one POST to /changelog", probe.requests, probe.method, probe.path)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(probe.body, &got); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if got["scheduledAt"] != value {
+				t.Errorf("scheduledAt = %v, want the verbatim %q", got["scheduledAt"], value)
+			}
+		})
+	}
+}
+
+func TestChangelogUpdateValidatesScheduleAtLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"date only", []string{"changelog", "update", "cl_1", "--schedule-at", "2026-11-05"}, `invalid --schedule-at "2026-11-05": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"numeric offset", []string{"changelog", "update", "cl_1", "--schedule-at", "2026-11-05T09:00:00+02:00"}, `invalid --schedule-at "2026-11-05T09:00:00+02:00": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+		{"prose datetime", []string{"changelog", "update", "cl_1", "--schedule-at", "Nov 5, 2026 9am"}, `invalid --schedule-at "Nov 5, 2026 9am": must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)`},
+	})
+}
+
+func TestChangelogUpdateScheduleAtInRangeStillPuts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "update", "cl_1", "--schedule-at", "2026-11-05T09:00:00.123Z"); err != nil {
+		t.Fatalf("changelog update: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), %s, want one PUT", probe.requests, probe.method)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got["scheduledAt"] != "2026-11-05T09:00:00.123Z" {
+		t.Errorf("scheduledAt = %v, want the fractional-seconds value verbatim", got["scheduledAt"])
+	}
+}
+
+func TestChangelogUpdateScheduleAtEmptyStillClears(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "update", "cl_1", "--schedule-at", ""); err != nil {
+		t.Fatalf("changelog update: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), %s, want one PUT", probe.requests, probe.method)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if v, ok := got["scheduledAt"]; !ok || v != nil {
+		t.Errorf("scheduledAt = %v (present: %v), want an explicit null clear", v, ok)
+	}
+}

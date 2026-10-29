@@ -465,7 +465,11 @@ for member-role callers with `403 capability_required` — the CLI appends
 both hints to the error. Clearing a schedule is not gated:
 `changelog update <id> --schedule-at ""` sends `scheduledAt: null` and only
 needs plain `content.manage` (an empty string would 400 on the datetime
-schema, so the CLI converts it to null).
+schema, so the CLI converts it to null). Setting a schedule only accepts
+the server's strict UTC datetime form — `2026-11-05T09:00:00Z`, fractional
+seconds allowed — so the CLI pre-flights `--schedule-at` against the same
+pattern: date-only (`2026-11-05`), free-text, and numeric-offset
+(`+02:00`) values fail locally naming the flag with zero requests sent.
 
 ### Search
 ```sh
