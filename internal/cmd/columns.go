@@ -443,11 +443,23 @@ When feature requests are still linked to the version (shipped-in set),
 the server refuses with 409 version_has_feature_requests until the
 deletion is acknowledged: pass --confirm-label with the version's
 current label (cupthread versions list) to delete it and unlink the
-linked requests, or pass --reassign-to <version-id> to move them to a
-sibling version of the same app first (the target must not be the
-version being deleted).`,
+linked requests, adding --reassign-to <version-id> to move them to a
+sibling version of the same app instead of unlinking them (the target
+must not be the version being deleted). --reassign-to never replaces --confirm-label:
+the server checks the label before any reassign, so with requests still
+linked --reassign-to alone re-409s forever —
+this command refuses that combination before sending anything.`,
 		Args: exactNonBlankArg("version id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --reassign-to never replaces --confirm-label (issue #370):
+			// the server checks the label acknowledgment before any
+			// reassign handling, so with requests still linked the bare
+			// flag re-409s forever, and with none linked there is nothing
+			// to move. Refuse the pair before the confirm prompt and any
+			// request, like the sibling write-command guards (#364, #367).
+			if reassignTo != "" && confirmLabel == "" {
+				return errors.New("--reassign-to requires --confirm-label <current label> (cupthread versions list): with requests still linked the server checks the label first, so --reassign-to alone re-409s forever, and with none linked there is nothing to move")
+			}
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete version %q", args[0])); err != nil {
 				return err
 			}
@@ -472,9 +484,11 @@ version being deleted).`,
 					if versionHasFeatureRequests(apiErr) {
 						// The guard fires whenever requests are still
 						// linked and the label was not confirmed; state
-						// both escapes instead of a bare 409 (issue #199).
+						// the required label plus the reassign add-on
+						// instead of a bare 409 (issue #199; #370 made
+						// the label-first dependency explicit).
 						count := linkedRequestCount(apiErr)
-						return fmt.Errorf("version %s still has %s linked feature request(s) — re-run with --confirm-label <current label> (cupthread versions list) to delete it and unlink them, or with --reassign-to <sibling-version-id> to move them to another version of the same app first: %w", args[0], count, err)
+						return fmt.Errorf("version %s still has %s linked feature request(s) — re-run with --confirm-label <current label> (cupthread versions list) to delete it and unlink them, adding --reassign-to <sibling-version-id> to move them to another version of the same app instead of unlinking (--reassign-to still requires --confirm-label): %w", args[0], count, err)
 					}
 					if apiErr.Code == "reassign_target_not_in_app" {
 						return fmt.Errorf("cannot reassign: --reassign-to must name a version of the same app (not the version being deleted) — pick a target from cupthread versions list: %w", err)
@@ -490,8 +504,8 @@ version being deleted).`,
 		},
 	}
 	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
-	cmd.Flags().StringVar(&confirmLabel, "confirm-label", "", "Current label of the version (versions list); required by the server when feature requests are still linked — deletes the version and unlinks them")
-	cmd.Flags().StringVar(&reassignTo, "reassign-to", "", "Version ID to move the linked feature requests to instead of unlinking them (must be a version of the same app, not the version being deleted)")
+	cmd.Flags().StringVar(&confirmLabel, "confirm-label", "", "Current label of the version (versions list); required by the server when feature requests are still linked, even alongside --reassign-to — deletes the version and unlinks them otherwise")
+	cmd.Flags().StringVar(&reassignTo, "reassign-to", "", "Version ID to move the linked feature requests to instead of unlinking them (still requires --confirm-label; must be a version of the same app, not the version being deleted)")
 	return cmd
 }
 
