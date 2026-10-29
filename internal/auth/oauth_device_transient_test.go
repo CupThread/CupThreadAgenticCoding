@@ -153,6 +153,42 @@ func TestDeviceWaitTransientCounterResetsAfterProgress(t *testing.T) {
 	}
 }
 
+// TestDeviceWaitBacksOffOnConsecutiveTransientFailures pins the backoff:
+// each consecutive transient failure at least doubles the next wait, and a
+// later answered poll resets it — the poll after progress waits the plain
+// interval again.
+func TestDeviceWaitBacksOffOnConsecutiveTransientFailures(t *testing.T) {
+	server, log := rawDevicePollServer(
+		serverError503, serverError503, serverError503,
+		pendingJSON,
+		successTokens,
+	)
+	defer server.Close()
+
+	d := newDeviceStart(server.URL)
+	d.Interval = 40 * time.Millisecond
+	if _, err := d.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if log.count() != 5 {
+		t.Fatalf("flow used %d polls, want 5", log.count())
+	}
+	// Lower bounds: ~1×, 2×, 4× the interval (timers fire late, so ≥).
+	if s := log.spacing(0); s < 40*time.Millisecond {
+		t.Errorf("spacing after 1st 503 = %v, want ≥ 40ms", s)
+	}
+	if s := log.spacing(1); s < 80*time.Millisecond {
+		t.Errorf("spacing after 2nd 503 = %v, want ≥ 80ms (backoff doubles)", s)
+	}
+	if s := log.spacing(2); s < 160*time.Millisecond {
+		t.Errorf("spacing after 3rd 503 = %v, want ≥ 160ms (backoff doubles again)", s)
+	}
+	// After the pending answer the backoff is reset: poll 5 waits ~1×.
+	if s := log.spacing(3); s >= 80*time.Millisecond {
+		t.Errorf("spacing after pending = %v, want ≈ 40ms (backoff leaked across progress)", s)
+	}
+}
+
 // TestDeviceWaitHonorsRetryAfter pins the review fix: a 429 carrying
 // Retry-After must pace the next poll by the server's hint (the greater of
 // hint and interval) instead of re-polling at the advertised interval —

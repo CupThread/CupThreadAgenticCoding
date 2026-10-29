@@ -404,10 +404,11 @@ func transientPollFailure(err error) bool {
 // errors, 429, 5xx) are absorbed with a sanitized stderr notice — up to
 // maxConsecutiveTransientPollFailures in a row — instead of aborting a
 // 15-minute login over one network blip (issue #358); a definitive protocol
-// rejection still ends the flow immediately. A transient failure carrying a
-// Retry-After paces the next poll by it (capped at maxHonoredRetryAfter), so
-// an active throttle is not burned through at the advertised interval
-// (issue #358 review).
+// rejection still ends the flow immediately. Consecutive transient failures
+// back off (the next wait doubles per failure, bounded by
+// maxHonoredRetryAfter), and a Retry-After hint on the failure paces the
+// next poll by itself, so an active throttle or struggling endpoint is not
+// burned through at the advertised interval (issue #358 review).
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
 	transientFailures := 0
@@ -462,6 +463,24 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 				if transientFailures >= maxConsecutiveTransientPollFailures {
 					return nil, fmt.Errorf("token endpoint stayed unreachable for %d consecutive polls: %w", transientFailures, err)
 				}
+				// A struggling endpoint needs wider spacing, not the
+				// advertised interval: each consecutive transient failure
+				// doubles the next wait (RFC 8628 §3.5's spacing principle
+				// applied to transport/throttle trouble), still bounded by
+				// maxHonoredRetryAfter and always yielding to an explicit
+				// Retry-After hint. Progress resets the count, and with it
+				// the backoff.
+				backoff := d.Interval
+				for i := 1; i < transientFailures && backoff < maxHonoredRetryAfter; i++ {
+					backoff *= 2
+				}
+				if backoff > maxHonoredRetryAfter {
+					backoff = maxHonoredRetryAfter
+				}
+				if backoff > nextWait {
+					nextWait = backoff
+				}
+				// An explicit Retry-After outranks the computed backoff.
 				if apiErr != nil && apiErr.RetryAfter > nextWait {
 					nextWait = apiErr.RetryAfter
 				}
