@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -1650,6 +1651,63 @@ func TestUploadAppIconFilenameControlBytesSanitized(t *testing.T) {
 		}
 		if b < 0x20 || b == 0x7f {
 			t.Errorf("raw body filename renders control byte %#x:\n%q", b, raw)
+		}
+	}
+}
+
+// TestParseRetryAfterCapsOverflowSeconds pins the issue #374 fix: a
+// parseable but absurd delay-seconds value is clamped to the retry ceiling
+// instead of wrapping the time.Duration conversion negative. 9223372036
+// seconds is the largest value int64 nanoseconds can represent; anything
+// from 9223372037 up (e.g. a misconfigured proxy's "10000000000") used to
+// wrap and slip past retryWait's ceiling.
+func TestParseRetryAfterCapsOverflowSeconds(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name       string
+		retryAfter string
+		maxDelay   time.Duration
+		want       time.Duration
+		wantOK     bool
+	}{
+		{"sane seconds", "5", 0, 5 * time.Second, true},
+		{"largest representable", "9223372036", 0, DefaultRetryMaxDelay, true},
+		{"first overflowing", "9223372037", 0, DefaultRetryMaxDelay, true},
+		{"ten billion", "10000000000", 0, DefaultRetryMaxDelay, true},
+		{"int64-max seconds", "9223372036854775807", 0, DefaultRetryMaxDelay, true},
+		{"negative", "-5", 0, 0, false},
+		{"custom ceiling honored", "10000000000", time.Hour, time.Hour, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &Client{}
+			if tc.maxDelay > 0 {
+				client.RetryMaxDelay = tc.maxDelay
+			}
+			got, ok := client.parseRetryAfter(tc.retryAfter, now)
+			if ok != tc.wantOK {
+				t.Fatalf("parseRetryAfter(%q) ok = %v, want %v", tc.retryAfter, ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.retryAfter, got, tc.want)
+			}
+			if got < 0 {
+				t.Errorf("parseRetryAfter(%q) = %v, must never be negative", tc.retryAfter, got)
+			}
+		})
+	}
+}
+
+// TestRetryWaitNeverNegativeForOverflowingRetryAfter pins the caller-visible
+// regression: before the fix a wrapped-negative Retry-After bypassed the
+// ceiling in retryWait, skipped the jitter backoff entirely, and made sleep
+// return immediately — the retry budget fired as back-to-back requests. The
+// computed wait must stay in (0, ceiling] for these values.
+func TestRetryWaitNeverNegativeForOverflowingRetryAfter(t *testing.T) {
+	for _, v := range []string{"9223372036", "9223372037", "10000000000"} {
+		got := (&Client{}).retryWait(v, 2)
+		if got <= 0 || got > DefaultRetryMaxDelay {
+			t.Errorf("retryWait(%q, 2) = %v, want a wait in (0, %v]", v, got, DefaultRetryMaxDelay)
 		}
 	}
 }

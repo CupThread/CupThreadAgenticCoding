@@ -64,6 +64,26 @@ type TokenSet struct {
 	Scope        string `json:"scope"`
 }
 
+// maxAdvertisedLifetimeSecs caps a server-advertised lifetime in seconds
+// (token or device-code expires_in, Retry-After delay-seconds) before the
+// conversion to time.Duration: int64 nanoseconds wrap at ~292 years, and
+// the wrapped value lands negative — an expiry already in the past, which
+// re-runs a token refresh or expires the device code on every request
+// (issue #374). Ten years outlasts any real grant while keeping the
+// multiplication safe.
+const maxAdvertisedLifetimeSecs = 10 * 365 * 24 * 60 * 60
+
+// LifetimeDuration converts a server-advertised lifetime in seconds to a
+// time.Duration, clamping values beyond maxAdvertisedLifetimeSecs so the
+// conversion cannot wrap negative (issue #374). Callers apply their own
+// tighter ceilings on top.
+func LifetimeDuration(secs int) time.Duration {
+	if int64(secs) > maxAdvertisedLifetimeSecs {
+		return time.Duration(maxAdvertisedLifetimeSecs) * time.Second
+	}
+	return time.Duration(secs) * time.Second
+}
+
 // Endpoints derives the OAuth endpoint URLs from the API base URL.
 func Endpoints(baseURL string) (authorize, token, deviceAuthorize, deviceToken string) {
 	base := strings.TrimRight(baseURL, "/")
@@ -367,7 +387,7 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	// zero and Wait keeps polling until the token endpoint answers — its
 	// own expired_token still terminates the flow (issue #185).
 	if parsed.ExpiresIn > 0 {
-		start.ExpiresAt = time.Now().Add(time.Duration(parsed.ExpiresIn) * time.Second)
+		start.ExpiresAt = time.Now().Add(LifetimeDuration(parsed.ExpiresIn))
 	} else {
 		fmt.Fprintf(os.Stderr, "warning: device authorization response omitted expires_in; waiting until the server expires the code\n")
 	}
@@ -764,7 +784,10 @@ var maxHonoredRetryAfter = time.Minute
 
 // parseRetryAfter reads a Retry-After header value in delay-seconds or
 // HTTP-date form and caps it at maxHonoredRetryAfter. An absent, negative,
-// or unparseable value yields 0, meaning "no usable hint".
+// or unparseable value yields 0, meaning "no usable hint". A parseable but
+// absurd delay-seconds value is clamped before the time.Duration
+// conversion — the wrap would land negative and slip past the
+// maxHonoredRetryAfter cap (issue #374).
 func parseRetryAfter(v string) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -772,7 +795,7 @@ func parseRetryAfter(v string) time.Duration {
 	}
 	var d time.Duration
 	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-		d = time.Duration(secs) * time.Second
+		d = LifetimeDuration(secs)
 	} else if t, err := http.ParseTime(v); err == nil {
 		if until := time.Until(t); until > 0 {
 			d = until
