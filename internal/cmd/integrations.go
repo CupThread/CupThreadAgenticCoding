@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -336,6 +337,21 @@ func newGitHubConfigCmd() *cobra.Command {
 		Short: "Set the per-app GitHub repository and sync options",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// UpdateAppGitHubConfigInputSchema bounds githubOwner/githubRepo
+			// at min(1).max(100).nullable().optional(): "" stays the null
+			// clear form, but a non-empty over-length value is a guaranteed
+			// 400, so it fails locally before the app lookup GET (issue
+			// #345).
+			if cmd.Flags().Changed("owner") && owner != "" {
+				if n := utf8.RuneCountInString(owner); n > 100 {
+					return fmt.Errorf("invalid --owner: must be 1-100 characters, got %d", n)
+				}
+			}
+			if cmd.Flags().Changed("repo") && repo != "" {
+				if n := utf8.RuneCountInString(repo); n > 100 {
+					return fmt.Errorf("invalid --repo: must be 1-100 characters, got %d", n)
+				}
+			}
 			secret, haveSecret, err := resolveWebhookSecret(cmd.Context(), webhookSecret, cmd.Flags().Changed("webhook-secret"))
 			if err != nil {
 				if perr := A.reportInputTooLarge(err); perr != nil {

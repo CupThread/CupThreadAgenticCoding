@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -59,6 +60,22 @@ func newWorkspacesListCmd() *cobra.Command {
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
+// emailPattern mirrors the shape the members schemas' z.string().email()
+// accepts: one @, no whitespace, and a dotted domain. It is deliberately a
+// little looser than the zod regex so a valid address is never refused
+// locally; edge local-part forms stay server-rejected (issue #345).
+var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+
+// validateWorkspaceRoleFlag mirrors the members schemas' role bound
+// (WorkspaceRoleSchema.exclude(["owner"])): owner is reserved for the
+// workspace creator, so only admin/member are accepted (issue #345).
+func validateWorkspaceRoleFlag(role string) error {
+	if role != "admin" && role != "member" {
+		return fmt.Errorf("invalid --role %q: must be admin or member", role)
+	}
+	return nil
+}
+
 func newWorkspacesCreateCmd() *cobra.Command {
 	var name, slug string
 	create := &cobra.Command{
@@ -69,11 +86,17 @@ func newWorkspacesCreateCmd() *cobra.Command {
 			if name == "" {
 				return errors.New("--name is required")
 			}
+			// CreateWorkspaceInputSchema bounds: name min(2).max(120),
+			// slug min(2).max(64) (issue #345 — the apps --name twin was
+			// fixed in #336, this one was missed).
+			if n := utf8.RuneCountInString(name); n < 2 || n > 120 {
+				return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", n)
+			}
 			if slug == "" {
 				slug = slugify(name)
 			}
-			if !slugPattern.MatchString(slug) || len(slug) < 2 {
-				return fmt.Errorf("slug %q must match [a-z0-9-] with at least 2 characters", slug)
+			if !slugPattern.MatchString(slug) || len(slug) < 2 || len(slug) > 64 {
+				return fmt.Errorf("slug %q must match [a-z0-9-] with 2-64 characters", slug)
 			}
 			var resp api.CreateWorkspaceResponse
 			body := map[string]string{"name": name, "slug": slug}
@@ -243,6 +266,19 @@ func newMembersInviteCmd() *cobra.Command {
 			if email == "" {
 				return errors.New("--email is required")
 			}
+			// InviteWorkspaceMemberInputSchema bounds: email format, role
+			// excludes owner, displayName at most 120 (issue #345).
+			if !emailPattern.MatchString(email) {
+				return fmt.Errorf("invalid --email %q: must be an email address", email)
+			}
+			if err := validateWorkspaceRoleFlag(role); err != nil {
+				return err
+			}
+			if displayName != "" {
+				if n := utf8.RuneCountInString(displayName); n > 120 {
+					return fmt.Errorf("invalid --display-name: must be at most 120 characters, got %d", n)
+				}
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -283,6 +319,14 @@ func newMembersAddCmd() *cobra.Command {
 			if clerkUserID == "" {
 				return errors.New("--clerk-user-id is required")
 			}
+			// AddWorkspaceMemberInputSchema bounds: clerkUserId at most 255,
+			// role excludes owner (issue #345).
+			if n := utf8.RuneCountInString(clerkUserID); n > 255 {
+				return fmt.Errorf("invalid --clerk-user-id: must be at most 255 characters, got %d", n)
+			}
+			if err := validateWorkspaceRoleFlag(role); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -316,6 +360,13 @@ func newMembersSetRoleCmd() *cobra.Command {
 		Short: "Change a member's role",
 		Args:  exactNonBlankArg("member id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// UpdateWorkspaceMemberInputSchema.role excludes owner and has no
+			// nullable form: cobra's MarkFlagRequired still passes an
+			// explicit --role "" through, so the enum is checked here
+			// (issue #345).
+			if err := validateWorkspaceRoleFlag(role); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
