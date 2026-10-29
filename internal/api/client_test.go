@@ -371,6 +371,53 @@ func isRawHeaderGetCall(expr ast.Expr) bool {
 	return ok && sel.Sel.Name == "Get"
 }
 
+// TestForbiddenHintsCommentAppearsOnce is the regression guard for issue
+// #361: the forbiddenHints doc comment in client.go was a verbatim two-copy
+// paste, and the duplicated half would have drifted stale the first time an
+// editor extended the 403 hint table. The hint-table comment must carry each
+// of its load-bearing markers (the AUTH-01 mapping statement, the SEC-40
+// capability note, the interactive-session requirement, and the PRIV-12
+// verified-email rule) in exactly one comment group, with the opening line
+// stated once — so a future copy-paste accident fails here instead of
+// quietly doubling the contract.
+func TestForbiddenHintsCommentAppearsOnce(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "client.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse client.go: %v", err)
+	}
+	opening := "forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable"
+	// Comment text wraps across source lines, so compare on a
+	// whitespace-normalized copy.
+	normalize := func(s string) string {
+		return strings.Join(strings.Fields(s), " ")
+	}
+	opening = normalize(opening)
+	var forbidden *ast.CommentGroup
+	openings := 0
+	for _, cg := range f.Comments {
+		// Count occurrences, not groups: a copy-paste duplication lands
+		// both copies inside one adjacent-line comment group.
+		openings += strings.Count(normalize(cg.Text()), opening)
+		if strings.Contains(normalize(cg.Text()), opening) {
+			forbidden = cg
+		}
+	}
+	if openings != 1 || forbidden == nil {
+		t.Fatalf("client.go carries the forbiddenHints doc-comment opening %d times, want exactly one copy (issue #361)", openings)
+	}
+	for _, marker := range []string{
+		"every /api/v1/console/workspaces/* route declares one capability",
+		"changelog.publish (SEC-40: publishing or scheduling a changelog entry, admin/owner only)",
+		"additionally require an interactive Clerk web session",
+		"PRIV-12 sign-in-only changelogs reject subscribe bodies whose email is not the session's verified address",
+	} {
+		if !strings.Contains(normalize(forbidden.Text()), marker) {
+			t.Errorf("forbiddenHints doc comment missing required marker %q:\n%s", marker, forbidden.Text())
+		}
+	}
+}
+
 func TestDoSendsAuthAndWorkspaceHeaders(t *testing.T) {
 	var gotAuth, gotWorkspace, gotPath, gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
