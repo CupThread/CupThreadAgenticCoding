@@ -371,11 +371,42 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 // tests can shrink it; production always uses the RFC's 5 seconds.
 var slowDownPenalty = 5 * time.Second
 
+// maxConsecutiveTransientPollFailures bounds the device poll loop's
+// transient-failure tolerance (issue #358): a fully-down endpoint must fail
+// the login with a clear error instead of spinning silently for the whole
+// code window. Each answered poll — pending, slow_down, or success — resets
+// the count, so only a contiguous outage trips it.
+const maxConsecutiveTransientPollFailures = 5
+
+// transientPollFailure reports whether a token-poll error is a transient
+// condition worth re-polling instead of killing the login (issue #358): a
+// transport failure (connection reset, DNS/Wi-Fi blip, the HTTP client's
+// timeout — any non-APIError from postForm), or an APIError whose HTTP
+// status is a throttle or gateway/overload 5xx, mirroring the 429/5xx
+// retryableStatus discipline internal/api applies to idempotent requests.
+// RFC 8628 §3.5 models polling as continuing until the token endpoint
+// answers with a definitive result; a refused connection or an overloaded
+// gateway is not a user decision, an expiry, or a protocol rejection. An
+// APIError with any 4xx (or unknown) status stays definitive — with the
+// status lost (a hand-built APIError) the old abort behavior is preserved.
+func transientPollFailure(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Status == http.StatusTooManyRequests || apiErr.Status >= 500
+	}
+	return true
+}
+
 // Wait polls until the user confirms, denies, or the code expires. Progress
 // is written to stderr; the server-supplied user code is stripped of terminal
-// controls before it is echoed there.
+// controls before it is echoed there. Transient poll failures (transport
+// errors, 429, 5xx) are absorbed with a sanitized stderr notice — up to
+// maxConsecutiveTransientPollFailures in a row — instead of aborting a
+// 15-minute login over one network blip (issue #358); a definitive protocol
+// rejection still ends the flow immediately.
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
+	transientFailures := 0
 	for {
 		// A zero ExpiresAt (server did not advertise expires_in) leaves the
 		// timer nil — receiving from a nil channel blocks forever — so the
@@ -404,15 +435,26 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 			if errors.As(err, &apiErr) {
 				switch apiErr.Code {
 				case "authorization_pending":
+					transientFailures = 0
 					continue
 				case "slow_down":
 					d.Interval += slowDownPenalty
+					transientFailures = 0
 					continue
 				case "access_denied":
 					return nil, errors.New("authorization denied")
 				case "expired_token":
 					return nil, errors.New("device code expired")
 				}
+			}
+			if transientPollFailure(err) {
+				transientFailures++
+				if transientFailures >= maxConsecutiveTransientPollFailures {
+					return nil, fmt.Errorf("token endpoint stayed unreachable for %d consecutive polls: %w", transientFailures, err)
+				}
+				fmt.Fprintf(os.Stderr, "warning: token endpoint unreachable, tolerating transient failure %d/%d and continuing to poll: %v\n",
+					transientFailures, maxConsecutiveTransientPollFailures, err)
+				continue
 			}
 			return nil, err
 		}
@@ -445,6 +487,11 @@ func listenLoopback() (*loopbackListener, error) {
 type APIError struct {
 	Code string
 	Body string
+	// Status is the HTTP status the error body arrived with. The poll loop
+	// uses it to tell a transient condition (429 throttle, gateway 5xx) from
+	// a definitive protocol rejection (4xx): postForm populates it for every
+	// non-2xx response (issue #358).
+	Status int
 }
 
 // apiErrorTextMaxRunes caps the server-supplied body kept in Error(): an
@@ -618,7 +665,7 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 		if json.Unmarshal(body, &parsed) == nil {
 			code = parsed.Error
 		}
-		return nil, &APIError{Code: code, Body: strings.TrimSpace(string(body))}
+		return nil, &APIError{Code: code, Body: strings.TrimSpace(string(body)), Status: resp.StatusCode}
 	}
 	return body, nil
 }
