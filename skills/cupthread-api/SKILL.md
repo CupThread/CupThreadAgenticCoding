@@ -70,7 +70,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/feature-requests/:id/vote` | `POST`/`DELETE` | Insert-only idempotent vote; `DELETE` (same JSON body as the POST) is the only un-vote. Optional `shipNotifyEmail` + `turnstileToken`. |
 | `/api/v1/feature-requests/:id/comments` | `GET` | Keyset-paginated thread; unapproved requests `404` (existence hiding). |
 | `/api/v1/feature-requests/:id/comments` | `POST` | Clerk-session comment/@reply; `parentId` must reference a visible comment on the same request (SEC-50). |
-| `/api/v1/me/link` | `POST` | Bind an anonymous `X-User-Token` profile to the signed-in Clerk identity (SEC-12); `409 already_linked` is never hijacked. |
+| `/api/v1/me/link` | `POST` | Bind an anonymous `X-User-Token` profile to the signed-in Clerk identity (SEC-12); `409 already_linked` is never hijacked; unknown `appKey` and public-surfaces-disabled apps share the same uniform `404`. |
 | `/api/v1/me/erase` | `POST` | Self-service erasure (PRIV-01): rotates the token immediately, anonymizes attribution, keeps aggregates. |
 | `/api/v1/users/:userId/profile` | `GET` | Public profile `{profile, publicApps, recentComments}`; resolves app-scoped `u_*` pseudonyms only, and those require `?appKey=` (PRIV-06) — any other id, incl. raw Clerk `user_*`, answers the anonymous placeholder (SaaS #1322). |
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Sync end-user attributes; payment attributes (`isPaying`, `mrr`, `plan`, `currency`) require HMAC `signature` + `timestamp` (DATA-03). |

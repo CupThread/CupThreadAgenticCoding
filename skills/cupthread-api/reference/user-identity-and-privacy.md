@@ -44,17 +44,17 @@ Explicitly binds an authenticated end-user identity to an anonymous profile (Ope
 | `200` | Profile linked; also idempotent when already bound to the same identity | `{"linked": true, "endUserId": "…", "clerkUserId": "…"}` |
 | `400` | Missing/malformed `X-User-Token` (`{"error": "A valid X-User-Token header is required"}`), malformed body, or link failure | `{"error": string, "code"?: string}` |
 | `401` | No valid Clerk session | `{"error": "Authentication required", "code": "authentication_required"}` |
-| `404` | Unknown `appKey` | `{"error": "App not found"}` |
+| `404` | Unknown `appKey`, **or** the app has public surfaces disabled (`allowPublic` off) — both answer the same uniform `404` (existence hiding) | `{"error": "App not found"}` |
 | `409` | Profile already confirmed to a **different** account | `{"error": "End-user profile is already linked and confirmed to another account", "code": "already_linked"}` |
 
 Linking semantics:
 
-- No profile exists for (`appKey`, `X-User-Token`) yet → one is created already bound to the authenticated identity and marked confirmed. There is **no** `404` for a missing profile — `404` is reserved for an unknown `appKey`.
+- No profile exists for (`appKey`, `X-User-Token`) yet → one is created already bound to the authenticated identity and marked confirmed. There is **no** `404` for a missing profile — `404` is reserved for an unknown `appKey` **or** an app with public surfaces disabled, which answers the same byte-identical `404 {"error": "App not found"}` (uniform-404 existence hiding, issue #253): a disabled app never creates the profile and never distinguishes itself from a bogus `appKey`.
 - An **anonymous** row (created earlier by voting/feedback with only `X-User-Token`, no Clerk binding) is claimed by the authenticated user and marked confirmed — this is the recovery path for unclaimed profiles.
 - A row already bound to the **same** Clerk user resolves idempotently with `200` (the binding is re-confirmed).
 - A row already bound to a **different** Clerk user is never hijacked: `409 already_linked`, deterministic — never retry automatically.
 
-Client guidance: call this once when the end user signs in to the host app (at that moment the client holds both the anonymous `X-User-Token` and a Clerk session), then keep using the same `X-User-Token` for voting, feedback, comments, and upload sessions.
+Client guidance: call this once when the end user signs in to the host app (at that moment the client holds both the anonymous `X-User-Token` and a Clerk session), then keep using the same `X-User-Token` for voting, feedback, comments, and upload sessions. Treat a `404` from this endpoint as *"appKey unknown or app not public"* — there is no way (and no need) to distinguish the two; previously a disabled app could answer `200` and create a profile in its tenant, which was never documented behavior and no client should rely on it. The sibling `PUT /api/v1/public/apps/{appKey}/user` is unchanged and keeps its documented `403` for disabled apps.
 
 ---
 
