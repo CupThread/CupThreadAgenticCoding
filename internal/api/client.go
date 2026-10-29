@@ -332,12 +332,7 @@ var tierLimitHints = map[string]string{
 
 // forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
 // remediation: every /api/v1/console/workspaces/* route declares one
-// capability checked against the caller's role, members.manage,
-// billing.manage, integration.manage, and changelog.publish (SEC-40:
-// publishing or scheduling a changelog entry, admin/owner only)
-// forbiddenHints maps the AUTH-01 workspace RBAC 403 codes to actionable
-// remediation: every /api/v1/console/workspaces/* route declares one
-// capability checked against the caller's role, members.manage,
+// capability checked against the caller's role. members.manage,
 // billing.manage, integration.manage, and changelog.publish (SEC-40:
 // publishing or scheduling a changelog entry, admin/owner only)
 // additionally require an interactive Clerk web session — both kinds of CLI
