@@ -2726,3 +2726,40 @@ func TestSkillDocsIssue321ResponseSchemaSync(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue258DeviceDecideRowBinding pins the SaaS #1241 row-binding
+// contract on the Console device-confirmation helpers: the
+// /oauth/device/lookup 200 OAuthClientInfo carries an optional deviceId
+// (opaque pending-row id, device-lookup responses only, not in the schema's
+// required list), and /oauth/device/decide accepts the optional device_id
+// echo that binds the decision to exactly that row — a stale or mismatched
+// id+code pair fails closed with the same uniform 404 an unknown code
+// answers (no newest-wins fallback to the code-string resolve, no existence
+// oracle), while omitting device_id keeps the legacy resolve-by-user-code
+// behavior and the headless CLI device flow is untouched. Red-before/
+// green-after: reverting any marker below must fail this test.
+func TestSkillDocsIssue258DeviceDecideRowBinding(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	row := skillLineByPrefix(t, doc, "| `GET /api/v1/oauth/consent-info`, `GET /api/v1/oauth/device/lookup`, `POST /api/v1/oauth/device/decide` |")
+	for _, marker := range []string{
+		"an **optional** `deviceId`",
+		"an opaque id of the resolved pending device-code row, present on device-lookup responses only (the consent-info endpoint sharing the schema never sets it) and not in the schema's `required` list",
+		"the `device/decide` body accepts the **optional** `device_id` echo of it",
+		"Interactive clients **should** echo the looked-up `deviceId` back as `device_id` when it is present",
+		"the decision would land on that other row",
+		"the row id **and** the typed `user_code` must both match and the row must still be pending",
+		"a stale or mismatched pair fails closed with the same uniform `404 {\"error\": \"Device code not found or expired\"}` an unknown code answers",
+		"no newest-wins fallback to the code-string resolve and no existence oracle",
+		"the `409 \"Device code has already been decided\"` resubmission guard runs only on the legacy no-`device_id` path",
+		"Omitting `device_id` keeps the legacy resolve-by-user-code behavior",
+		"that compatibility claim covers only `device/decide` requests, not the lookup response",
+		"clients with strict response decoders (ones that reject unknown fields) must be updated to accept the optional field",
+		"A successful decide still answers `200 { ok, decision }`",
+		"The headless CLI device flow (`/device/authorize` → `/device/token`) is untouched by the binding field",
+	} {
+		if !strings.Contains(row, marker) {
+			t.Errorf("device helpers row is missing required issue-#258 marker %q; got: %s", marker, row)
+		}
+	}
+}
