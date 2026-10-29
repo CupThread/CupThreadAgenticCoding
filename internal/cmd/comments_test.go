@@ -1,15 +1,23 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
+	"github.com/spf13/cobra"
 )
 
 // moderationCommentsFixture exercises the Console Moderation list payload,
@@ -198,6 +206,111 @@ func TestCommentsModerationDeleteRefusesWithoutYes(t *testing.T) {
 	}
 	if n := len(*reqs); n != 0 {
 		t.Errorf("refusal must cost zero requests, saw %d", n)
+	}
+}
+
+// TestCommentsModerationNotFoundSurvivesWrappedError is the issue #360 pin:
+// the client already wraps selected statuses (402 tier limit, 429 rate
+// limited, hinted 401/403), so a future wrap of the 404 path must not strip
+// the moderation commands' workspace-naming not-found messages down to the
+// raw APIError text. The client's per-request Token provider is the one seam
+// that can hand Do's caller a pre-wrapped error — a Token failure is returned
+// verbatim, before any wire attempt — so it delivers
+// fmt.Errorf("moderation: %w", …404…) here, exactly the shape a future client
+// wrap would produce. Against the former direct err.(*api.APIError)
+// assertions every case fails with the wrapped raw error instead.
+func TestCommentsModerationNotFoundSurvivesWrappedError(t *testing.T) {
+	wrapped404 := fmt.Errorf("moderation: %w", &api.APIError{
+		Status:  http.StatusNotFound,
+		Message: "Feature request not found in this workspace",
+	})
+	cases := []struct {
+		name    string
+		cmd     func() *cobra.Command
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "moderation list",
+			cmd:     newCommentsModerationListCmd,
+			args:    []string{"fr_missing"},
+			wantErr: `feature request "fr_missing" not found in workspace ws_1`,
+		},
+		{
+			name:    "moderation hide",
+			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(true) },
+			args:    []string{"cmt_gone"},
+			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+		},
+		{
+			name:    "moderation unhide",
+			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(false) },
+			args:    []string{"cmt_gone"},
+			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+		},
+		{
+			name:    "moderation delete",
+			cmd:     newCommentsModerationDeleteCmd,
+			args:    []string{"cmt_gone"},
+			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldA := A
+			defer func() { A = oldA }()
+			oldWS := flagWorkspace
+			flagWorkspace = "ws_1"
+			defer func() { flagWorkspace = oldWS }()
+
+			A = &app{
+				out:     output.New(io.Discard, output.FormatTable),
+				cfg:     &config.Config{},
+				cfgPath: filepath.Join(t.TempDir(), "config.json"),
+			}
+			A.client = api.New("http://moderation.invalid")
+			A.client.Token = func(context.Context) (string, error) { return "", wrapped404 }
+
+			cmd := tc.cmd()
+			if cmd.Name() == "delete" {
+				if err := cmd.Flags().Set("yes", "true"); err != nil {
+					t.Fatalf("set --yes: %v", err)
+				}
+			}
+			err := cmd.RunE(cmd, tc.args)
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("error = %v, want exactly %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestAPINotFoundToleratesWrapping pins the errors.As contract of the shared
+// moderation 404 check (issue #360): a 404 delivered wrapped — today's
+// 402/429/hinted-401/403 client wraps show the pattern — must still be
+// recognized, while other statuses and non-API errors must not match.
+func TestAPINotFoundToleratesWrapping(t *testing.T) {
+	notFound := &api.APIError{Status: http.StatusNotFound, Message: "Feature request not found in this workspace"}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "unwrapped 404", err: notFound, want: true},
+		{name: "wrapped once", err: fmt.Errorf("moderation: %w", notFound), want: true},
+		{name: "wrapped twice", err: fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", notFound)), want: true},
+		{name: "wrapped tier limit", err: fmt.Errorf("tier limit: %w", &api.APIError{Status: http.StatusPaymentRequired}), want: false},
+		{name: "wrapped forbidden", err: fmt.Errorf("forbidden: %w", &api.APIError{Status: http.StatusForbidden}), want: false},
+		{name: "unwrapped 500", err: &api.APIError{Status: http.StatusInternalServerError}, want: false},
+		{name: "non-API error", err: errors.New("dial tcp: connection refused"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := apiNotFound(tc.err); got != tc.want {
+				t.Errorf("apiNotFound(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -451,6 +564,58 @@ func TestCommentsListNotFoundCoversUnapproved(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "never existed") {
 		t.Errorf("error = %q, must not imply the request never existed", err)
+	}
+}
+
+// TestCommentsListNotFoundSurvivesWrappedError extends the issue #360 pin to
+// the public listing: its 404 branch carries the PRIV-12 "not available"
+// message, and a future client wrap of the 404 path must not strip that down
+// to the raw APIError text either. The command builds its client through the
+// publicClient factory seam, so the test swaps it for one whose Token
+// provider returns fmt.Errorf("portal: %w", …404…) — DoWithHeaders hands a
+// Token failure back verbatim, before any wire attempt, exactly the shape a
+// future client wrap would produce. Against the former direct
+// err.(*api.APIError) assertion this case fails with the wrapped raw error
+// instead of the not-available message, so a revert of only the public
+// caller cannot escape the suite.
+func TestCommentsListNotFoundSurvivesWrappedError(t *testing.T) {
+	wrapped404 := fmt.Errorf("portal: %w", &api.APIError{
+		Status:  http.StatusNotFound,
+		Message: "Feature request not found",
+	})
+
+	oldA := A
+	defer func() { A = oldA }()
+	oldFactory := publicClient
+	publicClient = func(a *app) *api.Client {
+		client := oldFactory(a)
+		client.Token = func(context.Context) (string, error) { return "", wrapped404 }
+		return client
+	}
+	defer func() { publicClient = oldFactory }()
+
+	A = &app{
+		out:     output.New(io.Discard, output.FormatTable),
+		cfg:     &config.Config{},
+		cfgPath: filepath.Join(t.TempDir(), "config.json"),
+	}
+
+	cmd := newCommentsListCmd()
+	err := cmd.RunE(cmd, []string{"fr_pending"})
+	if err == nil {
+		t.Fatal("expected the not-available error for a wrapped 404")
+	}
+	for _, want := range []string{
+		`comments for feature request "fr_pending" are not available`,
+		"may not exist",
+		"may not be approved yet",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "portal:") {
+		t.Errorf("error = %q, want the friendly message without the wrapped raw error", err)
 	}
 }
 
