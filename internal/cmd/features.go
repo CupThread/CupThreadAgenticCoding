@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -254,6 +255,54 @@ func newFeaturesGetCmd() *cobra.Command {
 	}
 }
 
+// validateFeaturesCreateFlags mirrors CreateFeatureRequestAdminInputSchema's
+// zod intake bounds (title 3-160, description 5-5000, columnSlug 1-60 code
+// points) so an out-of-bounds create fails locally naming the flag instead
+// of as a guaranteed 400 Validation failed (issue #341, following
+// validateAppsUpdateFlags from #336).
+func validateFeaturesCreateFlags(title, description, columnSlug string) error {
+	if n := utf8.RuneCountInString(title); n < 3 || n > 160 {
+		return fmt.Errorf("invalid --title: must be 3-160 characters, got %d", n)
+	}
+	if n := utf8.RuneCountInString(description); n < 5 || n > 5000 {
+		return fmt.Errorf("invalid --description: must be 5-5000 characters, got %d", n)
+	}
+	if columnSlug != "" {
+		if n := utf8.RuneCountInString(columnSlug); n > 60 {
+			return fmt.Errorf("invalid --column-slug: must be 1-60 characters, got %d", n)
+		}
+	}
+	return nil
+}
+
+// validateFeaturesUpdateFlags mirrors UpdateFeatureRequestAdminInputSchema's
+// zod intake bounds so a rejected update fails before the ID-resolution
+// round trips. A Changed flag is checked even when empty: title/description
+// below their minimum and columnSlug "" (the schema requires 1-60 characters
+// and is not nullable, so there is no clear-the-column spelling) can never
+// be accepted by the server and are rejected locally (issue #341).
+func validateFeaturesUpdateFlags(cmd *cobra.Command, title, description, columnSlug string) error {
+	if cmd.Flags().Changed("title") {
+		if n := utf8.RuneCountInString(title); n < 3 || n > 160 {
+			return fmt.Errorf("invalid --title: must be 3-160 characters, got %d", n)
+		}
+	}
+	if cmd.Flags().Changed("description") {
+		if n := utf8.RuneCountInString(description); n < 5 || n > 5000 {
+			return fmt.Errorf("invalid --description: must be 5-5000 characters, got %d", n)
+		}
+	}
+	if cmd.Flags().Changed("column-slug") {
+		if columnSlug == "" {
+			return errors.New(`invalid --column-slug "": the API has no clear-the-column form (the schema requires 1-60 characters and is not nullable) — omit the flag to keep the current column`)
+		}
+		if n := utf8.RuneCountInString(columnSlug); n > 60 {
+			return fmt.Errorf("invalid --column-slug: must be 1-60 characters, got %d", n)
+		}
+	}
+	return nil
+}
+
 func newFeaturesCreateCmd() *cobra.Command {
 	var title, description, columnSlug, versionID string
 	create := &cobra.Command{
@@ -263,6 +312,9 @@ func newFeaturesCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if title == "" || description == "" {
 				return errors.New("--title and --description are required")
+			}
+			if err := validateFeaturesCreateFlags(title, description, columnSlug); err != nil {
+				return err
 			}
 			appID, err := A.requireAppID()
 			if err != nil {
@@ -306,6 +358,11 @@ func newFeaturesUpdateCmd() *cobra.Command {
 		Short: "Update a feature request",
 		Args:  exactNonBlankArg("feature request reference"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Validate before the lookup: an out-of-bounds flag must fail
+			// without burning the ID-resolution round trips (issue #341).
+			if err := validateFeaturesUpdateFlags(cmd, title, description, columnSlug); err != nil {
+				return err
+			}
 			r, err := fetchOneFeatureRequest(cmd.Context(), args[0])
 			if err != nil {
 				return err

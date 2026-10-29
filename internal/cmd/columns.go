@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -22,6 +24,101 @@ func newColumnsCmd() *cobra.Command {
 }
 
 var columnKinds = []string{"pending_review", "normal", "done"}
+
+// columnKindSet mirrors FeatureRequestColumnKindSchema's enum for the
+// create/update pre-flight (shell completion alone never rejected anything,
+// issue #341).
+var columnKindSet = map[string]bool{"pending_review": true, "normal": true, "done": true}
+
+var (
+	// columnColorRE mirrors ColumnColorSchema (^#[0-9a-fA-F]{6}$).
+	columnColorRE = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	// columnSlugRE mirrors the slug regex inside CreateColumnInputSchema.
+	columnSlugRE = regexp.MustCompile(`^[a-z0-9_-]+$`)
+)
+
+// validateColumnsCreateFlags mirrors CreateColumnInputSchema's zod intake
+// bounds (name 1-60, slug 1-60 [a-z0-9_-], kind enum, #rrggbb color) so an
+// out-of-bounds create fails locally naming the flag instead of as a
+// guaranteed 400 Validation failed (issue #341, following
+// validateAppsUpdateFlags from #336). Slug and color are only sent when
+// non-empty, so only non-empty values are checked.
+func validateColumnsCreateFlags(name, slug, kind, color string) error {
+	if n := utf8.RuneCountInString(name); n > 60 {
+		return fmt.Errorf("invalid --name: must be 1-60 characters, got %d", n)
+	}
+	if slug != "" {
+		if n := utf8.RuneCountInString(slug); n > 60 {
+			return fmt.Errorf("invalid --slug: must be 1-60 characters, got %d", n)
+		}
+		if !columnSlugRE.MatchString(slug) {
+			return fmt.Errorf("invalid --slug %q: may only contain a-z, 0-9, _ and -", slug)
+		}
+	}
+	if !columnKindSet[kind] {
+		return fmt.Errorf("invalid --kind %q: must be one of pending_review, normal, done", kind)
+	}
+	if color != "" && !columnColorRE.MatchString(color) {
+		return fmt.Errorf("invalid --color %q: must be a #rrggbb hex color (e.g. #4f46e5)", color)
+	}
+	return nil
+}
+
+// validateColumnsUpdateFlags mirrors UpdateColumnInputSchema's zod intake
+// bounds (name 1-60, #rrggbb color, nonnegative position) so a rejected
+// update fails before any request (issue #341). Neither field is nullable,
+// so --name ""/--color "" below the bound are rejected with the accepted
+// range named rather than sent as a guaranteed 400.
+func validateColumnsUpdateFlags(cmd *cobra.Command, name, color string, position int) error {
+	if cmd.Flags().Changed("name") {
+		if n := utf8.RuneCountInString(name); n < 1 || n > 60 {
+			return fmt.Errorf("invalid --name: must be 1-60 characters, got %d", n)
+		}
+	}
+	if cmd.Flags().Changed("position") && position < 0 {
+		return fmt.Errorf("invalid --position: must be 0 or greater, got %d", position)
+	}
+	if cmd.Flags().Changed("color") && !columnColorRE.MatchString(color) {
+		return fmt.Errorf("invalid --color %q: must be a #rrggbb hex color (e.g. #4f46e5)", color)
+	}
+	return nil
+}
+
+// validateVersionsCreateFlags mirrors CreateVersionInputSchema's zod intake
+// bounds (label 1-64, description at most 2000 characters) so an
+// out-of-bounds create fails locally naming the flag (issue #341).
+func validateVersionsCreateFlags(label, description string) error {
+	if n := utf8.RuneCountInString(label); n > 64 {
+		return fmt.Errorf("invalid --label: must be 1-64 characters, got %d", n)
+	}
+	if description != "" {
+		if n := utf8.RuneCountInString(description); n > 2000 {
+			return fmt.Errorf("invalid --description: must be at most 2000 characters, got %d", n)
+		}
+	}
+	return nil
+}
+
+// validateVersionsUpdateFlags mirrors UpdateVersionInputSchema's zod intake
+// bounds (label 1-64 and not nullable, description at most 2000 with ""
+// clearing it, nonnegative position) so a rejected update fails before any
+// request (issue #341).
+func validateVersionsUpdateFlags(cmd *cobra.Command, label, description string, position int) error {
+	if cmd.Flags().Changed("label") {
+		if n := utf8.RuneCountInString(label); n < 1 || n > 64 {
+			return fmt.Errorf("invalid --label: must be 1-64 characters, got %d", n)
+		}
+	}
+	if cmd.Flags().Changed("description") && description != "" {
+		if n := utf8.RuneCountInString(description); n > 2000 {
+			return fmt.Errorf("invalid --description: must be at most 2000 characters, got %d", n)
+		}
+	}
+	if cmd.Flags().Changed("position") && position < 0 {
+		return fmt.Errorf("invalid --position: must be 0 or greater, got %d", position)
+	}
+	return nil
+}
 
 func newColumnsListCmd() *cobra.Command {
 	return &cobra.Command{
@@ -77,6 +174,9 @@ func newColumnsCreateCmd() *cobra.Command {
 			if name == "" {
 				return errors.New("--name is required")
 			}
+			if err := validateColumnsCreateFlags(name, slug, kind, color); err != nil {
+				return err
+			}
 			ws, appID, err := resolveAppScope(cmd)
 			if err != nil {
 				return err
@@ -117,6 +217,9 @@ func newColumnsUpdateCmd() *cobra.Command {
 		Short: "Update a roadmap column",
 		Args:  exactNonBlankArg("column id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateColumnsUpdateFlags(cmd, name, color, position); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -239,6 +342,9 @@ func newVersionsCreateCmd() *cobra.Command {
 			if label == "" {
 				return errors.New("--label is required")
 			}
+			if err := validateVersionsCreateFlags(label, description); err != nil {
+				return err
+			}
 			ws, appID, err := resolveAppScope(cmd)
 			if err != nil {
 				return err
@@ -277,6 +383,9 @@ func newVersionsUpdateCmd() *cobra.Command {
 		Short: "Update a version",
 		Args:  exactNonBlankArg("version id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateVersionsUpdateFlags(cmd, label, description, position); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err

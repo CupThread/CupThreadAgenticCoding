@@ -684,7 +684,7 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 				}
 				reply(t, w, changelogEntry)
 			},
-			cmd: []string{"changelog", "create", "--title", "T", "--body", "B", "--workspace", "ws_1", "--app", "app_1"},
+			cmd: []string{"changelog", "create", "--title", "Test entry", "--body", "B", "--workspace", "ws_1", "--app", "app_1"},
 			dig: []any{"id"},
 		},
 		{
@@ -695,7 +695,7 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 				}
 				reply(t, w, changelogEntry)
 			},
-			cmd: []string{"changelog", "update", "entry_1", "--title", "T", "--workspace", "ws_1"},
+			cmd: []string{"changelog", "update", "entry_1", "--title", "Test entry", "--workspace", "ws_1"},
 			dig: []any{"id"},
 		},
 		{

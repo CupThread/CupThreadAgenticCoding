@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -115,6 +116,42 @@ func shortID(id string) string {
 	return id
 }
 
+// changelogBodyLimit mirrors the shared changelog schema's body intake bound
+// (z.string().max(20000)); the generic 1 MB console cap still governs how
+// much --body-file may read, but a body past the server's 20000-character
+// bound can never succeed and fails here instead of as a guaranteed 400
+// (issue #341). Length is counted in runes like #336 settled.
+const changelogBodyLimit = 20000
+
+// validateChangelogWriteFlags mirrors Create/UpdateChangelogEntryInputSchema's
+// zod intake bounds (title 3-160, versionLabel 1-64, linkedRequestIds at most
+// 50 of 1+ characters each) so a rejected write fails locally naming the flag
+// instead of as a guaranteed 400 Validation failed (issue #341). On create
+// the flags are always sent and checked regardless of cobra's Changed; on
+// update only a passed flag is checked. Clearing --version-label with "" on
+// update is legal (sent as null), so only non-empty values are length-checked.
+func validateChangelogWriteFlags(cmd *cobra.Command, title, versionLabel string, linkIDs []string, creating bool) error {
+	if creating || cmd.Flags().Changed("title") {
+		if n := utf8.RuneCountInString(title); n < 3 || n > 160 {
+			return fmt.Errorf("invalid --title: must be 3-160 characters, got %d", n)
+		}
+	}
+	if versionLabel != "" && (creating || cmd.Flags().Changed("version-label")) {
+		if n := utf8.RuneCountInString(versionLabel); n > 64 {
+			return fmt.Errorf("invalid --version-label: must be 1-64 characters, got %d", n)
+		}
+	}
+	if len(linkIDs) > 50 {
+		return fmt.Errorf("invalid --link-request-ids: at most 50 request IDs, got %d", len(linkIDs))
+	}
+	for _, id := range linkIDs {
+		if id == "" {
+			return errors.New(`invalid --link-request-ids: request IDs cannot be empty (check for a stray comma)`)
+		}
+	}
+	return nil
+}
+
 func newChangelogCreateCmd() *cobra.Command {
 	var title, bodyText, bodyFile, versionLabel, versionID, scheduleAt string
 	var linkIDs []string
@@ -132,6 +169,9 @@ func newChangelogCreateCmd() *cobra.Command {
 				if perr := A.reportInputTooLarge(err); perr != nil {
 					return perr
 				}
+				return err
+			}
+			if err := validateChangelogWriteFlags(cmd, title, versionLabel, linkIDs, true); err != nil {
 				return err
 			}
 			appID, err := A.requireAppID()
@@ -178,8 +218,11 @@ func newChangelogCreateCmd() *cobra.Command {
 }
 
 // resolveBody returns the markdown body from --body or --body-file. The file
-// form is capped at the console route's 1 MB request-body limit. An
-// explicitly passed blank --body-file fails locally instead of falling
+// form is capped at the console route's 1 MB request-body limit, and both
+// forms are capped at the server's 20000-character intake bound
+// (changelogBodyLimit) — a bigger body can never be accepted and fails here
+// naming the flag it came from instead of as a guaranteed 400 (issue #341).
+// An explicitly passed blank --body-file fails locally instead of falling
 // through to --body (issue #293): the fall-through turned `--body-file
 // "$UNSET_VAR"` into body "" — a silent wipe of the entry body on update, an
 // empty-bodied entry on create — while "" is documented as a deliberate clear
@@ -193,9 +236,24 @@ func resolveBody(cmd *cobra.Command, bodyText, bodyFile string) (string, error) 
 		if err != nil {
 			return "", flagInputError("body-file", err)
 		}
+		if err := checkChangelogBodyLimit("body-file", string(data)); err != nil {
+			return "", err
+		}
 		return string(data), nil
 	}
+	if err := checkChangelogBodyLimit("body", bodyText); err != nil {
+		return "", err
+	}
 	return bodyText, nil
+}
+
+// checkChangelogBodyLimit rejects a resolved body over the shared schema's
+// 20000-character intake bound (issue #341).
+func checkChangelogBodyLimit(flagName, text string) error {
+	if n := utf8.RuneCountInString(text); n > changelogBodyLimit {
+		return fmt.Errorf("invalid --%s: the changelog body limit is %d characters, got %d", flagName, changelogBodyLimit, n)
+	}
+	return nil
 }
 
 func newChangelogUpdateCmd() *cobra.Command {
@@ -206,6 +264,9 @@ func newChangelogUpdateCmd() *cobra.Command {
 		Short: "Update a changelog entry",
 		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateChangelogWriteFlags(cmd, title, versionLabel, linkIDs, false); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err

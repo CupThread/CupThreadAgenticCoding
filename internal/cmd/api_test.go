@@ -534,28 +534,31 @@ func TestAPIRequestJSONErrorOmitsEmptyDetails(t *testing.T) {
 	}
 }
 
-// TestFeaturesCreateSurfacesValidationField covers issue #73's integration
+// TestChangelogCreateSurfacesValidationField covers issue #73's integration
 // expectation: a typed command failing with a detailed 400 names the
 // offending field in its error, so callers see why instead of a bare
-// "Validation failed (HTTP 400)".
-func TestFeaturesCreateSurfacesValidationField(t *testing.T) {
+// "Validation failed (HTTP 400)". The vehicle is the changelog --version-id
+// uuid format — an intake rule the CLI deliberately does not pre-flight —
+// because issue #341 made features create's own schema bounds fail locally
+// before any request.
+func TestChangelogCreateSurfacesValidationField(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/console/workspaces/ws_1/feature-requests" {
+		if r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog" {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"title":["Title must be at least 3 characters"]}}}`))
+		_, _ = w.Write([]byte(`{"error":"Validation failed","details":{"formErrors":[],"fieldErrors":{"versionId":["Invalid uuid"]}}}`))
 	}))
 	defer server.Close()
 
 	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
-		"features", "create", "--title", "ab", "--description", "x")
+		"changelog", "create", "--title", "Valid title", "--version-id", "not-a-uuid")
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if !strings.Contains(err.Error(), "title: Title must be at least 3 characters") {
+	if !strings.Contains(err.Error(), "versionId: Invalid uuid") {
 		t.Errorf("error = %v, want the field-level reason", err)
 	}
 }
