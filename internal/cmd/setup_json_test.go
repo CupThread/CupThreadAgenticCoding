@@ -523,7 +523,9 @@ func TestSkillsLinkJSONPartialSkip(t *testing.T) {
 	if skip["skill"] != "cupthread-api" {
 		t.Errorf("skipped[0].skill = %v, want cupthread-api", skip["skill"])
 	}
-	if target := skip["target"].(string); !strings.HasSuffix(target, ".claude/skills") {
+	// ToSlash normalizes the Windows backslash separators, so the agent-dir
+	// suffix check is platform-neutral.
+	if target := filepath.ToSlash(skip["target"].(string)); !strings.HasSuffix(target, ".claude/skills") {
 		t.Errorf("skipped[0].target = %v, want the agent-directory rel path ending in .claude/skills", target)
 	}
 
