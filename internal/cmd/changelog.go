@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -35,7 +37,11 @@ qualifies — personal access tokens and OAuth logins are both cpt_ tokens,
 so they fail with 403 interactive_session_required; publish in the Console
 web UI. For member-role callers they fail with 403 capability_required.
 Passing --schedule-at "" sends scheduledAt: null, which only clears an
-existing schedule and needs plain content.manage (no admin role required).`,
+existing schedule and needs plain content.manage (no admin role required).
+A schedule value must be the strict UTC datetime form the server's schema
+enforces, e.g. 2026-11-05T09:00:00Z (fractional seconds allowed): date-only
+strings, free text, and numeric offsets like +02:00 are rejected locally
+before any request.`,
 	}
 	cmd.AddCommand(
 		newChangelogListCmd(),
@@ -123,14 +129,40 @@ func shortID(id string) string {
 // (issue #341). Length is counted in runes like #336 settled.
 const changelogBodyLimit = 20000
 
+// zodDatetimePattern mirrors z.string().datetime()'s default (offset=false)
+// shape exactly: only the strict UTC form YYYY-MM-DDTHH:MM:SS(.fff...)Z
+// passes the shared changelog schema's scheduledAt check. This is stricter
+// than Go's time.RFC3339, which also accepts numeric offsets — zod rejects
+// those, so a plain RFC3339 parse would still let guaranteed-400 values
+// through (issue #349).
+var zodDatetimePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$`)
+
+// validateUTCDatetimeFlag rejects a datetime flag value the server's zod
+// .datetime() check can never accept, naming the flag, so the write fails
+// locally instead of as a guaranteed 400 Validation failed (issue #349).
+// The shape regex is zod's exact default pattern; time.Parse then rejects
+// impossible calendar datetimes the shape alone would accept (month 13,
+// February 30th, leap seconds).
+func validateUTCDatetimeFlag(flag, value string) error {
+	if !zodDatetimePattern.MatchString(value) {
+		return fmt.Errorf("invalid --%s %q: must be a UTC ISO 8601 datetime (e.g. 2026-11-05T09:00:00Z)", flag, value)
+	}
+	if _, err := time.Parse(time.RFC3339, value); err != nil {
+		return fmt.Errorf("invalid --%s %q: must be a real calendar datetime in UTC form (e.g. 2026-11-05T09:00:00Z)", flag, value)
+	}
+	return nil
+}
+
 // validateChangelogWriteFlags mirrors Create/UpdateChangelogEntryInputSchema's
 // zod intake bounds (title 3-160, versionLabel 1-64, linkedRequestIds at most
-// 50 of 1+ characters each) so a rejected write fails locally naming the flag
-// instead of as a guaranteed 400 Validation failed (issue #341). On create
-// the flags are always sent and checked regardless of cobra's Changed; on
-// update only a passed flag is checked. Clearing --version-label with "" on
-// update is legal (sent as null), so only non-empty values are length-checked.
-func validateChangelogWriteFlags(cmd *cobra.Command, title, versionLabel string, linkIDs []string, creating bool) error {
+// 50 of 1+ characters each, scheduledAt a strict UTC datetime) so a rejected
+// write fails locally naming the flag instead of as a guaranteed 400
+// (issues #341, #349). On create the flags are always sent and checked
+// regardless of cobra's Changed; on update only a passed flag is checked.
+// Clearing --version-label with "" on update is legal (sent as null), so only
+// non-empty values are length-checked; the same holds for --schedule-at,
+// whose "" is the documented clear form and is simply omitted on create.
+func validateChangelogWriteFlags(cmd *cobra.Command, title, versionLabel, scheduleAt string, linkIDs []string, creating bool) error {
 	if creating || cmd.Flags().Changed("title") {
 		if n := utf8.RuneCountInString(title); n < 3 || n > 160 {
 			return fmt.Errorf("invalid --title: must be 3-160 characters, got %d", n)
@@ -139,6 +171,11 @@ func validateChangelogWriteFlags(cmd *cobra.Command, title, versionLabel string,
 	if versionLabel != "" && (creating || cmd.Flags().Changed("version-label")) {
 		if n := utf8.RuneCountInString(versionLabel); n > 64 {
 			return fmt.Errorf("invalid --version-label: must be 1-64 characters, got %d", n)
+		}
+	}
+	if scheduleAt != "" && (creating || cmd.Flags().Changed("schedule-at")) {
+		if err := validateUTCDatetimeFlag("schedule-at", scheduleAt); err != nil {
+			return err
 		}
 	}
 	if len(linkIDs) > 50 {
@@ -171,7 +208,7 @@ func newChangelogCreateCmd() *cobra.Command {
 				}
 				return err
 			}
-			if err := validateChangelogWriteFlags(cmd, title, versionLabel, linkIDs, true); err != nil {
+			if err := validateChangelogWriteFlags(cmd, title, versionLabel, scheduleAt, linkIDs, true); err != nil {
 				return err
 			}
 			appID, err := A.requireAppID()
@@ -213,7 +250,7 @@ func newChangelogCreateCmd() *cobra.Command {
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
 	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop")
 	create.Flags().BoolVar(&publishNow, "publish-now", false, "Publish immediately")
-	create.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (ISO 8601 datetime)")
+	create.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z)")
 	return create
 }
 
@@ -264,7 +301,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 		Short: "Update a changelog entry",
 		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateChangelogWriteFlags(cmd, title, versionLabel, linkIDs, false); err != nil {
+			if err := validateChangelogWriteFlags(cmd, title, versionLabel, scheduleAt, linkIDs, false); err != nil {
 				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
@@ -317,7 +354,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 	update.Flags().StringVar(&versionLabel, "version-label", "", "Version label (\"\" clears it)")
 	update.Flags().StringVar(&versionID, "version-id", "", "Linked version ID (\"\" clears it)")
 	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link")
-	update.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (\"\" clears it)")
+	update.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z; \"\" clears it)")
 	return update
 }
 
