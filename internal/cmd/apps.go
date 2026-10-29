@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
@@ -321,6 +322,13 @@ func newAppsCreateCmd() *cobra.Command {
 			if name == "" {
 				return errors.New("--name is required")
 			}
+			// Same code-point bounds the server enforces on create
+			// (ConsoleCreateAppInputSchema) and validateAppsUpdateFlags
+			// enforces on update, so both commands pre-flight identically
+			// (issue #336).
+			if n := utf8.RuneCountInString(name); n < 2 || n > 120 {
+				return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", n)
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -588,8 +596,9 @@ var appSlugRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 var appPlatformSet = map[string]bool{"ios": true, "macos": true, "android": true, "universal": true}
 
 // validateAppsUpdateFlags checks flag values against the server's zod rules
-// (UpdateWorkspaceAppInputSchema: name 2-120, slug 2-64 [a-z0-9-]+, absolute
-// URLs, 1-4 platforms) so a rejected update fails before any request is sent.
+// (UpdateWorkspaceAppInputSchema: name 2-120 code points, slug 2-64
+// [a-z0-9-]+, absolute URLs, 1-4 platforms) so a rejected update fails
+// before any request is sent.
 // Clearing a URL with "" is allowed (sent as null); only values meant to be
 // set are checked.
 // maxIconBytes mirrors the server-side app-icon cap (SEC-36): the console
@@ -599,8 +608,13 @@ var appPlatformSet = map[string]bool{"ios": true, "macos": true, "android": true
 const maxIconBytes = 10 << 20
 
 func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreURL, googlePlayURL string, platforms []string, iconPath string) error {
-	if cmd.Flags().Changed("name") && (len(name) < 2 || len(name) > 120) {
-		return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", len(name))
+	if cmd.Flags().Changed("name") {
+		// zod measures string length in Unicode code points, so rune
+		// count — not byte length — mirrors the server's 2-120 rule
+		// (issue #336): a 45-character CJK name is 135 bytes but legal.
+		if n := utf8.RuneCountInString(name); n < 2 || n > 120 {
+			return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", n)
+		}
 	}
 	if cmd.Flags().Changed("slug") {
 		if len(slug) < 2 || len(slug) > 64 {
