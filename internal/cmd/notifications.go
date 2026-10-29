@@ -35,9 +35,8 @@ var notificationTypes = []string{
 
 func newNotificationsCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "notifications",
-		Aliases: []string{"notifications"},
-		Short:   "Read and configure workspace notifications",
+		Use:   "notifications",
+		Short: "Read and configure workspace notifications",
 	}
 	cmd.AddCommand(
 		newNotificationsListCmd(),
@@ -184,8 +183,9 @@ func newNotificationPrefsSetCmd() *cobra.Command {
 		Long: `Update notification preferences for a channel (inbox or email).
 
 --events takes a comma-separated list of event types (see 'prefs show' or the
-types below); --all-events enables every type. Pass --enable or --disable
-(they are mutually exclusive) to switch the channel on or off.`,
+types below); --all-events enables every type. --events and --all-events are
+mutually exclusive, as are --enable and --disable, which switch the channel
+on or off.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if channel != "inbox" && channel != "email" {
@@ -208,6 +208,14 @@ types below); --all-events enables every type. Pass --enable or --disable
 			// asked for. Refuse before any request, like inbox bulk-triage.
 			if cmd.Flags().Changed("enable") && cmd.Flags().Changed("disable") {
 				return errors.New("--enable and --disable are mutually exclusive; pass one")
+			}
+			// --events and --all-events both write body["eventMask"]
+			// (issue #367): with both passed, the --all-events branch
+			// silently overwrote the explicit list, enabling every type the
+			// caller meant to restrict, with exit code 0. Refuse before any
+			// request, like the --enable/--disable guard above.
+			if cmd.Flags().Changed("events") && cmd.Flags().Changed("all-events") {
+				return errors.New("--events and --all-events are mutually exclusive; pass one")
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
