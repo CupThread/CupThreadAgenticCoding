@@ -567,6 +567,58 @@ func TestCommentsListNotFoundCoversUnapproved(t *testing.T) {
 	}
 }
 
+// TestCommentsListNotFoundSurvivesWrappedError extends the issue #360 pin to
+// the public listing: its 404 branch carries the PRIV-12 "not available"
+// message, and a future client wrap of the 404 path must not strip that down
+// to the raw APIError text either. The command builds its client through the
+// publicClient factory seam, so the test swaps it for one whose Token
+// provider returns fmt.Errorf("portal: %w", …404…) — DoWithHeaders hands a
+// Token failure back verbatim, before any wire attempt, exactly the shape a
+// future client wrap would produce. Against the former direct
+// err.(*api.APIError) assertion this case fails with the wrapped raw error
+// instead of the not-available message, so a revert of only the public
+// caller cannot escape the suite.
+func TestCommentsListNotFoundSurvivesWrappedError(t *testing.T) {
+	wrapped404 := fmt.Errorf("portal: %w", &api.APIError{
+		Status:  http.StatusNotFound,
+		Message: "Feature request not found",
+	})
+
+	oldA := A
+	defer func() { A = oldA }()
+	oldFactory := publicClient
+	publicClient = func(a *app) *api.Client {
+		client := oldFactory(a)
+		client.Token = func(context.Context) (string, error) { return "", wrapped404 }
+		return client
+	}
+	defer func() { publicClient = oldFactory }()
+
+	A = &app{
+		out:     output.New(io.Discard, output.FormatTable),
+		cfg:     &config.Config{},
+		cfgPath: filepath.Join(t.TempDir(), "config.json"),
+	}
+
+	cmd := newCommentsListCmd()
+	err := cmd.RunE(cmd, []string{"fr_pending"})
+	if err == nil {
+		t.Fatal("expected the not-available error for a wrapped 404")
+	}
+	for _, want := range []string{
+		`comments for feature request "fr_pending" are not available`,
+		"may not exist",
+		"may not be approved yet",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "portal:") {
+		t.Errorf("error = %q, want the friendly message without the wrapped raw error", err)
+	}
+}
+
 // TestCommentsListAuthenticationRequiredHint covers the PRIV-12 401 (issue
 // #77): a sign-in-only board rejects anonymous thread reads with
 // authentication_required, and the CLI error must surface the actionable

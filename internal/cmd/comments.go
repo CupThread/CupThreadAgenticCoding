@@ -229,6 +229,14 @@ before anything is sent; non-interactive callers must pass --yes.`,
 	return cmd
 }
 
+// publicClient builds the client the public comment listing rides on.
+// Indirection over (*app).unauthenticatedClient so tests can hand the command
+// a client whose per-request Token provider injects a wrapped error — a
+// Token failure comes back verbatim, before any wire attempt, which is the
+// shape a future client-side wrap of the 404 path would produce (issue #360
+// review). Production always gets the credential-free client.
+var publicClient = (*app).unauthenticatedClient
+
 func newCommentsListCmd() *cobra.Command {
 	var appKey, userToken string
 	list := &cobra.Command{
@@ -252,13 +260,14 @@ disabled answer 401.`,
 			if userToken != "" {
 				headers["X-User-Token"] = userToken
 			}
+			client := publicClient(A)
 			resp, err := fetchCommentThread(func(cursor string) (*api.ListCommentsResponse, error) {
 				var q url.Values
 				if cursor != "" {
 					q = url.Values{"cursor": {cursor}}
 				}
 				var page api.ListCommentsResponse
-				if err := A.unauthenticatedClient().DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
+				if err := client.DoWithHeaders(cmd.Context(), "GET", path, q, headers, nil, &page); err != nil {
 					// PRIV-12: the public thread endpoint answers 404 both for a
 					// missing id and for an unapproved request (existence
 					// hiding), so the message must not imply the request never
