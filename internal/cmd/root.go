@@ -776,7 +776,11 @@ func (a *app) applyTokenSet(set *auth.TokenSet) {
 	a.cfg.Auth.ClientID = auth.FirstPartyClientID
 	a.cfg.Auth.TokenPrefix = prefix
 	if set.ExpiresIn > 0 {
-		a.cfg.Auth.ExpiresAt = time.Now().Add(time.Duration(set.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+		// LifetimeDuration clamps garbage-huge expires_in values that
+		// would wrap the time.Duration conversion negative and store an
+		// already-past expiry, re-running the refresh on every request
+		// (issue #374).
+		a.cfg.Auth.ExpiresAt = time.Now().Add(auth.LifetimeDuration(set.ExpiresIn)).UTC().Format(time.RFC3339)
 		a.degradedRefreshAccessToken = ""
 		return
 	}

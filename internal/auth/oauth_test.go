@@ -581,6 +581,32 @@ func TestStartDeviceExpiresIn(t *testing.T) {
 	}
 }
 
+// TestStartDeviceHugeExpiresInStaysFuture pins the issue #374 fix: an
+// absurd expires_in (10000000000 seconds) must clamp instead of wrapping
+// the time.Duration conversion negative — a wrapped value put ExpiresAt in
+// the past, so Wait failed the login instantly with "device code expired"
+// before the first poll.
+func TestStartDeviceHugeExpiresInStaysFuture(t *testing.T) {
+	server := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":10000000000}`)
+	defer server.Close()
+
+	stop := captureStderr(t)
+	start, err := StartDevice(context.Background(), server.URL, server.URL, FirstPartyClientID)
+	stderr := stop()
+	if err != nil {
+		t.Fatalf("StartDevice: %v", err)
+	}
+	if start.ExpiresAt.IsZero() {
+		t.Fatal("ExpiresAt is zero, want the clamped advertised expiry")
+	}
+	if until := time.Until(start.ExpiresAt); until < 9*365*24*time.Hour {
+		t.Errorf("ExpiresAt sits %v away, want ~10 years (clamped, never in the past)", until)
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("stderr = %q, want no warning for an advertised expiry", stderr)
+	}
+}
+
 // TestDeviceWaitCompletesWithoutExpiresIn pins the issue #185 behavior end
 // to end: a server that omits expires_in must not abort the flow before the
 // first poll — Wait keeps polling and completes the login.

@@ -131,6 +131,34 @@ func TestApplyTokenSetPreservesCarriedFieldsOnly(t *testing.T) {
 	})
 }
 
+// TestApplyTokenSetHugeExpiresInStaysFuture pins the issue #374 fix: an
+// absurd expires_in (10000000000 seconds) from a broken token endpoint must
+// clamp instead of wrapping the time.Duration conversion negative — a
+// wrapped value stored ExpiresAt in the past, so the transparent-refresh
+// guard re-POSTed the token endpoint on every request within the process.
+func TestApplyTokenSetHugeExpiresInStaysFuture(t *testing.T) {
+	pastExpiry := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	a := &app{out: output.New(io.Discard, output.FormatTable), cfg: &config.Config{Auth: &config.Auth{
+		Method: "oauth", AccessToken: "cpt_old", RefreshToken: "cpr_keep", ExpiresAt: pastExpiry,
+	}}}
+	stderr := captureStderr(t, func() {
+		a.applyTokenSet(&auth.TokenSet{AccessToken: "cpt_new", ExpiresIn: 10000000000})
+	})
+	expiry, err := time.Parse(time.RFC3339, a.cfg.Auth.ExpiresAt)
+	if err != nil {
+		t.Fatalf("ExpiresAt = %q, want a parseable RFC3339 expiry (%v)", a.cfg.Auth.ExpiresAt, err)
+	}
+	if until := time.Until(expiry); until < 9*365*24*time.Hour {
+		t.Errorf("ExpiresAt = %q, sits %v away; want ~10 years (clamped, never in the past)", a.cfg.Auth.ExpiresAt, until)
+	}
+	if a.degradedRefreshAccessToken != "" {
+		t.Errorf("degradedRefreshAccessToken = %q, want it cleared once an expiry is advertised", a.degradedRefreshAccessToken)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want no warning when expires_in is advertised", stderr)
+	}
+}
+
 // TestRefreshKeepsCredentialWhenResponseOmitsFields is the issue #314
 // regression: an expired credential transparently refreshed against a token
 // endpoint that answers access_token only must keep the stored refresh token

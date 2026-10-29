@@ -595,7 +595,7 @@ func (c *Client) retryMaxDelay() time.Duration {
 // backoff so parallel agent sessions desynchronize instead of retrying in
 // lockstep.
 func (c *Client) retryWait(retryAfter string, attempt int) time.Duration {
-	if d, ok := parseRetryAfter(retryAfter, time.Now()); ok {
+	if d, ok := c.parseRetryAfter(retryAfter, time.Now()); ok {
 		if ceiling := c.retryMaxDelay(); d > ceiling {
 			d = ceiling
 		}
@@ -606,15 +606,25 @@ func (c *Client) retryWait(retryAfter string, attempt int) time.Duration {
 
 // parseRetryAfter reads a Retry-After header value in delay-seconds or
 // HTTP-date form. It reports false for absent, negative, or unparseable
-// values so the caller falls back to its own backoff.
-func parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
+// values so the caller falls back to its own backoff. A parseable but
+// absurd delay-seconds value is clamped to the retry ceiling before the
+// time.Duration conversion: int64 nanoseconds wrap at ~292 years, and the
+// wrapped negative would slip past retryWait's `d > ceiling` clamp and
+// retry with zero backoff (issue #374).
+func (c *Client) parseRetryAfter(v string, now time.Time) (time.Duration, bool) {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0, false
 	}
-	if secs, err := strconv.Atoi(v); err == nil {
+	// ParseInt keeps the clamp reachable on 32-bit targets, where Atoi
+	// range-errors on values past math.MaxInt32 and the wrapped-negative
+	// guard would never run.
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
 		if secs < 0 {
 			return 0, false
+		}
+		if maxSecs := int64(c.retryMaxDelay() / time.Second); secs > maxSecs {
+			return c.retryMaxDelay(), true
 		}
 		return time.Duration(secs) * time.Second, true
 	}

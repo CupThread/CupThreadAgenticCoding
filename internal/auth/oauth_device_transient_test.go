@@ -282,6 +282,11 @@ func TestParseRetryAfter(t *testing.T) {
 		"http-date future":  {future, time.Minute},
 		"http-date past":    {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), 0},
 		"surrounding space": {"  5  ", 5 * time.Second},
+		// Issue #374: delay-seconds values past int64-nanosecond range
+		// (~292 years) used to wrap negative and slip past the
+		// maxHonoredRetryAfter cap; they must clamp to it instead.
+		"first overflowing": {"9223372037", time.Minute},
+		"ten billion":       {"10000000000", time.Minute},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
