@@ -184,7 +184,10 @@ func TestDeviceWaitBacksOffOnConsecutiveTransientFailures(t *testing.T) {
 		t.Errorf("spacing after 3rd 503 = %v, want ≥ 160ms (backoff doubles again)", s)
 	}
 	// After the pending answer the backoff is reset: poll 5 waits ~1×.
-	if s := log.spacing(3); s >= 80*time.Millisecond {
+	// The 120ms ceiling budgets ~80ms of handler/scheduling slack on top of
+	// the 40ms interval while still separating cleanly from a missed reset,
+	// which would hold the 4× (160ms) backoff and always cross the bound.
+	if s := log.spacing(3); s >= 120*time.Millisecond {
 		t.Errorf("spacing after pending = %v, want ≈ 40ms (backoff leaked across progress)", s)
 	}
 }
