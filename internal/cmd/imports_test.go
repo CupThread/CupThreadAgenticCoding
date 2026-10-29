@@ -35,6 +35,17 @@ func importJobsFixture(n int) string {
 	return `{"jobs":[` + importJobsArray(n) + `]}`
 }
 
+// seededConfigPath writes defaultAppConfig to a throwaway config file for
+// runRootCapture, which needs an explicit config path.
+func seededConfigPath(t *testing.T) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, []byte(defaultAppConfig), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return cfgPath
+}
+
 // TestImportsListDisclosesServerCap pins the issue #346 client-side half for
 // the app-scoped listing: the route serves only the newest 50 jobs with no
 // total and no paging, so a cap-sized answer must say so instead of reading
@@ -47,7 +58,8 @@ func TestImportsListDisclosesServerCap(t *testing.T) {
 	server := inboxServer(t, http.StatusOK, importJobsFixture(importsAppPageSize), &captured)
 	defer server.Close()
 
-	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "imports", "list")
+	cfgPath := seededConfigPath(t)
+	out, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "list")
 	if err != nil {
 		t.Fatalf("imports list: %v", err)
 	}
@@ -66,7 +78,7 @@ func TestImportsListDisclosesServerCap(t *testing.T) {
 
 	server2 := inboxServer(t, http.StatusOK, importJobsFixture(importsAppPageSize-1), &captured)
 	defer server2.Close()
-	out, err = runRootWithSeededConfig(t, server2.URL, defaultAppConfig, "imports", "list")
+	out, _, err = runRootCapture(t, cfgPath, server2.URL, "imports", "list")
 	if err != nil {
 		t.Fatalf("imports list (49 jobs): %v", err)
 	}
@@ -88,7 +100,11 @@ func TestImportsHistoryDisclosesServerCap(t *testing.T) {
 	server := inboxServer(t, http.StatusOK, importJobsFixture(importsWorkspacePageSize), &captured)
 	defer server.Close()
 
-	out, err := runRoot(t, server.URL, "imports", "history", "--workspace", "ws_1")
+	// runRootCapture drains stdout while the command runs; the 100-row table
+	// can exceed a Windows pipe buffer, so the read-after-exit runRoot would
+	// risk blocking the test there (CodeRabbit review of #356).
+	cfgPath := seededConfigPath(t)
+	out, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "history", "--workspace", "ws_1")
 	if err != nil {
 		t.Fatalf("imports history: %v", err)
 	}
@@ -104,7 +120,7 @@ func TestImportsHistoryDisclosesServerCap(t *testing.T) {
 
 	server2 := inboxServer(t, http.StatusOK, importJobsFixture(importsWorkspacePageSize-1), &captured)
 	defer server2.Close()
-	out, err = runRoot(t, server2.URL, "imports", "history", "--workspace", "ws_1")
+	out, _, err = runRootCapture(t, cfgPath, server2.URL, "imports", "history", "--workspace", "ws_1")
 	if err != nil {
 		t.Fatalf("imports history (99 jobs): %v", err)
 	}
@@ -114,7 +130,7 @@ func TestImportsHistoryDisclosesServerCap(t *testing.T) {
 
 	server3 := inboxServer(t, http.StatusOK, importJobsFixture(importsAppPageSize), &captured)
 	defer server3.Close()
-	out, err = runRoot(t, server3.URL, "imports", "history", "--workspace", "ws_1")
+	out, _, err = runRootCapture(t, cfgPath, server3.URL, "imports", "history", "--workspace", "ws_1")
 	if err != nil {
 		t.Fatalf("imports history (50 jobs): %v", err)
 	}
@@ -134,10 +150,7 @@ func TestImportsListingsJSONNoticeOnStderr(t *testing.T) {
 	server := inboxServer(t, http.StatusOK, importJobsFixture(importsAppPageSize), &capturedRequest{})
 	defer server.Close()
 
-	cfgPath := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(cfgPath, []byte(defaultAppConfig), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	cfgPath := seededConfigPath(t)
 
 	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL, "imports", "list", "--json")
 	if err != nil {
@@ -190,7 +203,8 @@ func TestImportsListingsTotalFooterAndNotice(t *testing.T) {
 	server := inboxServer(t, http.StatusOK, `{"jobs":[`+importJobsArray(2)+`], "total": 57}`, &captured)
 	defer server.Close()
 
-	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "imports", "list")
+	cfgPath := seededConfigPath(t)
+	out, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "list")
 	if err != nil {
 		t.Fatalf("imports list (total 57): %v", err)
 	}
@@ -203,7 +217,7 @@ func TestImportsListingsTotalFooterAndNotice(t *testing.T) {
 
 	server2 := inboxServer(t, http.StatusOK, `{"jobs":[`+importJobsArray(2)+`], "total": 2}`, &captured)
 	defer server2.Close()
-	out, err = runRootWithSeededConfig(t, server2.URL, defaultAppConfig, "imports", "list")
+	out, _, err = runRootCapture(t, cfgPath, server2.URL, "imports", "list")
 	if err != nil {
 		t.Fatalf("imports list (total 2): %v", err)
 	}
