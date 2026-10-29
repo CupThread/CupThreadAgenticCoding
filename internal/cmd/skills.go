@@ -63,6 +63,14 @@ func (s skillSource) label() string {
 	return s.dir
 }
 
+// mode names the source for structured output: "checkout" or "embedded".
+func (s skillSource) mode() string {
+	if s.embedded() {
+		return "embedded"
+	}
+	return "checkout"
+}
+
 // list returns the sorted names of the skill directories.
 func (s skillSource) list() ([]string, error) {
 	var entries []fs.DirEntry
@@ -171,11 +179,7 @@ source is included in the output.`,
 				return err
 			}
 			if A.structured() {
-				source := "checkout"
-				if src.embedded() {
-					source = "embedded"
-				}
-				return A.out.Structured(map[string]any{"count": len(names), "skills": names, "source": source})
+				return A.out.Structured(map[string]any{"count": len(names), "skills": names, "source": src.mode()})
 			}
 			A.out.Printf("%d skills (%s):", len(names), src.label())
 			for _, n := range names {
@@ -213,7 +217,10 @@ in this binary are copied into place instead.
 
 With --json/--output the command prints a single object summarizing the
 whole operation — {"linked","skills","targets","source"} — instead of one
-line per agent directory.`,
+line per agent directory. When some destinations are skipped, the document
+instead carries the linked/skipped breakdown
+{"linked","skills","targets","source","skipped","error"} and the command
+still exits non-zero.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "."
@@ -236,7 +243,7 @@ line per agent directory.`,
 			}
 
 			total := len(names) * len(agentSkillDirs)
-			var skipped int
+			var skips []skillsLinkSkip
 			for _, agentDir := range agentSkillDirs {
 				dest := filepath.Join(absTarget, agentDir)
 				if err := os.MkdirAll(dest, 0o755); err != nil {
@@ -250,11 +257,11 @@ line per agent directory.`,
 						return fmt.Errorf("link %s: %w", link, err)
 					}
 					if !ok {
-						skipped++
 						rel, err := filepath.Rel(mustWD(), dest)
 						if err != nil {
 							rel = dest
 						}
+						skips = append(skips, skillsLinkSkip{Skill: name, Target: rel})
 						A.warnf("⚠ Skipped %s in %s: exists and is not a symlink (use --force to replace)", name, rel)
 						continue
 					}
@@ -273,19 +280,31 @@ line per agent directory.`,
 					A.out.Printf("✓ Linked %d of %d skills into %s", linked, len(names), rel)
 				}
 			}
-			if skipped > 0 {
-				return fmt.Errorf("skipped %d of %d skill destinations: existing entries are not symlinks (use --force to replace)", skipped, total)
+			if len(skips) > 0 {
+				err := fmt.Errorf("skipped %d of %d skill destinations: existing entries are not symlinks (use --force to replace)", len(skips), total)
+				// A partial skip is a diagnosable outcome, not a bare failure:
+				// structured mode still gets its single stdout document — the
+				// happy-path summary plus the linked/skipped breakdown — while
+				// the error keeps the exit non-zero with the human detail on
+				// stderr (issue #377, mirroring reportPartialUpdate).
+				if A.structured() {
+					_ = A.out.Structured(skillsLinkPartialResult{
+						Linked:  total - len(skips),
+						Skills:  names,
+						Targets: agentSkillDirs,
+						Source:  src.mode(),
+						Skipped: skips,
+						Error:   err.Error(),
+					})
+				}
+				return err
 			}
 			if A.structured() {
-				source := "checkout"
-				if src.embedded() {
-					source = "embedded"
-				}
 				return A.out.Structured(skillsLinkResult{
 					Linked:  total,
 					Skills:  names,
 					Targets: agentSkillDirs,
-					Source:  source,
+					Source:  src.mode(),
 				})
 			}
 			if src.embedded() {
@@ -298,12 +317,34 @@ line per agent directory.`,
 	return cmd
 }
 
-// skillsLinkResult is the machine-readable payload of 'skills link': one
-// object summarizing the whole operation instead of one line per agent
-// directory. Source is "checkout" or "embedded", mirroring 'skills list'.
+// skillsLinkResult is the machine-readable payload of a fully successful
+// 'skills link': one object summarizing the whole operation instead of one
+// line per agent directory. Source is "checkout" or "embedded", mirroring
+// 'skills list'.
 type skillsLinkResult struct {
 	Linked  int      `json:"linked"`
 	Skills  []string `json:"skills"`
 	Targets []string `json:"targets"`
 	Source  string   `json:"source"`
+}
+
+// skillsLinkSkip names one destination the install declined to replace: the
+// skill and the agent directory in the filepath.Rel form the warnings use.
+type skillsLinkSkip struct {
+	Skill  string `json:"skill"`
+	Target string `json:"target"`
+}
+
+// skillsLinkPartialResult is the machine-readable payload when 'skills link'
+// finished with skips: the happy-path summary fields plus the per-skip
+// breakdown and an error line matching the stderr failure, so a caller can
+// tell exactly which of the len(skills) × len(targets) destinations linked
+// without scraping stderr prose (issue #377).
+type skillsLinkPartialResult struct {
+	Linked  int              `json:"linked"`
+	Skills  []string         `json:"skills"`
+	Targets []string         `json:"targets"`
+	Source  string           `json:"source"`
+	Skipped []skillsLinkSkip `json:"skipped"`
+	Error   string           `json:"error"`
 }
