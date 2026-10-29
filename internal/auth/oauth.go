@@ -324,8 +324,15 @@ type DeviceStart struct {
 	clientID        string
 	UserCode        string
 	VerificationURI string
-	Interval        time.Duration
-	ExpiresAt       time.Time
+	// Interval is the live poll spacing: the advertised interval as grown
+	// by slow_down escalations, capped at
+	// baseInterval + slowDownPlateauOverBase.
+	Interval  time.Duration
+	ExpiresAt time.Time
+	// baseInterval is the pre-escalation interval StartDevice advertised;
+	// the slow_down plateau anchors on it, so it holds regardless of how
+	// far the escalation has climbed (issue #363).
+	baseInterval time.Duration
 }
 
 // StartDevice begins a device-flow login.
@@ -352,6 +359,7 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 		UserCode:        parsed.UserCode,
 		VerificationURI: parsed.VerificationURI,
 		Interval:        interval,
+		baseInterval:    interval,
 	}
 	// expires_in is REQUIRED by RFC 8628 §3.2, but --base-url targets
 	// dev/staging/self-hosted endpoints that drop it: a missing or
@@ -368,9 +376,23 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 
 // slowDownPenalty is added to the polling interval every time the token
 // endpoint answers slow_down (RFC 8628 §3.5 — the server enforces the
-// escalation, capped at interval + 60 seconds). It is a variable only so
-// tests can shrink it; production always uses the RFC's 5 seconds.
+// escalation, capped at interval + 60 seconds). The client mirrors that
+// ceiling: the climb plateaus at baseInterval + slowDownPlateauOverBase, so
+// an endpoint answering slow_down unconditionally cannot stretch the poll
+// loop without bound (issue #363). It is a variable only so tests can
+// shrink it; production always uses the RFC's 5 seconds.
 var slowDownPenalty = 5 * time.Second
+
+// slowDownPlateauOverBase caps the client-side slow_down escalation: the
+// spacing plateaus at the pre-escalation interval plus this much, mirroring
+// the server's documented ceiling of interval + 60 seconds on its enforced
+// escalation (issue #145). At or above that spacing a conforming endpoint
+// never answers slow_down again — and an endpoint that answers it
+// unconditionally (a --base-url dev/staging target, possibly without an
+// expires_in, so no expiry timer either) cannot stretch the login loop
+// indefinitely (issue #363). It is a variable only so tests can shrink it;
+// production always uses the documented 60 seconds.
+var slowDownPlateauOverBase = time.Minute
 
 // maxConsecutiveTransientPollFailures bounds the device poll loop's
 // transient-failure tolerance (issue #358): a fully-down endpoint must fail
@@ -408,7 +430,11 @@ func transientPollFailure(err error) bool {
 // back off (the next wait doubles per failure, bounded by
 // maxHonoredRetryAfter), and a Retry-After hint on the failure paces the
 // next poll by itself, so an active throttle or struggling endpoint is not
-// burned through at the advertised interval (issue #358 review).
+// burned through at the advertised interval (issue #358 review). Each
+// slow_down answer paces the next poll by the escalated interval — capped
+// at baseInterval + slowDownPlateauOverBase — and prints its own stderr
+// notice, so a throttled login visibly slows instead of looking hung
+// (issue #363).
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
 	transientFailures := 0
@@ -448,9 +474,24 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 					transientFailures = 0
 					continue
 				case "slow_down":
-					d.Interval += slowDownPenalty
+					// RFC 8628 §3.5 grows the spacing by slowDownPenalty;
+					// the growth plateaus at baseInterval +
+					// slowDownPlateauOverBase — the server's documented
+					// maximum enforced escalation (issue #145). A conforming
+					// endpoint stops answering slow_down at that spacing, and
+					// one that answers it unconditionally cannot stretch the
+					// loop without bound (issue #363). The pre-escalation
+					// base anchors the plateau, so it holds no matter how far
+					// the climb has gone.
+					d.Interval = min(d.Interval+slowDownPenalty, d.baseInterval+slowDownPlateauOverBase)
 					nextWait = d.Interval
 					transientFailures = 0
+					// Without a notice the escalated pacing is invisible
+					// after the one "Waiting for authorization" line: a
+					// throttled login looks hung (issue #363). The message
+					// carries only a duration — no server-supplied text — so
+					// it needs no control stripping.
+					fmt.Fprintf(os.Stderr, "warning: token endpoint asked to slow down; next poll in %s\n", nextWait.Round(10*time.Millisecond))
 					continue
 				case "access_denied":
 					return nil, errors.New("authorization denied")

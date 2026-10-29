@@ -217,12 +217,13 @@ func scriptedDeviceTokenServer(statuses []string) (*httptest.Server, *devicePoll
 
 func newDeviceStart(serverURL string) *DeviceStart {
 	return &DeviceStart{
-		deviceCode: "dc_test",
-		tokenURL:   serverURL,
-		clientID:   FirstPartyClientID,
-		UserCode:   "XXXX-XXXX",
-		Interval:   40 * time.Millisecond,
-		ExpiresAt:  time.Now().Add(time.Minute),
+		deviceCode:   "dc_test",
+		tokenURL:     serverURL,
+		clientID:     FirstPartyClientID,
+		UserCode:     "XXXX-XXXX",
+		Interval:     40 * time.Millisecond,
+		baseInterval: 40 * time.Millisecond,
+		ExpiresAt:    time.Now().Add(time.Minute),
 	}
 }
 
@@ -278,6 +279,96 @@ func TestDeviceWaitGrowsIntervalOnSlowDown(t *testing.T) {
 	}
 	if min := 40*time.Millisecond + 2*slowDownPenalty - 5*time.Millisecond; log.spacing(2) < min {
 		t.Errorf("spacing after second slow_down = %v, want ≥ %v (cumulative growth)", log.spacing(2), min)
+	}
+}
+
+// TestDeviceWaitSlowDownPlateauCapsEscalation pins the issue #363 plateau:
+// a stream of slow_down answers grows the poll spacing only up to
+// baseInterval + slowDownPlateauOverBase — the server's documented maximum
+// enforced escalation (issue #145) — and the loop keeps progressing (the
+// following authorization_pending still succeeds) instead of stretching
+// without bound against a pathological endpoint that never stops answering
+// slow_down.
+func TestDeviceWaitSlowDownPlateauCapsEscalation(t *testing.T) {
+	oldPenalty := slowDownPenalty
+	slowDownPenalty = 40 * time.Millisecond
+	oldPlateau := slowDownPlateauOverBase
+	slowDownPlateauOverBase = 160 * time.Millisecond
+	defer func() { slowDownPenalty = oldPenalty; slowDownPlateauOverBase = oldPlateau }()
+
+	server, log := scriptedDeviceTokenServer([]string{
+		"slow_down", "slow_down", "slow_down", "slow_down", "slow_down",
+		"slow_down", "slow_down", "slow_down", "slow_down", "slow_down",
+		"authorization_pending",
+		"success",
+	})
+	defer server.Close()
+
+	// newDeviceStart advertises 40ms, so the plateau sits at 200ms; the ten
+	// slow_downs would climb to 440ms uncapped.
+	d := newDeviceStart(server.URL)
+	set, err := d.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if set.AccessToken != "cpt_dev" {
+		t.Fatalf("set = %+v", set)
+	}
+	if log.count() != 12 {
+		t.Fatalf("flow used %d polls, want 12 (ten slow_downs, pending, success)", log.count())
+	}
+	if want := 40*time.Millisecond + slowDownPlateauOverBase; d.Interval != want {
+		t.Errorf("Interval = %v after ten slow_downs, want the %v plateau (cap not applied?)", d.Interval, want)
+	}
+	// Wire proof. The fourth slow_down reaches the plateau (160+40 = 200),
+	// so every later wait sits at ~200ms; lower bounds allow timer lateness.
+	// The 300ms upper bound on the last four slow_down waits separates the
+	// capped ~200ms from the uncapped climb with ~100ms of headroom on both
+	// sides — the uncapped spacing there is ≥ 320ms — so busy-CI scheduling
+	// slack cannot flip the verdict either way.
+	for i := 3; i <= 9; i++ {
+		if s := log.spacing(i); s < 195*time.Millisecond {
+			t.Errorf("spacing(%d) = %v, want ≥ 195ms (escalation reached the plateau)", i, s)
+		}
+	}
+	for i := 6; i <= 9; i++ {
+		if s := log.spacing(i); s >= 300*time.Millisecond {
+			t.Errorf("spacing(%d) = %v, want pinned at the ~200ms plateau (uncapped growth would be ≥ 320ms)", i, s)
+		}
+	}
+}
+
+// TestDeviceWaitWarnsOnSlowDown pins the visibility half of issue #363:
+// a slow_down answer prints exactly one stderr notice — a throttled login
+// must visibly pace itself instead of looking hung after the "Waiting for
+// authorization" line — and the other outcomes in the same flow stay
+// silent.
+func TestDeviceWaitWarnsOnSlowDown(t *testing.T) {
+	oldPenalty := slowDownPenalty
+	slowDownPenalty = 20 * time.Millisecond
+	defer func() { slowDownPenalty = oldPenalty }()
+
+	server, log := scriptedDeviceTokenServer([]string{"authorization_pending", "slow_down", "authorization_pending", "success"})
+	defer server.Close()
+
+	d := newDeviceStart(server.URL)
+	stop := captureStderr(t)
+	set, err := d.Wait(context.Background())
+	stderr := stop()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if set.AccessToken != "cpt_dev" {
+		t.Fatalf("set = %+v", set)
+	}
+	if log.count() != 4 {
+		t.Fatalf("flow used %d polls, want 4 (pending, slow_down, pending, success)", log.count())
+	}
+	if notices := strings.Count(stderr, "token endpoint asked to slow down"); notices != 1 {
+		t.Errorf("stderr carried %d slow_down notices, want exactly 1; stderr: %s", notices, stderr)
+	}
+	if strings.Contains(stderr, "transient failure") {
+		t.Errorf("stderr leaked a transient-failure notice into a slow_down-only flow: %s", stderr)
 	}
 }
 
