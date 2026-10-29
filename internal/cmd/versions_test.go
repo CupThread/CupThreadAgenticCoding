@@ -119,16 +119,23 @@ func TestVersionsDeleteReassignBody(t *testing.T) {
 // (the server checks the label first, so it re-409s forever) and moves
 // nothing when none are. The command must refuse the combination before
 // the confirm prompt and any request, mirroring the #364/#367 guard tests.
+// The invocation is interactive (no --yes, TTY answering y) to pin the
+// before-the-prompt ordering: the refusal fires with an untouched prompt
+// buffer, so the guard cannot have been satisfied by the confirmation.
 func TestVersionsDeleteReassignWithoutLabelRefusedLocally(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+	prompt := withConfirmHooks(t, strings.NewReader("y\n"), true)
 
 	var refused capturedRequest
 	refuseServer := versionsServer(t, http.StatusOK, `{"ok":true}`, &refused)
 	defer refuseServer.Close()
 
-	_, err := runRoot(t, refuseServer.URL, "versions", "delete", "ver_1", "--workspace", "ws_1", "--yes", "--reassign-to", "ver_2")
+	_, err := runRoot(t, refuseServer.URL, "versions", "delete", "ver_1", "--workspace", "ws_1", "--reassign-to", "ver_2")
 	if err == nil || !strings.Contains(err.Error(), "--reassign-to requires --confirm-label") {
 		t.Fatalf("error = %v, want the local --reassign-to/--confirm-label refusal", err)
+	}
+	if prompt.Len() != 0 {
+		t.Errorf("refused invocation reached the confirmation prompt: %s", prompt.String())
 	}
 	if refused.Method != "" || refused.Body != "" {
 		t.Errorf("refused invocation reached the API: %s %s", refused.Method, refused.Body)
