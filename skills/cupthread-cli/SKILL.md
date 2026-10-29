@@ -361,9 +361,11 @@ the status leaves `queued`/`running`. Every import source requires Pro
 answers only the newest **50** jobs of the app / newest **100** jobs of the
 workspace (no `total`, no `--limit`/`--offset`), so older jobs — including
 `failed` ones worth re-running — can be missing from the view. The CLI prints
-a `⚠` truncation advisory whenever a cap-sized answer comes back (on stderr
-in `--json`/`-o yaml` mode); treat an advisory as "older jobs may exist", not
-as a complete history.
+a `⚠` truncation advisory for a cap-sized answer when no `total` is
+available; if a response ever carries `total`, it warns only when `total`
+exceeds the returned jobs. In `--json`/`-o yaml` mode the advisory goes to
+stderr. Treat an advisory as "older jobs may exist", not as a complete
+history.
 
 ### Integrations (GitHub / Linear / Notion / Slack)
 ```sh
