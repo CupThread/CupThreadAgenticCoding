@@ -194,12 +194,34 @@ func newChangelogCreateCmd() *cobra.Command {
 	var linkIDs []string
 	var publishNow bool
 	create := &cobra.Command{
-		Use:                   "create",
-		Short:                 "Create a changelog entry (draft by default)",
+		Use:   "create",
+		Short: "Create a changelog entry (draft by default)",
+		Long: `Create a changelog entry (draft by default).
+
+--publish-now and --schedule-at are mutually exclusive: the server silently
+resolves the contradictory pair in favor of --publish-now, which would
+publish the entry immediately and notify subscribers while dropping the
+requested schedule, so the CLI refuses the pair before any request.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if title == "" {
 				return errors.New("--title is required")
+			}
+			// --publish-now together with a non-empty --schedule-at is
+			// refused locally (issue #369): the server resolves the pair in
+			// favor of --publish-now (createChangelogEntry drops scheduledAt
+			// when publishNow is set), so the entry would publish
+			// immediately and notify subscribers — the exact premature
+			// announcement --schedule-at exists to avoid — with exit code 0.
+			// Refuse before any request, like the --enable/--disable and
+			// --events/--all-events guards in notifications prefs set, and
+			// before the flag validations so the conflict is reported first
+			// (a caller fixing a bad datetime would otherwise hit this same
+			// refusal on the next run). A passed-but-empty --schedule-at is
+			// no contradiction: create simply omits "", so the invocation is
+			// just --publish-now — hence the value check instead of Changed.
+			if publishNow && scheduleAt != "" {
+				return errors.New("--publish-now and --schedule-at are mutually exclusive; pass one")
 			}
 			text, err := resolveBody(cmd, bodyText, bodyFile)
 			if err != nil {
@@ -249,8 +271,8 @@ func newChangelogCreateCmd() *cobra.Command {
 	create.Flags().StringVar(&versionLabel, "version-label", "", "Version label to show, e.g. 1.2.0")
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
 	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop")
-	create.Flags().BoolVar(&publishNow, "publish-now", false, "Publish immediately")
-	create.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z)")
+	create.Flags().BoolVar(&publishNow, "publish-now", false, "Publish immediately (mutually exclusive with --schedule-at)")
+	create.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z; mutually exclusive with --publish-now)")
 	return create
 }
 
