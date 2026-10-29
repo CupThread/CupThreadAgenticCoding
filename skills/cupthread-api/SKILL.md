@@ -151,6 +151,7 @@ Every response carries `X-Request-Id` (caller-supplied if it matches `^[A-Za-z0-
 ### Error-handling conventions (all endpoints)
 
 - Parse the machine-readable `code` field of `{"error": string, "code"?: string}` bodies — never the message text.
+- Validation `400`s (`"error": "Validation failed"`) additionally carry an optional `details` object — the zod `flatten()` output `{formErrors: string[], fieldErrors: {field: string[]}}` (SaaS #1475); it is absent on every other error, so render the per-field reasons from it when present instead of only the generic message. The CLI's `APIError` already exposes it verbatim as `Details` and renders a capped summary.
 - Deterministic client errors (`402`, `409`, `422`, `413`, validation `400`s): fix the request or surface to the user; never auto-retry. Transient (`429`, `500 image_upload_failed`): retry with exponential backoff.
 - Uniform `404`s are deliberate existence hiding (private apps, unapproved requests, unknown ids) — no client may infer existence from a `404` vs `403` distinction.
 
