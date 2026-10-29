@@ -866,3 +866,88 @@ func TestAppsUpdateURLEmptyStillClears(t *testing.T) {
 		t.Errorf("storeUrl = %v (present: %v), want an explicit null clear", v, ok)
 	}
 }
+
+// --- Issue #353: billing checkout --extra-apps/--extra-members and billing
+// addons --extra-apps/--extra-members are pre-flighted against the billing
+// schemas' 0-500 intake bound. Negative and over-cap values fail locally
+// naming the flag and count with zero HTTP requests, while the in-range
+// boundaries (0 and 500) keep the wire bodies byte-identical.
+
+func TestBillingWriteValidatesAddonBoundsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"checkout negative extra-apps", []string{"billing", "checkout", "--extra-apps", "-1"}, "invalid --extra-apps: must be 0-500, got -1"},
+		{"checkout over-cap extra-apps", []string{"billing", "checkout", "--extra-apps", "501"}, "invalid --extra-apps: must be 0-500, got 501"},
+		{"checkout negative extra-members", []string{"billing", "checkout", "--extra-members", "-2"}, "invalid --extra-members: must be 0-500, got -2"},
+		{"checkout over-cap extra-members", []string{"billing", "checkout", "--extra-members", "999"}, "invalid --extra-members: must be 0-500, got 999"},
+		{"addons negative extra-apps", []string{"billing", "addons", "--extra-apps", "-5"}, "invalid --extra-apps: must be 0-500, got -5"},
+		{"addons over-cap extra-apps", []string{"billing", "addons", "--extra-apps", "501"}, "invalid --extra-apps: must be 0-500, got 501"},
+		{"addons negative extra-members", []string{"billing", "addons", "--extra-members", "-1"}, "invalid --extra-members: must be 0-500, got -1"},
+		{"addons over-cap extra-members", []string{"billing", "addons", "--extra-members", "999"}, "invalid --extra-members: must be 0-500, got 999"},
+		{"checkout first offending flag wins", []string{"billing", "checkout", "--extra-apps", "-1", "--extra-members", "999"}, "invalid --extra-apps: must be 0-500, got -1"},
+	})
+}
+
+func TestBillingAddonBoundsInRangeStillWire(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args     []string
+		method   string
+		path     string
+		commands int
+		want     map[string]any
+	}{
+		"checkout at the 0 default": {
+			args:     []string{"billing", "checkout"},
+			method:   http.MethodPost,
+			path:     "/billing/checkout",
+			commands: 1,
+			want:     map[string]any{"tier": "pro", "extraApps": float64(0), "extraMembers": float64(0)},
+		},
+		"checkout at the 500 cap": {
+			args:     []string{"billing", "checkout", "--extra-apps", "500", "--extra-members", "500"},
+			method:   http.MethodPost,
+			path:     "/billing/checkout",
+			commands: 1,
+			want:     map[string]any{"tier": "pro", "extraApps": float64(500), "extraMembers": float64(500)},
+		},
+		"addons at the 0 default": {
+			args:     []string{"billing", "addons"},
+			method:   http.MethodPut,
+			path:     "/billing/addons",
+			commands: 1,
+			want:     map[string]any{"extraApps": float64(0), "extraMembers": float64(0)},
+		},
+		"addons at the 500 cap": {
+			args:     []string{"billing", "addons", "--extra-apps", "500", "--extra-members", "500"},
+			method:   http.MethodPut,
+			path:     "/billing/addons",
+			commands: 1,
+			want:     map[string]any{"extraApps": float64(500), "extraMembers": float64(500)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+			var probe writeProbe
+			server := serveWriteProbe(t, &probe, nil)
+			// The probe's `{}` reply leaves CheckoutURL nil, so checkout
+			// ends in the documented "billing is not configured" path; the
+			// wire contract under test is the request, not that tail.
+			_, _ = runRootWithSeededConfig(t, server.URL, defaultAppConfig, tc.args...)
+			if probe.requests != tc.commands || probe.method != tc.method || !strings.HasSuffix(probe.path, tc.path) {
+				t.Fatalf("wire = %d request(s), %s %s, want one %s to %s", probe.requests, probe.method, probe.path, tc.method, tc.path)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(probe.body, &got); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			for key, value := range tc.want {
+				if got[key] != value {
+					t.Errorf("%s = %v, want the verbatim %v", key, got[key], value)
+				}
+			}
+		})
+	}
+}
