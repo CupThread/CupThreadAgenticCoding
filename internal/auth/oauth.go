@@ -60,7 +60,7 @@ type TokenSet struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
+	ExpiresIn    int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
 }
 
@@ -77,8 +77,11 @@ const maxAdvertisedLifetimeSecs = 10 * 365 * 24 * 60 * 60
 // time.Duration, clamping values beyond maxAdvertisedLifetimeSecs so the
 // conversion cannot wrap negative (issue #374). Callers apply their own
 // tighter ceilings on top.
-func LifetimeDuration(secs int) time.Duration {
-	if int64(secs) > maxAdvertisedLifetimeSecs {
+// secs is int64 so absurd advertised lifetimes stay representable — and the
+// clamp reachable — on 32-bit targets too, where an int-typed value past
+// math.MaxInt32 would fail the decode or the parse outright.
+func LifetimeDuration(secs int64) time.Duration {
+	if secs > maxAdvertisedLifetimeSecs {
 		return time.Duration(maxAdvertisedLifetimeSecs) * time.Second
 	}
 	return time.Duration(secs) * time.Second
@@ -333,7 +336,7 @@ type deviceAuthorizeResponse struct {
 	UserCode                string `json:"user_code"`
 	VerificationURI         string `json:"verification_uri"`
 	VerificationURIComplete string `json:"verification_uri_complete"`
-	ExpiresIn               int    `json:"expires_in"`
+	ExpiresIn               int64  `json:"expires_in"`
 	Interval                int    `json:"interval"`
 }
 
@@ -794,7 +797,9 @@ func parseRetryAfter(v string) time.Duration {
 		return 0
 	}
 	var d time.Duration
-	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+	// ParseInt (not Atoi) keeps the clamp reachable on 32-bit targets, where
+	// Atoi range-errors on values past math.MaxInt32.
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil && secs > 0 {
 		d = LifetimeDuration(secs)
 	} else if t, err := http.ParseTime(v); err == nil {
 		if until := time.Until(t); until > 0 {

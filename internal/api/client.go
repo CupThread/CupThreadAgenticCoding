@@ -616,11 +616,14 @@ func (c *Client) parseRetryAfter(v string, now time.Time) (time.Duration, bool) 
 	if v == "" {
 		return 0, false
 	}
-	if secs, err := strconv.Atoi(v); err == nil {
+	// ParseInt keeps the clamp reachable on 32-bit targets, where Atoi
+	// range-errors on values past math.MaxInt32 and the wrapped-negative
+	// guard would never run.
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
 		if secs < 0 {
 			return 0, false
 		}
-		if maxSecs := int64(c.retryMaxDelay() / time.Second); int64(secs) > maxSecs {
+		if maxSecs := int64(c.retryMaxDelay() / time.Second); secs > maxSecs {
 			return c.retryMaxDelay(), true
 		}
 		return time.Duration(secs) * time.Second, true
