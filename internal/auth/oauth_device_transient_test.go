@@ -153,6 +153,129 @@ func TestDeviceWaitTransientCounterResetsAfterProgress(t *testing.T) {
 	}
 }
 
+// TestDeviceWaitHonorsRetryAfter pins the review fix: a 429 carrying
+// Retry-After must pace the next poll by the server's hint (the greater of
+// hint and interval) instead of re-polling at the advertised interval —
+// otherwise the tolerance budget burns through before the throttle window
+// ends. The delay is per-attempt: the following poll waits the plain
+// interval again.
+func TestDeviceWaitHonorsRetryAfter(t *testing.T) {
+	server, log := rawDevicePollServer(
+		func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "1")
+			throttle429(w)
+		},
+		pendingJSON,
+		successTokens,
+	)
+	defer server.Close()
+
+	d := newDeviceStart(server.URL)
+	d.Interval = 20 * time.Millisecond
+	set, err := d.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if set.AccessToken != "cpt_dev" {
+		t.Fatalf("set = %+v", set)
+	}
+	if log.count() != 3 {
+		t.Fatalf("flow used %d polls, want 3", log.count())
+	}
+	// Lower bound: poll 2 waited at least the hinted second. Upper bound
+	// guards the per-attempt scope: it must not have grown by the cap.
+	if spacing := log.spacing(0); spacing < 950*time.Millisecond {
+		t.Errorf("spacing after 429 Retry-After: 1 = %v, want ≥ 950ms", spacing)
+	} else if spacing > 3*time.Second {
+		t.Errorf("spacing after 429 = %v, want ≈ the hinted 1s (delay leaked past one attempt?)", spacing)
+	}
+	// Poll 3 waited the plain interval again.
+	if spacing := log.spacing(1); spacing >= 900*time.Millisecond {
+		t.Errorf("spacing after pending = %v, want ≈ the 20ms interval (Retry-After leaked into later polls)", spacing)
+	}
+}
+
+// TestDeviceWaitCapsRetryAfter pins the ceiling: a hostile or clumsy
+// Retry-After cannot park one poll cycle longer than maxHonoredRetryAfter.
+// The test shrinks the cap so the bound itself is what the spacing proves.
+func TestDeviceWaitCapsRetryAfter(t *testing.T) {
+	old := maxHonoredRetryAfter
+	maxHonoredRetryAfter = 120 * time.Millisecond
+	defer func() { maxHonoredRetryAfter = old }()
+
+	server, log := rawDevicePollServer(
+		func(w http.ResponseWriter) {
+			w.Header().Set("Retry-After", "120")
+			serverError503(w)
+		},
+		successTokens,
+	)
+	defer server.Close()
+
+	d := newDeviceStart(server.URL)
+	d.Interval = 20 * time.Millisecond
+	if _, err := d.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if spacing := log.spacing(0); spacing < 100*time.Millisecond || spacing > 2*time.Second {
+		t.Errorf("spacing with Retry-After: 120 under a 120ms cap = %v, want ≈ the capped 120ms", spacing)
+	}
+}
+
+// TestParseRetryAfter pins the Retry-After parser: delay-seconds and
+// HTTP-date forms are honored, absent/negative/unparseable values mean "no
+// hint", and every result is capped at maxHonoredRetryAfter.
+func TestParseRetryAfter(t *testing.T) {
+	old := maxHonoredRetryAfter
+	maxHonoredRetryAfter = time.Minute
+	defer func() { maxHonoredRetryAfter = old }()
+
+	future := time.Now().Add(2 * time.Minute).UTC().Format(http.TimeFormat)
+	cases := map[string]struct {
+		v    string
+		want time.Duration
+	}{
+		"absent":            {"", 0},
+		"seconds":           {"30", 30 * time.Second},
+		"capped seconds":    {"3600", time.Minute},
+		"negative":          {"-5", 0},
+		"garbage":           {"soon", 0},
+		"http-date future":  {future, time.Minute},
+		"http-date past":    {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), 0},
+		"surrounding space": {"  5  ", 5 * time.Second},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := parseRetryAfter(tc.v); got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.v, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPostFormPopulatesRetryAfter pins that postForm surfaces the parsed
+// Retry-After on the APIError so the poll loop can honor it.
+func TestPostFormPopulatesRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
+	}))
+	defer server.Close()
+
+	_, err := postForm(context.Background(), server.URL, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("postForm error = %v, want *APIError", err)
+	}
+	if apiErr.RetryAfter != 7*time.Second {
+		t.Errorf("APIError.RetryAfter = %v, want 7s", apiErr.RetryAfter)
+	}
+	if apiErr.Status != http.StatusTooManyRequests {
+		t.Errorf("APIError.Status = %d, want 429", apiErr.Status)
+	}
+}
+
 // TestDeviceWaitStillAbortsOnDefinitive4xx pins the regression guard: a
 // non-device-flow 4xx protocol rejection (invalid_client with 401) still
 // ends the flow on first occurrence — transient tolerance must not swallow

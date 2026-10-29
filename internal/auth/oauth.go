@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -403,10 +404,14 @@ func transientPollFailure(err error) bool {
 // errors, 429, 5xx) are absorbed with a sanitized stderr notice — up to
 // maxConsecutiveTransientPollFailures in a row — instead of aborting a
 // 15-minute login over one network blip (issue #358); a definitive protocol
-// rejection still ends the flow immediately.
+// rejection still ends the flow immediately. A transient failure carrying a
+// Retry-After paces the next poll by it (capped at maxHonoredRetryAfter), so
+// an active throttle is not burned through at the advertised interval
+// (issue #358 review).
 func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 	fmt.Fprintf(os.Stderr, "Waiting for authorization (code %s)...\n", output.StripTerminalControls(d.UserCode))
 	transientFailures := 0
+	nextWait := d.Interval
 	for {
 		// A zero ExpiresAt (server did not advertise expires_in) leaves the
 		// timer nil — receiving from a nil channel blocks forever — so the
@@ -417,7 +422,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 			expired = time.After(time.Until(d.ExpiresAt))
 		}
 		select {
-		case <-time.After(d.Interval):
+		case <-time.After(nextWait):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-expired:
@@ -429,6 +434,10 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 			"device_code": {d.deviceCode},
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 		}
+		// The next poll waits at the advertised interval unless this
+		// attempt's outcome says otherwise (a slow_down escalation, or a
+		// Retry-After on a tolerated transient failure).
+		nextWait = d.Interval
 		body, err := postForm(ctx, d.tokenURL, form)
 		if err != nil {
 			var apiErr *APIError
@@ -439,6 +448,7 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 					continue
 				case "slow_down":
 					d.Interval += slowDownPenalty
+					nextWait = d.Interval
 					transientFailures = 0
 					continue
 				case "access_denied":
@@ -452,8 +462,11 @@ func (d *DeviceStart) Wait(ctx context.Context) (*TokenSet, error) {
 				if transientFailures >= maxConsecutiveTransientPollFailures {
 					return nil, fmt.Errorf("token endpoint stayed unreachable for %d consecutive polls: %w", transientFailures, err)
 				}
-				fmt.Fprintf(os.Stderr, "warning: token endpoint unreachable, tolerating transient failure %d/%d and continuing to poll: %v\n",
-					transientFailures, maxConsecutiveTransientPollFailures, err)
+				if apiErr != nil && apiErr.RetryAfter > nextWait {
+					nextWait = apiErr.RetryAfter
+				}
+				fmt.Fprintf(os.Stderr, "warning: token endpoint unreachable, tolerating transient failure %d/%d (next poll in %s): %v\n",
+					transientFailures, maxConsecutiveTransientPollFailures, nextWait.Round(10*time.Millisecond), err)
 				continue
 			}
 			return nil, err
@@ -492,6 +505,12 @@ type APIError struct {
 	// a definitive protocol rejection (4xx): postForm populates it for every
 	// non-2xx response (issue #358).
 	Status int
+	// RetryAfter is the parsed Retry-After header when the response carried
+	// one (delay-seconds or HTTP-date form). postForm populates it so the
+	// device poll loop can pace its next attempt by the server's hint
+	// instead of burning its transient-failure budget at the advertised
+	// interval while a throttle is active (issue #358 review).
+	RetryAfter time.Duration
 }
 
 // apiErrorTextMaxRunes caps the server-supplied body kept in Error(): an
@@ -665,9 +684,44 @@ func postForm(ctx context.Context, rawURL string, form url.Values) ([]byte, erro
 		if json.Unmarshal(body, &parsed) == nil {
 			code = parsed.Error
 		}
-		return nil, &APIError{Code: code, Body: strings.TrimSpace(string(body)), Status: resp.StatusCode}
+		return nil, &APIError{
+			Code:       code,
+			Body:       strings.TrimSpace(string(body)),
+			Status:     resp.StatusCode,
+			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 	return body, nil
+}
+
+// maxHonoredRetryAfter caps the Retry-After delay the device poll loop will
+// sleep for a transient failure: honoring the server's hint must not let a
+// clumsy or hostile header park one poll cycle past the device code's own
+// window (RFC 8628 §3.2 advertises 15-minute codes), and internal/api caps
+// its retry waits for the same reason. It is a variable only so tests can
+// shrink it; production always uses one minute.
+var maxHonoredRetryAfter = time.Minute
+
+// parseRetryAfter reads a Retry-After header value in delay-seconds or
+// HTTP-date form and caps it at maxHonoredRetryAfter. An absent, negative,
+// or unparseable value yields 0, meaning "no usable hint".
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		if until := time.Until(t); until > 0 {
+			d = until
+		}
+	}
+	if d > maxHonoredRetryAfter {
+		d = maxHonoredRetryAfter
+	}
+	return d
 }
 
 func randomToken(nBytes int) (string, error) {
