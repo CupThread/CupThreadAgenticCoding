@@ -175,7 +175,8 @@ and unlinks the linked requests, clearing their shipped-in version), plus the op
 unlinking them). `--reassign-to` never replaces `--confirm-label`: the server checks the label before any
 reassign, so the two flags go together — the CLI refuses `--reassign-to` alone before sending anything,
 because with requests still linked it would re-409 forever and with none linked there is nothing to move.
-The reassign target must not be the version being deleted, and anything else fails with
+The only valid reassign targets are sibling versions of the same app (never
+the version being deleted): anything else fails with
 `400 reassign_target_not_in_app`, which the CLI maps to the same-app rule.
 A version with no linked requests needs neither flag.
 
