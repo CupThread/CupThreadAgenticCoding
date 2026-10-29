@@ -733,7 +733,10 @@ const maxDisplayURLLen = 2048
 // form fails the no-username/password rule (issue #348).
 func validDisplayURL(v string) bool {
 	u, err := url.Parse(v)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	// Hostname (host without port) must be non-empty: Go accepts ":443" as a
+	// host, but the server's WHATWG parser throws on an empty host for
+	// special schemes, so a port-only authority is a guaranteed 400.
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return false
 	}
 	if u.User == nil {
