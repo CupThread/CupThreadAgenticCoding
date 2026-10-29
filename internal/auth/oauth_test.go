@@ -297,14 +297,15 @@ func TestDeviceWaitSlowDownPlateauCapsEscalation(t *testing.T) {
 	defer func() { slowDownPenalty = oldPenalty; slowDownPlateauOverBase = oldPlateau }()
 
 	server, log := scriptedDeviceTokenServer([]string{
-		"slow_down", "slow_down", "slow_down", "slow_down", "slow_down", "slow_down",
+		"slow_down", "slow_down", "slow_down", "slow_down", "slow_down",
+		"slow_down", "slow_down", "slow_down", "slow_down", "slow_down",
 		"authorization_pending",
 		"success",
 	})
 	defer server.Close()
 
-	// newDeviceStart advertises 40ms, so the plateau sits at 200ms; the six
-	// slow_downs would climb to 280ms uncapped.
+	// newDeviceStart advertises 40ms, so the plateau sits at 200ms; the ten
+	// slow_downs would climb to 440ms uncapped.
 	d := newDeviceStart(server.URL)
 	set, err := d.Wait(context.Background())
 	if err != nil {
@@ -313,22 +314,26 @@ func TestDeviceWaitSlowDownPlateauCapsEscalation(t *testing.T) {
 	if set.AccessToken != "cpt_dev" {
 		t.Fatalf("set = %+v", set)
 	}
-	if log.count() != 8 {
-		t.Fatalf("flow used %d polls, want 8 (six slow_downs, pending, success)", log.count())
+	if log.count() != 12 {
+		t.Fatalf("flow used %d polls, want 12 (ten slow_downs, pending, success)", log.count())
 	}
 	if want := 40*time.Millisecond + slowDownPlateauOverBase; d.Interval != want {
-		t.Errorf("Interval = %v after six slow_downs, want the %v plateau (cap not applied?)", d.Interval, want)
+		t.Errorf("Interval = %v after ten slow_downs, want the %v plateau (cap not applied?)", d.Interval, want)
 	}
-	// Wire proof: once the escalation reaches the plateau, later slow_down
-	// answers cannot grow the spacing past it. Lower bounds allow timer
-	// lateness; the 240ms upper bound separates the capped ~200ms waits from
-	// the uncapped climb, which would be ≥ 240ms by the sixth slow_down.
-	if s := log.spacing(3); s < 195*time.Millisecond {
-		t.Errorf("spacing after fourth slow_down = %v, want ≥ 195ms (escalation reached the plateau)", s)
+	// Wire proof. The fourth slow_down reaches the plateau (160+40 = 200),
+	// so every later wait sits at ~200ms; lower bounds allow timer lateness.
+	// The 300ms upper bound on the last four slow_down waits separates the
+	// capped ~200ms from the uncapped climb with ~100ms of headroom on both
+	// sides — the uncapped spacing there is ≥ 320ms — so busy-CI scheduling
+	// slack cannot flip the verdict either way.
+	for i := 3; i <= 9; i++ {
+		if s := log.spacing(i); s < 195*time.Millisecond {
+			t.Errorf("spacing(%d) = %v, want ≥ 195ms (escalation reached the plateau)", i, s)
+		}
 	}
-	for i := 4; i <= 5; i++ {
-		if s := log.spacing(i); s < 195*time.Millisecond || s >= 240*time.Millisecond {
-			t.Errorf("spacing(%d) = %v, want pinned at the ~200ms plateau (uncapped growth would reach 240ms)", i, s)
+	for i := 6; i <= 9; i++ {
+		if s := log.spacing(i); s >= 300*time.Millisecond {
+			t.Errorf("spacing(%d) = %v, want pinned at the ~200ms plateau (uncapped growth would be ≥ 320ms)", i, s)
 		}
 	}
 }
