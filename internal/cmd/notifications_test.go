@@ -181,6 +181,40 @@ func TestNotificationPrefsSetEnableDisableMutuallyExclusive(t *testing.T) {
 	}
 }
 
+// TestNotificationPrefsSetEventsAllEventsMutuallyExclusive is the issue #367
+// guard: --events and --all-events both write body["eventMask"], and with both
+// passed the --all-events branch silently overwrote the explicit list,
+// enabling every type the caller meant to restrict with exit code 0. The pair
+// must now be refused before any request, mirroring the sibling
+// --enable/--disable guard from issue #364. The single-flag wire shapes are
+// pinned separately by TestPrefsSetEventsValidatedLocally and
+// TestPrefsSetAllEventsSendsFullServerEnum.
+func TestNotificationPrefsSetEventsAllEventsMutuallyExclusive(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var refused capturedRequest
+	refuseServer := inboxServer(t, http.StatusOK, notificationPrefFixture, &refused)
+	defer refuseServer.Close()
+	_, err := runRoot(t, refuseServer.URL, "notifications", "prefs", "set",
+		"--channel", "inbox", "--events", "comment.received", "--all-events", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), "--events and --all-events are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal", err)
+	}
+	if refused.Method != "" || refused.Body != "" {
+		t.Errorf("conflicting flags reached the API: %s %s", refused.Method, refused.Body)
+	}
+
+	// The contradiction outranks the enum check: --events bogus --all-events
+	// must report the conflict, not the invalid --events value the caller
+	// would fix and then hit the same refusal on the next run (CodeRabbit
+	// review of #368).
+	_, err = runRoot(t, refuseServer.URL, "notifications", "prefs", "set",
+		"--channel", "inbox", "--events", "bogus.type", "--all-events", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), "--events and --all-events are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal to outrank the enum check", err)
+	}
+}
+
 // TestPrefsSetEventsCompletionOffersAllTypes covers the --events shell
 // completion: every server notification type, including comment.received
 // (issue #200), must be discoverable there.
