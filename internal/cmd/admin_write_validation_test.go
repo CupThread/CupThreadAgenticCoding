@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -738,5 +739,130 @@ func TestChangelogUpdateScheduleAtEmptyStillClears(t *testing.T) {
 	}
 	if v, ok := got["scheduledAt"]; !ok || v != nil {
 		t.Errorf("scheduledAt = %v (present: %v), want an explicit null clear", v, ok)
+	}
+}
+
+// --- Issue #348: apps create --store-url and the apps update URL flags are
+// pre-flighted against the server's https-only display-URL policy
+// (isAllowedHttpsUrl). http, ftp, javascript, scheme-relative, userinfo,
+// and non-URL values — plus, on create, URLs over the schema's 2048
+// characters — fail locally naming the flag with zero HTTP requests, while
+// accepted https URLs keep the wire bodies byte-identical and the update
+// "" clear still sends the explicit null.
+
+func TestAppsCreateValidatesStoreURLLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"http scheme", []string{"apps", "create", "--name", "My App", "--store-url", "http://example.com/app"}, `invalid --store-url "http://example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"javascript scheme", []string{"apps", "create", "--name", "My App", "--store-url", "javascript://evil.com/x"}, `invalid --store-url "javascript://evil.com/x": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"ftp scheme", []string{"apps", "create", "--name", "My App", "--store-url", "ftp://files.example.com/app"}, `invalid --store-url "ftp://files.example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"scheme relative", []string{"apps", "create", "--name", "My App", "--store-url", "//example.com/app"}, `invalid --store-url "//example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"not a url", []string{"apps", "create", "--name", "My App", "--store-url", "not a url"}, `invalid --store-url "not a url": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"empty host", []string{"apps", "create", "--name", "My App", "--store-url", "https://"}, `invalid --store-url "https://": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"port without host", []string{"apps", "create", "--name", "My App", "--store-url", "https://:443/"}, `invalid --store-url "https://:443/": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"port above 16 bits", []string{"apps", "create", "--name", "My App", "--store-url", "https://example.com:70000/"}, `invalid --store-url "https://example.com:70000/": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"userinfo", []string{"apps", "create", "--name", "My App", "--store-url", "https://user:pass@example.com/app"}, `invalid --store-url "https://user:pass@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"password without username", []string{"apps", "create", "--name", "My App", "--store-url", "https://:secret@example.com/app"}, `invalid --store-url "https://:secret@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"over the 2048-character cap", []string{"apps", "create", "--name", "My App", "--store-url", "https://example.com/" + strings.Repeat("a", maxDisplayURLLen)}, fmt.Sprintf("invalid --store-url: must be at most 2048 characters, got %d", len("https://example.com/")+maxDisplayURLLen)},
+	})
+}
+
+func TestAppsCreateStoreURLInRangeStillPosts(t *testing.T) {
+	for name, value := range map[string]string{
+		"plain store url":           "https://apps.apple.com/app/id123",
+		"uppercase scheme is https": "HTTPS://Example.com/App",
+		"at the 16-bit port cap":    "https://example.com:65535/app",
+		"at the 2048-char boundary": "https://example.com/" + strings.Repeat("a", maxDisplayURLLen-len("https://example.com/")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+			var probe writeProbe
+			server := serveWriteProbe(t, &probe, nil)
+			if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+				"apps", "create", "--name", "My App", "--store-url", value); err != nil {
+				t.Fatalf("apps create: %v", err)
+			}
+			if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/apps") {
+				t.Fatalf("wire = %d request(s), %s %s, want one POST to /apps", probe.requests, probe.method, probe.path)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(probe.body, &got); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if got["storeUrl"] != value {
+				t.Errorf("storeUrl = %v, want the verbatim %q", got["storeUrl"], value)
+			}
+		})
+	}
+}
+
+func TestAppsUpdateValidatesURLFlagsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"http store url", []string{"apps", "update", "app_1", "--store-url", "http://example.com/app"}, `invalid --store-url "http://example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"ftp app store url", []string{"apps", "update", "app_1", "--app-store-url", "ftp://files.example.com/app"}, `invalid --app-store-url "ftp://files.example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"javascript google play url", []string{"apps", "update", "app_1", "--google-play-url", "javascript://evil.com/x"}, `invalid --google-play-url "javascript://evil.com/x": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"userinfo store url", []string{"apps", "update", "app_1", "--store-url", "https://user:pass@example.com/app"}, `invalid --store-url "https://user:pass@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"not a url", []string{"apps", "update", "app_1", "--store-url", "not a url"}, `invalid --store-url "not a url": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"port above 16 bits", []string{"apps", "update", "app_1", "--app-store-url", "https://apps.apple.com:70000/app"}, `invalid --app-store-url "https://apps.apple.com:70000/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+	})
+}
+
+func TestAppsUpdateURLsInRangeStillPuts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, []byte(appListFixture))
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"apps", "update", "app_1",
+		"--store-url", "https://example.com/app",
+		"--app-store-url", "https://apps.apple.com/app/id123",
+		"--google-play-url", "https://play.google.com/store/apps/details?id=com.example"); err != nil {
+		t.Fatalf("apps update: %v", err)
+	}
+	if probe.requests != 2 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), last %s, want app lookup GET then PUT", probe.requests, probe.method)
+	}
+	if !strings.HasSuffix(probe.path, "/apps/app_1") {
+		t.Errorf("PUT path = %s, want /apps/app_1", probe.path)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	want := map[string]string{
+		"storeUrl":      "https://example.com/app",
+		"appStoreUrl":   "https://apps.apple.com/app/id123",
+		"googlePlayUrl": "https://play.google.com/store/apps/details?id=com.example",
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("%s = %v, want the verbatim %q", key, got[key], value)
+		}
+	}
+}
+
+func TestAppsUpdateURLEmptyStillClears(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, []byte(appListFixture))
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"apps", "update", "app_1", "--store-url", ""); err != nil {
+		t.Fatalf("apps update: %v", err)
+	}
+	if probe.requests != 2 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), last %s, want app lookup GET then PUT", probe.requests, probe.method)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if v, ok := got["storeUrl"]; !ok || v != nil {
+		t.Errorf("storeUrl = %v (present: %v), want an explicit null clear", v, ok)
 	}
 }

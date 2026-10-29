@@ -322,12 +322,24 @@ func newAppsCreateCmd() *cobra.Command {
 			if name == "" {
 				return errors.New("--name is required")
 			}
-			// Same code-point bounds the server enforces on create
+			// Same intake bounds the server enforces on create
 			// (ConsoleCreateAppInputSchema) and validateAppsUpdateFlags
 			// enforces on update, so both commands pre-flight identically
-			// (issue #336).
+			// (issues #336, #348 — #336 mirrored only --name).
 			if n := utf8.RuneCountInString(name); n < 2 || n > 120 {
 				return fmt.Errorf("invalid --name: must be 2-120 characters, got %d", n)
+			}
+			// Issue #348: --store-url was passed to the wire unvalidated;
+			// the create schema bounds it by the same https-only display-URL
+			// policy as update plus a 2048-character cap, so a value the
+			// server can never accept fails here, before any request.
+			if storeURL != "" {
+				if err := validateDisplayURLFlag("store-url", storeURL); err != nil {
+					return err
+				}
+				if n := utf8.RuneCountInString(storeURL); n > maxDisplayURLLen {
+					return fmt.Errorf("invalid --store-url: must be at most 2048 characters, got %d", n)
+				}
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -597,8 +609,9 @@ var appPlatformSet = map[string]bool{"ios": true, "macos": true, "android": true
 
 // validateAppsUpdateFlags checks flag values against the server's zod rules
 // (UpdateWorkspaceAppInputSchema: name 2-120 code points, slug 2-64
-// [a-z0-9-]+, absolute URLs, 1-4 platforms) so a rejected update fails
-// before any request is sent.
+// [a-z0-9-]+, absolute https URLs with no username/password — the server's
+// https-only display-URL policy (issue #348) — and 1-4 platforms) so a
+// rejected update fails before any request is sent.
 // Clearing a URL with "" is allowed (sent as null); only values meant to be
 // set are checked.
 // maxIconBytes mirrors the server-side app-icon cap (SEC-36): the console
@@ -629,8 +642,10 @@ func validateAppsUpdateFlags(cmd *cobra.Command, name, slug, storeURL, appStoreU
 		{"app-store-url", appStoreURL},
 		{"google-play-url", googlePlayURL},
 	} {
-		if cmd.Flags().Changed(f.flag) && f.val != "" && !validAbsoluteURL(f.val) {
-			return fmt.Errorf("invalid --%s %q: must be an absolute URL (e.g. https://example.com/app)", f.flag, f.val)
+		if cmd.Flags().Changed(f.flag) && f.val != "" {
+			if err := validateDisplayURLFlag(f.flag, f.val); err != nil {
+				return err
+			}
 		}
 	}
 	if cmd.Flags().Changed("platforms") {
@@ -702,11 +717,57 @@ func readIconFile(path string) ([]byte, error) {
 	return data, nil
 }
 
-// validAbsoluteURL reports whether v parses as an absolute URL with a host,
-// the client-side approximation of zod's z.string().url() for store URLs.
-func validAbsoluteURL(v string) bool {
+// maxDisplayURLLen mirrors ConsoleCreateAppInputSchema's storeUrl
+// .max(2048); the update schema bounds the same fields by the policy alone,
+// so the cap is enforced on create only (issue #348).
+const maxDisplayURLLen = 2048
+
+// validDisplayURL reports whether v is a value the server's https-only
+// display-URL policy (isAllowedHttpsUrl, applied by both the create and
+// update app schemas) can accept: an absolute URL whose scheme is https
+// with a host and no username/password. net/url lowercases the scheme like
+// the WHATWG parser the server uses, so HTTPS:// passes while http://,
+// ftp://, and javascript:// fail the scheme check (zod's z.string().url()
+// alone accepts those — that gap is why apps.ts wraps every tenant-writable
+// display URL in the policy), an empty host fails it, an out-of-16-bit-range
+// port fails it, and userinfo in any form fails the no-username/password
+// rule (issue #348).
+func validDisplayURL(v string) bool {
 	u, err := url.Parse(v)
-	return err == nil && u.Scheme != "" && u.Host != ""
+	// Hostname (host without port) must be non-empty: Go accepts ":443" as a
+	// host, but the server's WHATWG parser throws on an empty host for
+	// special schemes, so a port-only authority is a guaranteed 400.
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return false
+	}
+	// A non-empty port must fit 16 bits: the WHATWG parser throws on ports
+	// above 65535 while net/url happily parses :70000, so such a URL is a
+	// guaranteed 400 (net/url already rejects non-digit ports at Parse).
+	if port := u.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return false
+		}
+	}
+	if u.User == nil {
+		return true
+	}
+	if u.User.Username() != "" {
+		return false
+	}
+	_, hasPassword := u.User.Password()
+	return !hasPassword
+}
+
+// validateDisplayURLFlag rejects a display-URL flag value the server's
+// https-only policy can never accept, naming the flag, so the write fails
+// locally instead of as a guaranteed 400 display_url_not_allowed (issue
+// #348). Only values meant to be set are checked: "" remains the documented
+// clear form on update (sent as null) and is omitted on create.
+func validateDisplayURLFlag(flag, value string) error {
+	if !validDisplayURL(value) {
+		return fmt.Errorf("invalid --%s %q: must be an absolute https URL (e.g. https://apps.apple.com/app/id123)", flag, value)
+	}
+	return nil
 }
 
 // partialUpdateError reports an apps update where earlier steps already
