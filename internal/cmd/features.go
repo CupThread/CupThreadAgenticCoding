@@ -73,12 +73,10 @@ workspace-wide cross-app view instead.`,
 				return errors.New("the --all-apps flag cannot be combined with --app")
 			}
 			// The server clamps the page size to 200 silently; clamp here
-			// too so --limit 500 does not imply it did anything more.
-			if limit < 1 {
-				limit = 1
-			} else if limit > featureRequestPageSize {
-				limit = featureRequestPageSize
-			}
+			// too and announce the rewrite so an offset-stepping walk
+			// advances by the page size the server actually serves
+			// (issue #337, matching the sibling listings from #201).
+			limit = A.clampListLimit(limit, featureRequestPageSize)
 			// The console listing clamps the offset at 10,000 and still
 			// answers 200; announce the rewrite so a deep walk notices it is
 			// re-reading the final page (issue #178).

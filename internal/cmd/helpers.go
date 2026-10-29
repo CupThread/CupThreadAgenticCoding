@@ -296,11 +296,12 @@ func (a *app) warnf(format string, args ...any) {
 // clampListLimit normalizes a console listing's --limit the way the server's
 // parseListPagination silently does: below 1 becomes 1 (the server would
 // degrade 0 to the route default, a different page size than requested) and
-// above the route's maxLimit becomes the cap. features list has clamped
-// locally since #178; the other console listings share this helper so an
-// offset-stepping walk advances by the page size the server actually serves
-// instead of silently skipping rows (issue #201). The rewrite is announced
-// through warnf, so structured stdout stays a single document.
+// above the route's maxLimit becomes the cap. Every console listing shares
+// this helper so an offset-stepping walk advances by the page size the
+// server actually serves instead of silently skipping rows (issues #201 and
+// #337: features list was the last one clamping inline and silently). The
+// rewrite is announced through warnf, so structured stdout stays a single
+// document.
 func (a *app) clampListLimit(requested, maxLimit int) int {
 	effective := requested
 	switch {
