@@ -168,12 +168,16 @@ Scripts and agents must pass `--yes` explicitly (see Agent Best Practices #7).
 
 **`versions delete` has a second server-side guard on linked feature requests**: when requests are still
 shipped-in under the version, the server answers `409 version_has_feature_requests` (with the linked `count`)
-until the deletion is acknowledged. The CLI renders that 409 as an actionable line naming both escapes:
-`--confirm-label <current label>` (the version's label as shown by `versions list` — deletes the version and
-unlinks the linked requests, clearing their shipped-in version) or `--reassign-to <version-id>` (moves the
-linked requests to a sibling version of the same app instead of unlinking them; the target must not be the
-version being deleted, and anything else fails with `400 reassign_target_not_in_app`, which the CLI maps to
-the same-app rule). A version with no linked requests needs neither flag.
+until the deletion is acknowledged. The CLI renders that 409 as an actionable line centered on the required
+flag, `--confirm-label <current label>` (the version's label as shown by `versions list` — deletes the version
+and unlinks the linked requests, clearing their shipped-in version), plus the optional add-on
+`--reassign-to <version-id>` (moves the linked requests to a sibling version of the same app instead of
+unlinking them). `--reassign-to` never replaces `--confirm-label`: the server checks the label before any
+reassign, so the two flags go together — the CLI refuses `--reassign-to` alone before sending anything,
+because with requests still linked it would re-409 forever and with none linked there is nothing to move.
+The reassign target must not be the version being deleted, and anything else fails with
+`400 reassign_target_not_in_app`, which the CLI maps to the same-app rule.
+A version with no linked requests needs neither flag.
 
 ### Apps Management
 ```sh
