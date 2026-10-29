@@ -763,6 +763,7 @@ func TestAppsCreateValidatesStoreURLLocally(t *testing.T) {
 		{"not a url", []string{"apps", "create", "--name", "My App", "--store-url", "not a url"}, `invalid --store-url "not a url": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"empty host", []string{"apps", "create", "--name", "My App", "--store-url", "https://"}, `invalid --store-url "https://": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"port without host", []string{"apps", "create", "--name", "My App", "--store-url", "https://:443/"}, `invalid --store-url "https://:443/": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"port above 16 bits", []string{"apps", "create", "--name", "My App", "--store-url", "https://example.com:70000/"}, `invalid --store-url "https://example.com:70000/": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"userinfo", []string{"apps", "create", "--name", "My App", "--store-url", "https://user:pass@example.com/app"}, `invalid --store-url "https://user:pass@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"password without username", []string{"apps", "create", "--name", "My App", "--store-url", "https://:secret@example.com/app"}, `invalid --store-url "https://:secret@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"over the 2048-character cap", []string{"apps", "create", "--name", "My App", "--store-url", "https://example.com/" + strings.Repeat("a", maxDisplayURLLen)}, fmt.Sprintf("invalid --store-url: must be at most 2048 characters, got %d", len("https://example.com/")+maxDisplayURLLen)},
@@ -773,6 +774,7 @@ func TestAppsCreateStoreURLInRangeStillPosts(t *testing.T) {
 	for name, value := range map[string]string{
 		"plain store url":           "https://apps.apple.com/app/id123",
 		"uppercase scheme is https": "HTTPS://Example.com/App",
+		"at the 16-bit port cap":    "https://example.com:65535/app",
 		"at the 2048-char boundary": "https://example.com/" + strings.Repeat("a", maxDisplayURLLen-len("https://example.com/")),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -808,6 +810,7 @@ func TestAppsUpdateValidatesURLFlagsLocally(t *testing.T) {
 		{"javascript google play url", []string{"apps", "update", "app_1", "--google-play-url", "javascript://evil.com/x"}, `invalid --google-play-url "javascript://evil.com/x": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"userinfo store url", []string{"apps", "update", "app_1", "--store-url", "https://user:pass@example.com/app"}, `invalid --store-url "https://user:pass@example.com/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 		{"not a url", []string{"apps", "update", "app_1", "--store-url", "not a url"}, `invalid --store-url "not a url": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
+		{"port above 16 bits", []string{"apps", "update", "app_1", "--app-store-url", "https://apps.apple.com:70000/app"}, `invalid --app-store-url "https://apps.apple.com:70000/app": must be an absolute https URL (e.g. https://apps.apple.com/app/id123)`},
 	})
 }
 

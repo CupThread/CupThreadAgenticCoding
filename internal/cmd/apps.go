@@ -729,8 +729,9 @@ const maxDisplayURLLen = 2048
 // the WHATWG parser the server uses, so HTTPS:// passes while http://,
 // ftp://, and javascript:// fail the scheme check (zod's z.string().url()
 // alone accepts those — that gap is why apps.ts wraps every tenant-writable
-// display URL in the policy), an empty host fails it, and userinfo in any
-// form fails the no-username/password rule (issue #348).
+// display URL in the policy), an empty host fails it, an out-of-16-bit-range
+// port fails it, and userinfo in any form fails the no-username/password
+// rule (issue #348).
 func validDisplayURL(v string) bool {
 	u, err := url.Parse(v)
 	// Hostname (host without port) must be non-empty: Go accepts ":443" as a
@@ -738,6 +739,14 @@ func validDisplayURL(v string) bool {
 	// special schemes, so a port-only authority is a guaranteed 400.
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return false
+	}
+	// A non-empty port must fit 16 bits: the WHATWG parser throws on ports
+	// above 65535 while net/url happily parses :70000, so such a URL is a
+	// guaranteed 400 (net/url already rejects non-digit ports at Parse).
+	if port := u.Port(); port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return false
+		}
 	}
 	if u.User == nil {
 		return true
