@@ -48,7 +48,7 @@ func TestHostileIDsStayOnePathSegment(t *testing.T) {
 		{"comments list public", []string{"comments", "list", "@ID@"}, "/api/v1/feature-requests/%s/comments"},
 		{"users profile", []string{"users", "profile", "@ID@"}, "/api/v1/users/%s/profile"},
 		{"notifications read", []string{"notifications", "read", "@ID@"}, "/api/v1/console/workspaces/ws_1/notifications/%s/read"},
-		{"changelog update", []string{"changelog", "update", "@ID@", "--title", "t"}, "/api/v1/console/workspaces/ws_1/changelog/%s"},
+		{"changelog update", []string{"changelog", "update", "@ID@", "--title", "Test entry"}, "/api/v1/console/workspaces/ws_1/changelog/%s"},
 		{"changelog delete", []string{"changelog", "delete", "@ID@", "--yes"}, "/api/v1/console/workspaces/ws_1/changelog/%s"},
 		{"changelog publish", []string{"changelog", "publish", "@ID@"}, "/api/v1/console/workspaces/ws_1/changelog/%s/publish"},
 		{"changelog unpublish", []string{"changelog", "unpublish", "@ID@"}, "/api/v1/console/workspaces/ws_1/changelog/%s/unpublish"},
