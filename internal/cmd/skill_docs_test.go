@@ -2648,3 +2648,81 @@ func TestSkillDocsIssue322ErrorResponseDetails(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue321ResponseSchemaSync pins the issue #321 sync (SaaS
+// #1474): the OpenAPI spec now documents wire shapes the live API always
+// served but the spec omitted, and the cupthread-api skill must mirror them.
+// Three corrections are pinned: (1) the POST /api/v1/uploads/sessions 201
+// envelope always serves six top-level keys — the nested session descriptor
+// and per-file client-handle files[] array plus the legacy flat mirror
+// (sessionId/sessionToken/expiresAt and the intake-descriptor uploads[]
+// array, a different item shape than files[]); (2) POST /api/v1/feedback
+// serves three success statuses (200 inline GitHub forward, 201 inbox store,
+// 202 queued-retry forward) over one shared FeedbackSubmissionResponse body,
+// with the advisory warning always present on the 201/202 paths; (3) the
+// public FeatureRequest record pins seven previously undocumented
+// always-served fields (columnName/columnColor/releasedVersion/approved/
+// isOwnRequest/commentCount/updatedAt). The four SDK skills gain only the
+// nested-envelope note — decoding is unaffected, so their flat-mirror
+// guidance stays valid.
+func TestSkillDocsIssue321ResponseSchemaSync(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// Upload-session envelope: six keys, nested + legacy flat mirror.
+		"the envelope **always serves six top-level keys** (SaaS #1474)",
+		"`session` = `{ \"sessionId\", \"sessionToken\", \"expiresAt\", \"maxFileSizeBytes\", \"maxFiles\" }`",
+		"`files` = `[{ \"clientFileId\", \"uploadId\", \"uploadUrl\", \"maxSizeBytes\" }]`",
+		"a slot created without a `clientFileId` echoes its `uploadId` in that field",
+		"`uploads` = `[{ \"clientFileId\"?, \"uploadId\", \"uploadUrl\", \"filename\", \"mimeType\", \"maxBytes\" }]`",
+		"`files[]` carries the client handle (`maxSizeBytes`), `uploads[]` carries the **intake descriptor** (`filename`/`mimeType`/`maxBytes`)",
+		// Feedback: three success statuses, one body, warning always on 201/202.
+		"**three success statuses, all with the same `FeedbackSubmissionResponse` body**",
+		"`200` when the submission was forwarded to GitHub Discussions synchronously (`forwardedToGithub: true`)",
+		"`201` when it is stored in the CupThread inbox and the app has no GitHub delivery configured (`forwardedToGithub: false`)",
+		"`202` when it is stored with GitHub delivery queued and retrying (`forwardedToGithub: false`)",
+		"On the `201`/`202` paths the advisory `warning` string is **always present**",
+		"on `200` it appears only when attachment signing is unconfigured",
+		// FeatureRequest: seven always-served fields.
+		"**seven always-served wire fields**",
+		"the board-column presentation pair `columnName`/`columnColor` (both nullable, resolved from the request's column)",
+		"`releasedVersion` (nullable mirror of `versionLabel`, for clients keyed on the released-version name)",
+		"the moderation flag `approved` (board-visible ⇔ approved)",
+		"`isOwnRequest` (always served; `false` for callers whose end-user token is not the submitter's)",
+		"`commentCount` (visible comments on the thread)",
+		// Detail row: the previously vague field enumeration is now precise.
+		"the status/column fields `status`/`columnId`/`columnSlug`/`columnName`/`columnColor`",
+		"the release version label `versionId`/`versionLabel` plus its `releasedVersion` mirror",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#321 marker %q", marker)
+		}
+	}
+	for _, stale := range []string{
+		// The pre-sync four-key session response.
+		"{ \"sessionId\", \"sessionToken\", \"expiresAt\", \"uploads\": [...] }",
+		// The pre-sync single-status feedback sentence.
+		"answers `201` (or `202` when GitHub delivery is queued, `200` when forwarded inline)",
+		// `warning` is no longer documented as uniformly optional.
+		"the optional human-readable `warning`",
+		// The pre-sync vague detail-row enumeration.
+		"status/column fields, release version label",
+	} {
+		if strings.Contains(doc, stale) {
+			t.Errorf("cupthread-api docs still carry stale pre-#321 text %q", stale)
+		}
+	}
+
+	// The SDK skills keep the flat-mirror guidance and note the nested
+	// envelope so clients that model the full response do not split the
+	// shapes.
+	for _, sdk := range []string{"cupthread-swift-sdk", "cupthread-android-sdk", "cupthread-react-native-sdk", "cupthread-flutter-sdk"} {
+		sdkDoc := readSkill(t, sdk)
+		for _, marker := range []string{
+			"The envelope also nests the same session and slots as `session` and `files` (per-file `maxSizeBytes`) — both shapes are always served together (SaaS #1474).",
+		} {
+			if !strings.Contains(sdkDoc, marker) {
+				t.Errorf("%s docs are missing required issue-#321 marker %q", sdk, marker)
+			}
+		}
+	}
+}
