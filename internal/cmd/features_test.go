@@ -770,3 +770,64 @@ func TestFeaturesListClampsOffsetToConsoleCap(t *testing.T) {
 		t.Errorf("boundary --offset 10000 produced a warning:\n%s", out)
 	}
 }
+
+// TestFeaturesListClampsLimit pins the local --limit clamp on the feature
+// requests listing (issue #337): the server's parseListPagination silently
+// clamps a parsed page size to its maxLimit (200) and degrades 0/negative to
+// 1, so an offset walk stepped by a larger requested limit would skip rows
+// without any hint. 'features list' was the last console listing still doing
+// this inline and silently; it now shares A.clampListLimit with the sibling
+// listings (issue #201), which announces the rewrite through warnf: table
+// mode keeps it on stdout, --json mode moves it to stderr so stdout stays a
+// single document. The 200 boundary passes through verbatim with no warning.
+func TestFeaturesListClampsLimit(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query().Get("limit")
+		_, _ = w.Write(filteredFixture(t, ""))
+	}))
+	t.Cleanup(server.Close)
+
+	for _, tc := range []struct{ requested, want string }{
+		{"500", "200"},
+		{"201", "200"},
+		{"0", "1"},
+		{"-5", "1"},
+	} {
+		out, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "list", "--limit", tc.requested)
+		if err != nil {
+			t.Fatalf("features list --limit %s: %v", tc.requested, err)
+		}
+		if got != tc.want {
+			t.Errorf("--limit %s sent limit=%q, want %q", tc.requested, got, tc.want)
+		}
+		if !strings.Contains(out, "⚠ --limit "+tc.requested+" is outside the server's 1-200 page range") {
+			t.Errorf("--limit %s output missing clamp warning:\n%s", tc.requested, out)
+		}
+	}
+
+	out, err := runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "list", "--limit", "200")
+	if err != nil {
+		t.Fatalf("features list --limit 200: %v", err)
+	}
+	if got != "200" {
+		t.Errorf("boundary --limit 200 sent limit=%q, want 200", got)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --limit 200 produced a warning:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"features", "list", "--workspace", "ws_1", "--limit", "500", "--json")
+	if err != nil {
+		t.Fatalf("features list --json --limit 500: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stderr, "⚠ --limit 500 is outside the server's 1-200 page range; requesting 200 instead") {
+		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}
