@@ -94,6 +94,29 @@ against, and the audited per-month operator reset budget.`,
 	}
 }
 
+// maxExtraAddons mirrors the zod intake bound both billing write schemas put
+// on the add-on quantities (UpdateSubscriptionAddonsInputSchema and
+// CreateCheckoutInputSchema: z.number().int().min(0).max(500)).
+const maxExtraAddons = 500
+
+// validateExtraAddonsFlags rejects add-on quantities the server's billing
+// schemas can never accept — negative or above the 500 cap — naming the
+// flag and count, so the write fails locally instead of as a guaranteed 400
+// Validation failed (issue #353, following validateFeaturesCreateFlags from
+// #341). cobra's IntVar only rejects non-numeric text, so -1 and 501 parse
+// fine and would otherwise reach the wire; on addons an accepted value has
+// quota side effects, so the local bound matches the schema exactly, neither
+// looser nor stricter. 0 stays legal: it is also both schemas' default.
+func validateExtraAddonsFlags(extraApps, extraMembers int) error {
+	if extraApps < 0 || extraApps > maxExtraAddons {
+		return fmt.Errorf("invalid --extra-apps: must be 0-%d, got %d", maxExtraAddons, extraApps)
+	}
+	if extraMembers < 0 || extraMembers > maxExtraAddons {
+		return fmt.Errorf("invalid --extra-members: must be 0-%d, got %d", maxExtraAddons, extraMembers)
+	}
+	return nil
+}
+
 func newBillingCheckoutCmd() *cobra.Command {
 	var extraApps, extraMembers int
 	var open bool
@@ -102,6 +125,9 @@ func newBillingCheckoutCmd() *cobra.Command {
 		Short:                 "Create a Pro upgrade checkout and print its URL",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateExtraAddonsFlags(extraApps, extraMembers); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -189,6 +215,9 @@ func newBillingAddonsCmd() *cobra.Command {
 		Short:                 "Update the workspace's extra app/member add-ons",
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateExtraAddonsFlags(extraApps, extraMembers); err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
