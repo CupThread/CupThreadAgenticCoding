@@ -469,6 +469,126 @@ func TestSkillsLinkJSONEmbeddedSource(t *testing.T) {
 	}
 }
 
+// TestSkillsLinkJSONPartialSkip pins the residual failure path of issue #377:
+// when a destination holds a real (non-symlink) entry, --json mode still
+// prints exactly one stdout document — the happy-path summary fields plus the
+// per-skip breakdown and an error line — while the command exits non-zero.
+// Before the fix the skip path returned before Structured, so agents saw
+// exit 1 with an empty stdout.
+func TestSkillsLinkJSONPartialSkip(t *testing.T) {
+	source, target := skillsLinkFixture(t)
+
+	local := filepath.Join(target, ".claude", "skills", "cupthread-api")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatalf("mkdir local skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "SKILL.md"), []byte("my local edits\n"), 0o644); err != nil {
+		t.Fatalf("write local SKILL.md: %v", err)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	out, errOut, err := runRootCapture(t, cfgPath, "http://127.0.0.1:1", "skills", "link", target, "--json")
+	if err == nil {
+		t.Fatalf("expected non-zero exit on non-symlink conflict, stdout:\n%s", out)
+	}
+	want := "skipped 1 of 6 skill destinations: existing entries are not symlinks (use --force to replace)"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %v, want it to contain %q", err, want)
+	}
+	assertNoTableOutput(t, out)
+	doc := unmarshalOneJSON(t, out)
+	if doc["linked"] != float64(5) {
+		t.Errorf("linked = %v, want 5 (6 destinations minus the one skip)", doc["linked"])
+	}
+	if !reflect.DeepEqual(doc["skills"], []any{"cupthread-api", "cupthread-cli"}) {
+		t.Errorf("skills = %v, want the two fake skills", doc["skills"])
+	}
+	if !reflect.DeepEqual(doc["targets"], []any{".agents/skills", ".claude/skills", ".zcode/skills"}) {
+		t.Errorf("targets = %v, want the three agent dirs", doc["targets"])
+	}
+	if doc["source"] != "checkout" {
+		t.Errorf("source = %v, want checkout", doc["source"])
+	}
+	if doc["error"] != want {
+		t.Errorf("error field = %v, want %q", doc["error"], want)
+	}
+	skips, ok := doc["skipped"].([]any)
+	if !ok || len(skips) != 1 {
+		t.Fatalf("skipped = %v, want exactly one entry", doc["skipped"])
+	}
+	skip, ok := skips[0].(map[string]any)
+	if !ok {
+		t.Fatalf("skipped[0] = %v, want an object", skips[0])
+	}
+	if skip["skill"] != "cupthread-api" {
+		t.Errorf("skipped[0].skill = %v, want cupthread-api", skip["skill"])
+	}
+	// ToSlash normalizes the Windows backslash separators, so the agent-dir
+	// suffix check is platform-neutral.
+	if target := filepath.ToSlash(skip["target"].(string)); !strings.HasSuffix(target, ".claude/skills") {
+		t.Errorf("skipped[0].target = %v, want the agent-directory rel path ending in .claude/skills", target)
+	}
+
+	// The human-oriented detail stays on stderr: the skip warning and the
+	// failing Error line. Nothing human leaks into stdout.
+	if !strings.Contains(errOut, "⚠ Skipped cupthread-api in") || !strings.Contains(errOut, "use --force to replace") {
+		t.Errorf("stderr missing skip warning:\n%s", errOut)
+	}
+
+	// The customized directory is untouched; the other five destinations
+	// still linked.
+	if b, err := os.ReadFile(filepath.Join(local, "SKILL.md")); err != nil || string(b) != "my local edits\n" {
+		t.Fatalf("local SKILL.md was modified: %v (%q)", err, string(b))
+	}
+	for _, agentDir := range agentSkillDirs {
+		assertSkillLink(t, filepath.Join(target, agentDir, "cupthread-cli"), filepath.Join(source, "skills", "cupthread-cli"))
+	}
+	assertSkillLink(t, filepath.Join(target, ".agents", "skills", "cupthread-api"), filepath.Join(source, "skills", "cupthread-api"))
+	assertSkillLink(t, filepath.Join(target, ".zcode", "skills", "cupthread-api"), filepath.Join(source, "skills", "cupthread-api"))
+}
+
+// TestSkillsLinkJSONForceNoSkips keeps the two structured paths
+// distinguishable (issue #377): with --force nothing is skipped, so the
+// document is exactly the happy-path skillsLinkResult — no skipped array, no
+// error field — and the command exits zero.
+func TestSkillsLinkJSONForceNoSkips(t *testing.T) {
+	source, target := skillsLinkFixture(t)
+
+	local := filepath.Join(target, ".claude", "skills", "cupthread-api")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatalf("mkdir local skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "SKILL.md"), []byte("my local edits\n"), 0o644); err != nil {
+		t.Fatalf("write local SKILL.md: %v", err)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	out, _, err := runRootCapture(t, cfgPath, "http://127.0.0.1:1", "skills", "link", target, "--json", "--force")
+	if err != nil {
+		t.Fatalf("skills link --json --force: %v\n%s", err, out)
+	}
+	assertNoTableOutput(t, out)
+	doc := unmarshalOneJSON(t, out)
+	for _, key := range []string{"linked", "skills", "targets", "source"} {
+		if _, ok := doc[key]; !ok {
+			t.Errorf("document missing %q key: %v", key, doc)
+		}
+	}
+	for _, key := range []string{"skipped", "error"} {
+		if _, ok := doc[key]; ok {
+			t.Errorf("happy-path document carries %q key: %v", key, doc)
+		}
+	}
+	if doc["linked"] != float64(6) {
+		t.Errorf("linked = %v, want 6", doc["linked"])
+	}
+	assertSkillLink(t, local, filepath.Join(source, "skills", "cupthread-api"))
+	backups, err := filepath.Glob(local + ".bak-*")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("expected exactly one backup, got %v (%v)", backups, err)
+	}
+}
+
 // TestLoginWarningsRoutedByMode pins the warning routing that keeps the
 // structured stream parseable: reconcile warnings move to stderr in --json
 // mode and stay on stdout in table mode.

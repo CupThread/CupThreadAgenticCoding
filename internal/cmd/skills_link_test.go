@@ -213,3 +213,39 @@ func TestSkillsLinkSkipsRealFile(t *testing.T) {
 	}
 	assertSkillLink(t, filepath.Join(target, ".zcode", "skills", "cupthread-api"), filepath.Join(source, "skills", "cupthread-api"))
 }
+
+// TestSkillsLinkTablePartialSkipByteIdentical pins the exact table-mode line
+// sequence for the partial-skip run (issue #377's "table output stays
+// byte-identical" acceptance criterion): per-directory summaries in
+// agentSkillDirs order, the skip warning in the middle of the blocked
+// directory's iteration, and no trailing source note after the failure.
+func TestSkillsLinkTablePartialSkipByteIdentical(t *testing.T) {
+	_, target := skillsLinkFixture(t)
+
+	local := filepath.Join(target, ".claude", "skills", "cupthread-api")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatalf("mkdir local skill: %v", err)
+	}
+
+	rel := func(agentDir string) string {
+		r, err := filepath.Rel(mustWD(), filepath.Join(target, agentDir))
+		if err != nil {
+			r = filepath.Join(target, agentDir)
+		}
+		return r
+	}
+	want := strings.Join([]string{
+		"✓ Linked 2 skills into " + rel(".agents/skills"),
+		"⚠ Skipped cupthread-api in " + rel(".claude/skills") + ": exists and is not a symlink (use --force to replace)",
+		"✓ Linked 1 of 2 skills into " + rel(".claude/skills"),
+		"✓ Linked 2 skills into " + rel(".zcode/skills"),
+	}, "\n") + "\n"
+
+	out, err := runRoot(t, "http://127.0.0.1:1", "skills", "link", target)
+	if err == nil {
+		t.Fatalf("expected non-zero exit on non-symlink conflict, output:\n%s", out)
+	}
+	if out != want {
+		t.Errorf("table output =\n%q\nwant\n%q", out, want)
+	}
+}
