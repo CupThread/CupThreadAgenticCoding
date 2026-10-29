@@ -203,6 +203,16 @@ func TestNotificationPrefsSetEventsAllEventsMutuallyExclusive(t *testing.T) {
 	if refused.Method != "" || refused.Body != "" {
 		t.Errorf("conflicting flags reached the API: %s %s", refused.Method, refused.Body)
 	}
+
+	// The contradiction outranks the enum check: --events bogus --all-events
+	// must report the conflict, not the invalid --events value the caller
+	// would fix and then hit the same refusal on the next run (CodeRabbit
+	// review of #368).
+	_, err = runRoot(t, refuseServer.URL, "notifications", "prefs", "set",
+		"--channel", "inbox", "--events", "bogus.type", "--all-events", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), "--events and --all-events are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal to outrank the enum check", err)
+	}
 }
 
 // TestPrefsSetEventsCompletionOffersAllTypes covers the --events shell

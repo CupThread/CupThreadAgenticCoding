@@ -191,17 +191,6 @@ on or off.`,
 			if channel != "inbox" && channel != "email" {
 				return fmt.Errorf("invalid --channel %q: use inbox or email", channel)
 			}
-			if cmd.Flags().Changed("events") {
-				known := make(map[string]bool, len(notificationTypes))
-				for _, t := range notificationTypes {
-					known[t] = true
-				}
-				for _, e := range events {
-					if !known[e] {
-						return fmt.Errorf("invalid --events %q: not one of the notification types (%s)", e, strings.Join(notificationTypes, ", "))
-					}
-				}
-			}
 			// The channel-switch flags are mutually exclusive (issue #364):
 			// silently resolving the pair sent enabled:true and dropped
 			// --disable with exit code 0, the opposite of what the script
@@ -213,9 +202,24 @@ on or off.`,
 			// (issue #367): with both passed, the --all-events branch
 			// silently overwrote the explicit list, enabling every type the
 			// caller meant to restrict, with exit code 0. Refuse before any
-			// request, like the --enable/--disable guard above.
+			// request, like the --enable/--disable guard above — and before
+			// the --events enum check, so a contradictory invocation reports
+			// the conflict first instead of surfacing an enum error the
+			// caller would fix and then hit the same refusal on the next run
+			// (CodeRabbit review of #368).
 			if cmd.Flags().Changed("events") && cmd.Flags().Changed("all-events") {
 				return errors.New("--events and --all-events are mutually exclusive; pass one")
+			}
+			if cmd.Flags().Changed("events") {
+				known := make(map[string]bool, len(notificationTypes))
+				for _, t := range notificationTypes {
+					known[t] = true
+				}
+				for _, e := range events {
+					if !known[e] {
+						return fmt.Errorf("invalid --events %q: not one of the notification types (%s)", e, strings.Join(notificationTypes, ", "))
+					}
+				}
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
