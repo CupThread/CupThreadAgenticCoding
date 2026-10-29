@@ -355,3 +355,282 @@ func TestVersionsUpdateInRangeStillPuts(t *testing.T) {
 		t.Errorf("description = %v (present: %v), want an explicit null clear", desc, ok)
 	}
 }
+
+// --- Issue #345: the remaining write surfaces pre-flight the same zod
+// intake bounds locally — imports create/rerun, workspaces create, the
+// workspaces members family, integrations github config, and features
+// forward — with the identical contract: guaranteed-400 flag values fail
+// in-process naming the flag, no HTTP request is issued, and accepted
+// values keep the wire bodies byte-identical.
+
+func TestImportsCreateValidatesBoundsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"unknown source", []string{"imports", "create", "--source", "gists"}, `invalid --source "gists": must be one of github_issues, github_discussions, linear, notion, slack`},
+		{"bad state", []string{"imports", "create", "--source", "github_issues", "--state", "archive"}, `invalid --state "archive": must be open, closed or all`},
+		{"limit zero", []string{"imports", "create", "--source", "github_issues", "--limit", "0"}, "invalid --limit: must be 1-200, got 0"},
+		{"limit over max", []string{"imports", "create", "--source", "github_issues", "--limit", "201"}, "invalid --limit: must be 1-200, got 201"},
+		{"long owner", []string{"imports", "create", "--source", "github_issues", "--owner", strings.Repeat("o", 101)}, "invalid --owner: must be 1-100 characters, got 101"},
+		{"long repo", []string{"imports", "create", "--source", "github_issues", "--repo", strings.Repeat("r", 101)}, "invalid --repo: must be 1-100 characters, got 101"},
+		{"empty label entry", []string{"imports", "create", "--source", "github_issues", "--labels", "a,,b"}, "invalid --labels: each label must be 1-60 characters, got 0"},
+		{"long label", []string{"imports", "create", "--source", "github_issues", "--labels", strings.Repeat("l", 61)}, "invalid --labels: each label must be 1-60 characters, got 61"},
+		{"too many labels", []string{"imports", "create", "--source", "github_issues", "--labels", strings.TrimSuffix(strings.Repeat("a,", 11), ",")}, "invalid --labels: at most 10 labels, got 11"},
+		{"long category slug", []string{"imports", "create", "--source", "github_discussions", "--category-slug", strings.Repeat("c", 101)}, "invalid --category-slug: must be 1-100 characters, got 101"},
+		{"long column slug", []string{"imports", "create", "--source", "github_issues", "--column-slug", strings.Repeat("s", 61)}, "invalid --column-slug: must be 1-60 characters, got 61"},
+	})
+}
+
+func TestImportsCreateInRangeStillPosts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"imports", "create", "--source", "github_issues", "--owner", "acme", "--repo", "ios",
+		"--labels", "bug,priority high", "--state", "open", "--limit", "200",
+		"--category-slug", "requests", "--column-slug", "triage"); err != nil {
+		t.Fatalf("imports create: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/imports") {
+		t.Fatalf("wire = %d request(s), %s %s, want one POST to /imports", probe.requests, probe.method, probe.path)
+	}
+	var got struct {
+		Source  string         `json:"source"`
+		Mode    string         `json:"mode"`
+		Options map[string]any `json:"options"`
+	}
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got.Source != "github_issues" || got.Mode != "preview" {
+		t.Errorf("source/mode = %q/%q, want github_issues/preview", got.Source, got.Mode)
+	}
+	if got.Options["owner"] != "acme" || got.Options["state"] != "open" || got.Options["categorySlug"] != "requests" || got.Options["columnSlug"] != "triage" {
+		t.Errorf("options = %v, want owner/state/categorySlug/columnSlug passed through", got.Options)
+	}
+	if n, _ := got.Options["limit"].(float64); n != 200 {
+		t.Errorf("options.limit = %v, want 200", got.Options["limit"])
+	}
+	labels, _ := got.Options["labels"].([]any)
+	if len(labels) != 2 || labels[0] != "bug" || labels[1] != "priority high" {
+		t.Errorf("options.labels = %v, want [bug priority high]", got.Options["labels"])
+	}
+	for _, key := range []string{"teamId", "databaseId", "channelId", "includeDuplicates"} {
+		if _, ok := got.Options[key]; ok {
+			t.Errorf("options carries %s, want the key omitted", key)
+		}
+	}
+}
+
+func TestImportsRerunValidatesModeLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"empty mode", []string{"imports", "rerun", "imp_1", "--mode", ""}, `invalid --mode "": use preview or commit`},
+		{"bogus mode", []string{"imports", "rerun", "imp_1", "--mode", "fast"}, `invalid --mode "fast": use preview or commit`},
+	})
+}
+
+func TestImportsRerunInRangeStillPosts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"imports", "rerun", "imp_1", "--mode", "commit"); err != nil {
+		t.Fatalf("imports rerun: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/imports/imp_1/rerun") {
+		t.Fatalf("wire = %d request(s), %s %s, want one POST to /imports/imp_1/rerun", probe.requests, probe.method, probe.path)
+	}
+	if string(probe.body) != `{"mode":"commit"}` {
+		t.Errorf("body = %s, want the mode-only body unchanged", probe.body)
+	}
+}
+
+func TestWorkspacesCreateValidatesBoundsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"short name", []string{"workspaces", "create", "--name", "a"}, "invalid --name: must be 2-120 characters, got 1"},
+		{"long name", []string{"workspaces", "create", "--name", strings.Repeat("n", 121)}, "invalid --name: must be 2-120 characters, got 121"},
+		{"long CJK name counts runes", []string{"workspaces", "create", "--name", strings.Repeat("汉", 121)}, "invalid --name: must be 2-120 characters, got 121"},
+		{"long slug", []string{"workspaces", "create", "--name", "Valid name", "--slug", strings.Repeat("s", 65)}, "must match [a-z0-9-] with 2-64 characters"},
+	})
+}
+
+func TestWorkspacesCreateInRangeStillPosts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"workspaces", "create", "--name", strings.Repeat("汉", 120), "--slug", "cjk-workspace"); err != nil {
+		t.Fatalf("workspaces create: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/api/v1/console/workspaces") {
+		t.Fatalf("wire = %d request(s), %s %s, want one POST to /api/v1/console/workspaces", probe.requests, probe.method, probe.path)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if n, _ := got["name"].(string); len([]rune(n)) != 120 {
+		t.Errorf("name = %d runes, want the full 120-rune CJK name (rune, not byte, counting)", len([]rune(n)))
+	}
+	if got["slug"] != "cjk-workspace" {
+		t.Errorf("slug = %v, want cjk-workspace", got["slug"])
+	}
+}
+
+func TestMembersInviteValidatesBoundsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"bad email", []string{"workspaces", "members", "invite", "--email", "notanemail"}, `invalid --email "notanemail": must be an email address`},
+		{"owner role is reserved", []string{"workspaces", "members", "invite", "--email", "user@example.com", "--role", "owner"}, `invalid --role "owner": must be admin or member`},
+		{"unknown role", []string{"workspaces", "members", "invite", "--email", "user@example.com", "--role", "superadmin"}, `invalid --role "superadmin": must be admin or member`},
+		{"empty role", []string{"workspaces", "members", "invite", "--email", "user@example.com", "--role", ""}, `invalid --role "": must be admin or member`},
+		{"long display name", []string{"workspaces", "members", "invite", "--email", "user@example.com", "--display-name", strings.Repeat("n", 121)}, "invalid --display-name: must be at most 120 characters, got 121"},
+	})
+}
+
+func TestMembersInviteInRangeStillPosts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"workspaces", "members", "invite", "--email", "user@example.com", "--role", "admin", "--display-name", "Us Er"); err != nil {
+		t.Fatalf("members invite: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/workspaces/ws_1/members") {
+		t.Fatalf("wire = %d request(s), %s %s, want one POST to /workspaces/ws_1/members", probe.requests, probe.method, probe.path)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(probe.body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got["email"] != "user@example.com" || got["role"] != "admin" || got["displayName"] != "Us Er" {
+		t.Errorf("body = %v, want email/role/displayName passed through", got)
+	}
+}
+
+func TestMembersAddValidatesBoundsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"long clerk user id", []string{"workspaces", "members", "add", "--clerk-user-id", strings.Repeat("u", 256)}, "invalid --clerk-user-id: must be at most 255 characters, got 256"},
+		{"owner role is reserved", []string{"workspaces", "members", "add", "--clerk-user-id", "user_1", "--role", "owner"}, `invalid --role "owner": must be admin or member`},
+	})
+}
+
+func TestMembersSetRoleValidatesRoleLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"empty role passes required", []string{"workspaces", "members", "set-role", "m_1", "--role", ""}, `invalid --role "": must be admin or member`},
+		{"owner role is reserved", []string{"workspaces", "members", "set-role", "m_1", "--role", "owner"}, `invalid --role "owner": must be admin or member`},
+		{"unknown role", []string{"workspaces", "members", "set-role", "m_1", "--role", "contributor"}, `invalid --role "contributor": must be admin or member`},
+	})
+}
+
+func TestMembersSetRoleInRangeStillPuts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, nil)
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"workspaces", "members", "set-role", "m_1", "--role", "admin"); err != nil {
+		t.Fatalf("members set-role: %v", err)
+	}
+	if probe.requests != 1 || probe.method != http.MethodPut || !strings.HasSuffix(probe.path, "/workspaces/ws_1/members/m_1") {
+		t.Fatalf("wire = %d request(s), %s %s, want one PUT to /workspaces/ws_1/members/m_1", probe.requests, probe.method, probe.path)
+	}
+	if string(probe.body) != `{"role":"admin"}` {
+		t.Errorf("body = %s, want the role-only body unchanged", probe.body)
+	}
+}
+
+func TestGitHubConfigValidatesOwnerRepoLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"long owner", []string{"integrations", "github", "config", "app_1", "--owner", strings.Repeat("o", 101)}, "invalid --owner: must be 1-100 characters, got 101"},
+		{"long repo", []string{"integrations", "github", "config", "app_1", "--repo", strings.Repeat("r", 101)}, "invalid --repo: must be 1-100 characters, got 101"},
+	})
+}
+
+func TestGitHubConfigEmptyOwnerStillClears(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var probe writeProbe
+	server := serveWriteProbe(t, &probe, []byte(appListFixture))
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"integrations", "github", "config", "app_1", "--owner", ""); err != nil {
+		t.Fatalf("integrations github config: %v", err)
+	}
+	if probe.requests != 2 || probe.method != http.MethodPatch {
+		t.Fatalf("wire = %d request(s), last %s, want app lookup GET then PATCH", probe.requests, probe.method)
+	}
+	if !strings.HasSuffix(probe.path, "/apps/app_1/github") {
+		t.Errorf("PATCH path = %s, want /apps/app_1/github", probe.path)
+	}
+	if string(probe.body) != `{"githubOwner":null}` {
+		t.Errorf("body = %s, want the explicit null clear preserved", probe.body)
+	}
+}
+
+func TestFeaturesForwardValidatesLabelsLocally(t *testing.T) {
+	runLocalRejectCases(t, []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"empty label entry", []string{"features", "forward", "fr_a_1", "--labels", "a,,b"}, "invalid --labels: each label must be 1-60 characters, got 0"},
+		{"long label", []string{"features", "forward", "fr_a_1", "--labels", strings.Repeat("l", 61)}, "invalid --labels: each label must be 1-60 characters, got 61"},
+	})
+}
+
+func TestFeaturesForwardInRangeStillPosts(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	var forwardBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/github/forward") {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read forward body: %v", err)
+			}
+			if err := json.Unmarshal(raw, &forwardBody); err != nil {
+				t.Errorf("decode forward body %q: %v", raw, err)
+			}
+			_, _ = w.Write([]byte(`{"success":true,"targetType":"discussion","url":"https://github.com/acme/ios/discussions/9"}`))
+			return
+		}
+		_, _ = w.Write(filteredFixture(t, r.URL.Query().Get("appId")))
+	}))
+	t.Cleanup(server.Close)
+	// The 60-rune boundary is accepted and passes through rune-intact; the
+	// reject table above pins 61 as a local error.
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"features", "forward", "fr_a_1", "--labels", strings.Repeat("汉", 60)); err != nil {
+		t.Fatalf("features forward: %v", err)
+	}
+	labels, _ := forwardBody["labels"].([]any)
+	if len(labels) != 1 {
+		t.Fatalf("labels = %v, want the single boundary label", forwardBody["labels"])
+	}
+	if n, _ := labels[0].(string); len([]rune(n)) != 60 {
+		t.Errorf("label = %d runes, want the full 60-rune boundary label", len([]rune(n)))
+	}
+}

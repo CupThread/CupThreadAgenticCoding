@@ -4,13 +4,63 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/spf13/cobra"
 )
 
 var importSources = []string{"github_issues", "github_discussions", "linear", "notion", "slack"}
+
+// validateImportOptionsFlags mirrors ImportOptionsSchema's zod intake bounds
+// (owner/repo/categorySlug at most 100 characters, labels 1-60 characters
+// each with at most 10 entries, state enum, limit 1-200, columnSlug at most
+// 60) so a value the server always rejects fails locally naming the flag
+// (issue #345). Only values the command actually sends are checked: empty
+// scalars are omitted from the body and the raw --options JSON stays the
+// documented verbatim escape hatch.
+func validateImportOptionsFlags(owner, repo string, labels []string, state, categorySlug string, limit int, limitSet bool, columnSlug string) error {
+	if owner != "" {
+		if n := utf8.RuneCountInString(owner); n > 100 {
+			return fmt.Errorf("invalid --owner: must be 1-100 characters, got %d", n)
+		}
+	}
+	if repo != "" {
+		if n := utf8.RuneCountInString(repo); n > 100 {
+			return fmt.Errorf("invalid --repo: must be 1-100 characters, got %d", n)
+		}
+	}
+	if len(labels) > 0 {
+		if len(labels) > 10 {
+			return fmt.Errorf("invalid --labels: at most 10 labels, got %d", len(labels))
+		}
+		for _, label := range labels {
+			if n := utf8.RuneCountInString(label); n < 1 || n > 60 {
+				return fmt.Errorf("invalid --labels: each label must be 1-60 characters, got %d", n)
+			}
+		}
+	}
+	if state != "" && state != "open" && state != "closed" && state != "all" {
+		return fmt.Errorf("invalid --state %q: must be open, closed or all", state)
+	}
+	if categorySlug != "" {
+		if n := utf8.RuneCountInString(categorySlug); n > 100 {
+			return fmt.Errorf("invalid --category-slug: must be 1-100 characters, got %d", n)
+		}
+	}
+	if limitSet && (limit < 1 || limit > 200) {
+		return fmt.Errorf("invalid --limit: must be 1-200, got %d", limit)
+	}
+	if columnSlug != "" {
+		if n := utf8.RuneCountInString(columnSlug); n > 60 {
+			return fmt.Errorf("invalid --column-slug: must be 1-60 characters, got %d", n)
+		}
+	}
+	return nil
+}
 
 func newImportsCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -116,6 +166,9 @@ raw ImportOptions JSON instead of the per-source flags.`,
 			if source == "" {
 				return errors.New("--source is required (github_issues, github_discussions, linear, notion or slack)")
 			}
+			if !slices.Contains(importSources, source) {
+				return fmt.Errorf("invalid --source %q: must be one of %s", source, strings.Join(importSources, ", "))
+			}
 			if mode != "preview" && mode != "commit" {
 				return fmt.Errorf("invalid --mode %q: use preview or commit", mode)
 			}
@@ -141,6 +194,9 @@ raw ImportOptions JSON instead of the per-source flags.`,
 					return fmt.Errorf("parse options JSON: %w", err)
 				}
 			} else {
+				if err := validateImportOptionsFlags(owner, repo, labels, state, categorySlug, limit, cmd.Flags().Changed("limit"), columnSlug); err != nil {
+					return err
+				}
 				flagged := map[string]any{}
 				if owner != "" {
 					flagged["owner"] = owner
@@ -311,6 +367,12 @@ func newImportsRerunCmd() *cobra.Command {
 		Short: "Re-run an import job",
 		Args:  exactNonBlankArg("import job id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// ImportModeSchema is a preview/commit enum: a Changed but invalid
+			// --mode (including "") is a guaranteed 400, so fail locally
+			// before any request (issue #345).
+			if cmd.Flags().Changed("mode") && mode != "preview" && mode != "commit" {
+				return fmt.Errorf("invalid --mode %q: use preview or commit", mode)
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err

@@ -482,6 +482,15 @@ func newFeaturesForwardCmd() *cobra.Command {
 			if target != "discussion" && target != "issue" {
 				return fmt.Errorf("invalid --target %q: use discussion or issue", target)
 			}
+			// ForwardToGitHubInputSchema.labels is z.array(z.string().min(1)
+			// .max(60)): an empty slice entry has no satisfiable wire form
+			// and an over-length one is a guaranteed 400, so both fail
+			// locally before the request lookup GET (issue #345).
+			for _, label := range labels {
+				if n := utf8.RuneCountInString(label); n < 1 || n > 60 {
+					return fmt.Errorf("invalid --labels: each label must be 1-60 characters, got %d", n)
+				}
+			}
 			appID, err := A.requireAppID()
 			if err != nil {
 				return err
