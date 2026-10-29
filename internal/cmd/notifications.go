@@ -184,8 +184,8 @@ func newNotificationPrefsSetCmd() *cobra.Command {
 		Long: `Update notification preferences for a channel (inbox or email).
 
 --events takes a comma-separated list of event types (see 'prefs show' or the
-types below); --all-events enables every type. Pass --enable/--disable to
-switch the channel on or off.`,
+types below); --all-events enables every type. Pass --enable or --disable
+(they are mutually exclusive) to switch the channel on or off.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if channel != "inbox" && channel != "email" {
@@ -202,6 +202,13 @@ switch the channel on or off.`,
 					}
 				}
 			}
+			// The channel-switch flags are mutually exclusive (issue #364):
+			// silently resolving the pair sent enabled:true and dropped
+			// --disable with exit code 0, the opposite of what the script
+			// asked for. Refuse before any request, like inbox bulk-triage.
+			if cmd.Flags().Changed("enable") && cmd.Flags().Changed("disable") {
+				return errors.New("--enable and --disable are mutually exclusive; pass one")
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -213,13 +220,19 @@ switch the channel on or off.`,
 			if allEvents {
 				body["eventMask"] = notificationTypes
 			}
+			// Only an explicitly passed flag writes the enabled field, and
+			// the condition is Changed — not the bare bool — so explicit
+			// false values (--enable=false, --disable=false) write the field
+			// symmetrically instead of --disable=false falling through and
+			// silently setting nothing. --disable negates into the enabled
+			// field: a BoolVar bound to --disable is true when the channel
+			// must be switched off, so assigning it verbatim would send
+			// enabled:true (issue #364).
 			switch {
 			case cmd.Flags().Changed("enable"):
 				body["enabled"] = enabled
-			case disabled:
-				body["enabled"] = false
-			case enabled:
-				body["enabled"] = true
+			case cmd.Flags().Changed("disable"):
+				body["enabled"] = !disabled
 			}
 			if len(body) == 1 {
 				return errors.New("nothing to set: pass --events/--all-events and/or --enable/--disable")
