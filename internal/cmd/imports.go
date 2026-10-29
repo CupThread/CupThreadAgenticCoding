@@ -94,10 +94,67 @@ func printImportJobs(jobs []api.ImportJob) {
 	A.out.Table([]string{"Job", "Source", "Mode", "Status", "Attempts", "Error", "Created"}, rows)
 }
 
+// printImportJobsList renders the jobs table and, when the route answers a
+// total, the sibling (N shown, M total) footer every paginated listing
+// prints (issue #346).
+func printImportJobsList(resp *api.ListImportJobsResponse) {
+	printImportJobs(resp.Jobs)
+	if resp.Total != nil {
+		A.out.Printf("(%d shown, %d total)", len(resp.Jobs), *resp.Total)
+	}
+}
+
+// importsAppPageSize is the app-scoped imports listing's hardcoded server
+// window: the route passes no limit to listImportJobsInWorkspace, so the
+// shared helper's default cap of 50 applies (SaaS apps/api/src/lib/imports.ts,
+// ORDER BY created_at DESC LIMIT ?; issue #346).
+const importsAppPageSize = 50
+
+// importsWorkspacePageSize is the workspace-scoped imports history listing's
+// hardcoded server cap (SaaS apps/api/src/domains/imports/routes.ts; issue
+// #346).
+const importsWorkspacePageSize = 100
+
+// importsListCapNotice / importsHistoryCapNotice are the cap-keyed
+// advisories; Sprintf keeps their numbers tied to the page-size constants so
+// message and trigger cannot drift apart (issue #346).
+var (
+	importsListCapNotice = fmt.Sprintf(
+		"Import job list may be truncated: this listing serves only the newest %d jobs (server cap, no paging or total); use 'cupthread imports history' for the workspace-wide %d-job view",
+		importsAppPageSize, importsWorkspacePageSize)
+	importsHistoryCapNotice = fmt.Sprintf(
+		"Import job history may be truncated: this listing serves only the newest %d jobs (server cap, no paging or total); older jobs — including failed ones worth re-running — are not shown",
+		importsWorkspacePageSize)
+)
+
+// warnImportJobsTruncation discloses the imports listings' server-side
+// windows so a full page is never indistinguishable from the whole set
+// (issue #346, the #352 disclosure discipline). Neither route sends a total
+// today, so a cap-sized answer is the only honest truncation signal and
+// carries a "may be" (a workspace with exactly 50 or 100 jobs trips it too);
+// once the SaaS side adds total, the notice keys off total > shown instead.
+// warnf routes the notice: stdout in table mode, stderr in --json/-o yaml
+// mode so the structured document stays byte-faithful.
+func (a *app) warnImportJobsTruncation(resp *api.ListImportJobsResponse, pageSize int, capNotice string) {
+	switch {
+	case resp.Total != nil && *resp.Total > len(resp.Jobs):
+		a.warnf("⚠ Import jobs are truncated: showing the %d newest of %d jobs; older jobs (including failed ones) are not retrievable through this listing", len(resp.Jobs), *resp.Total)
+	case resp.Total == nil && len(resp.Jobs) >= pageSize:
+		a.warnf("⚠ %s", capNotice)
+	}
+}
+
 func newImportsListCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                   "list",
-		Short:                 "List import jobs of the app",
+		Use:   "list",
+		Short: "List import jobs of the app (newest first, server cap 50)",
+		Long: `List import jobs of the app (newest first).
+
+The server caps this listing at the newest 50 jobs and offers no paging or
+total, so older jobs — including failed ones worth re-running — can be
+missing from the view. When the cap is hit the command says so, in table
+mode on stdout and in --json/-o yaml mode on stderr. 'cupthread imports
+history' widens the window to the newest 100 jobs across the workspace.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, appID, err := resolveAppScope(cmd)
@@ -110,9 +167,14 @@ func newImportsListCmd() *cobra.Command {
 				return err
 			}
 			if A.structured() {
-				return A.out.Structured(resp)
+				if err := A.out.Structured(resp); err != nil {
+					return err
+				}
+				A.warnImportJobsTruncation(&resp, importsAppPageSize, importsListCapNotice)
+				return nil
 			}
-			printImportJobs(resp.Jobs)
+			printImportJobsList(&resp)
+			A.warnImportJobsTruncation(&resp, importsAppPageSize, importsListCapNotice)
 			return nil
 		},
 	}
@@ -120,8 +182,14 @@ func newImportsListCmd() *cobra.Command {
 
 func newImportsHistoryCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                   "history",
-		Short:                 "List all import jobs in the workspace",
+		Use:   "history",
+		Short: "List all import jobs in the workspace (newest first, server cap 100)",
+		Long: `List all import jobs in the workspace (newest first).
+
+The server caps this listing at the newest 100 jobs and offers no paging or
+total, so older jobs — including failed ones worth re-running — can be
+missing from the view. When the cap is hit the command says so, in table
+mode on stdout and in --json/-o yaml mode on stderr.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
@@ -133,9 +201,14 @@ func newImportsHistoryCmd() *cobra.Command {
 				return err
 			}
 			if A.structured() {
-				return A.out.Structured(resp)
+				if err := A.out.Structured(resp); err != nil {
+					return err
+				}
+				A.warnImportJobsTruncation(&resp, importsWorkspacePageSize, importsHistoryCapNotice)
+				return nil
 			}
-			printImportJobs(resp.Jobs)
+			printImportJobsList(&resp)
+			A.warnImportJobsTruncation(&resp, importsWorkspacePageSize, importsHistoryCapNotice)
 			return nil
 		},
 	}

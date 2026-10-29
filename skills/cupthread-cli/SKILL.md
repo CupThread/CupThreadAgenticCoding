@@ -345,8 +345,8 @@ silently skipping every row past it.
 ```sh
 cupthread imports create --source github_issues --mode preview --owner acme --repo app  # Preview (default);
                                            # --mode commit actually creates the requests
-cupthread imports list                     # List import jobs of the current app
-cupthread imports history                  # List every import job in the workspace
+cupthread imports list                     # List import jobs of the current app (newest 50 only)
+cupthread imports history                  # List every import job in the workspace (newest 100 only)
 cupthread imports get <job-id>             # Poll a job; --json includes preview candidates (.job.candidates)
 cupthread imports rerun <job-id>           # Re-run a job (--mode preview|commit, --include-duplicates)
 cupthread imports cancel <job-id> --yes    # Cancel a queued/running job (confirm-guarded; cannot be resumed)
@@ -356,6 +356,14 @@ synchronously; commit jobs run on the queue — poll with `imports get` until
 the status leaves `queued`/`running`. Every import source requires Pro
 (`402` `tier_limit_import_pro`). The subscription tier is only `free` or `pro`
 — there is no `business` tier.
+
+`imports list` and `imports history` are **not paginated**: the server
+answers only the newest **50** jobs of the app / newest **100** jobs of the
+workspace (no `total`, no `--limit`/`--offset`), so older jobs — including
+`failed` ones worth re-running — can be missing from the view. The CLI prints
+a `⚠` truncation advisory whenever a cap-sized answer comes back (on stderr
+in `--json`/`-o yaml` mode); treat an advisory as "older jobs may exist", not
+as a complete history.
 
 ### Integrations (GitHub / Linear / Notion / Slack)
 ```sh
