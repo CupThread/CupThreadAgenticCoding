@@ -35,18 +35,21 @@ func repoRoot() (string, error) {
 }
 
 // modulePathIn reads dir/go.mod and returns its module path, or "" when the
-// file is missing or declares no module.
+// file is missing or declares no module. The directive is matched as
+// whitespace-separated tokens, so a trailing // comment (legal go.mod syntax)
+// and lines that merely start with the letters "module" are not part of the
+// path.
 func modulePathIn(dir string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
 		return ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module")
-		if !ok {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "module" {
 			continue
 		}
-		return strings.Trim(strings.TrimSpace(rest), `"`)
+		return strings.Trim(fields[1], `"`)
 	}
 	return ""
 }

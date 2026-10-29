@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -166,5 +167,112 @@ func TestStatusLongHelpNamesEveryRepo(t *testing.T) {
 		if !strings.Contains(cmd.Long, term) {
 			t.Errorf("Long help does not mention %q (required by repo %q)", term, ref.name)
 		}
+	}
+}
+
+func TestModulePathInParsesModuleDirective(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "clean directive",
+			content: "module " + repoModulePath + "\n\ngo 1.25\n",
+			want:    repoModulePath,
+		},
+		{
+			// A trailing // comment is legal go.mod syntax on any directive;
+			// it must not become part of the module path.
+			name:    "trailing line comment",
+			content: "module " + repoModulePath + " // agentic coding CLI + skills\n\ngo 1.25\n",
+			want:    repoModulePath,
+		},
+		{
+			name:    "tab separator",
+			content: "module\t" + repoModulePath + "\n\ngo 1.25\n",
+			want:    repoModulePath,
+		},
+		{
+			name:    "quoted path",
+			content: "module \"" + repoModulePath + "\"\n\ngo 1.25\n",
+			want:    repoModulePath,
+		},
+		{
+			// Lines that merely contain the letters "module" — a comment, a
+			// require, a token like moduletools.example — must never shadow
+			// the real directive, whichever line order they appear in.
+			name: "foreign module tokens do not shadow the directive",
+			content: "# module notes\n" +
+				"require example.com/mod v1.0.0 // module helper\n" +
+				"moduletools.example/legacy v1.0.0\n" +
+				"\nmodule " + repoModulePath + "\n\ngo 1.25\n",
+			want: repoModulePath,
+		},
+		{
+			name:    "no module directive",
+			content: "go 1.25\n",
+			want:    "",
+		},
+		{
+			name:    "bare module keyword without a path",
+			content: "module\n\ngo 1.25\n",
+			want:    "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeGoMod(t, dir, tt.content)
+			if got := modulePathIn(dir); got != tt.want {
+				t.Errorf("modulePathIn = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModulePathInMissingGoMod(t *testing.T) {
+	if got := modulePathIn(t.TempDir()); got != "" {
+		t.Errorf("modulePathIn without go.mod = %q, want %q", got, "")
+	}
+}
+
+// A go.mod whose module line carries a trailing // comment — legal go.mod
+// syntax — must still be recognized as this repository's checkout: repoRoot
+// resolves to it and `status` runs instead of aborting with "could not
+// locate the CupThreadAgenticCoding repository".
+func TestStatusSucceedsWithCommentedModuleDirective(t *testing.T) {
+	repo := t.TempDir()
+	writeGoMod(t, repo, "module "+repoModulePath+" // agentic coding CLI + skills\n\ngo 1.25\n")
+	t.Chdir(repo)
+
+	root, err := repoRoot()
+	if err != nil {
+		t.Fatalf("repoRoot: %v", err)
+	}
+	if got, want := realPath(t, root), realPath(t, repo); got != want {
+		t.Fatalf("repoRoot = %s, want %s", got, want)
+	}
+
+	out, err := runRoot(t, "http://127.0.0.1:1", "status", "--json")
+	if err != nil {
+		t.Fatalf("status --json: %v\n%s", err, out)
+	}
+	var statuses []repoStatus
+	if err := json.Unmarshal([]byte(out), &statuses); err != nil {
+		t.Fatalf("parse status --json output %q: %v", out, err)
+	}
+	sawSelf := false
+	for _, st := range statuses {
+		if st.Repo != "agentic-coding" {
+			continue
+		}
+		sawSelf = true
+		if got, want := realPath(t, st.Path), realPath(t, repo); got != want {
+			t.Errorf("agentic-coding path = %s, want %s", got, want)
+		}
+	}
+	if !sawSelf {
+		t.Fatal("agentic-coding row missing from status --json output")
 	}
 }
