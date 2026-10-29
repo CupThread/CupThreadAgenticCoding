@@ -54,7 +54,7 @@ Treat `ship_notify_verification_failed` as "opt-in refused (verification)" — d
 
 ## Submission Quota Errors (`402 Payment Required`)
 
-`POST /api/v1/feature-requests` (and, with the same contract, `POST /api/v1/feedback`) responds with `402 Payment Required` and an `ErrorResponse` body (`{"error": string, "code"?: string}`) when the app's workspace cannot accept new submissions:
+`POST /api/v1/feature-requests` (and, with the same contract, `POST /api/v1/feedback`) responds with `402 Payment Required` and an `ErrorResponse` body (`{"error": string, "code"?: string}` — validation `400`s additionally carry the optional zod-flatten `details` object, never a `402`) when the app's workspace cannot accept new submissions:
 
 | `code` | Meaning | Actionable guidance |
 |---|---|---|

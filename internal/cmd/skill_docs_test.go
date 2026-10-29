@@ -2624,3 +2624,27 @@ func TestSkillDocsIssue319ShipNotifyVerificationFailedWarning(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue322ErrorResponseDetails pins the issue #322 sync (SaaS
+// #1475): the OpenAPI spec now documents the optional `details` object on
+// `ErrorResponse` — the zod flatten() output served with every validation
+// `400` and only there — and the cupthread-api skill must mirror it so
+// agents render per-field validation reasons instead of the generic
+// message. The CLI side needs no change: APIError.Details already carries
+// the raw flatten payload (client_test.go pins that), and SubmissionDetail
+// already types app + activity.
+func TestSkillDocsIssue322ErrorResponseDetails(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"Validation `400`s (`\"error\": \"Validation failed\"`) additionally carry an optional `details` object",
+		"the zod `flatten()` output `{formErrors: string[], fieldErrors: Record<fieldName, string[]>}` (SaaS #1475)",
+		"it is absent on every other error",
+		"render the per-field reasons from it when present instead of only the generic message",
+		"The CLI's `APIError` already exposes it verbatim as `Details`",
+		"validation `400`s additionally carry the optional zod-flatten `details` object, never a `402`",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#322 marker %q", marker)
+		}
+	}
+}
