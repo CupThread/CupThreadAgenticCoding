@@ -122,6 +122,65 @@ func TestPrefsSetEventsValidatedLocally(t *testing.T) {
 	}
 }
 
+// TestNotificationPrefsSetEnableDisableMutuallyExclusive is the issue #364
+// guard: passing --enable and --disable together used to silently apply
+// --enable and drop --disable with exit code 0, so a templated invocation got
+// the opposite of its --disable. The pair must now be refused before any
+// request, like inbox bulk-triage's --assignee/--unassign. The table also
+// pins the explicit-value mapping after the switch collapsed onto Changed:
+// --enable=false sends enabled:false and --disable=false sends enabled:true,
+// symmetrically — the old bare-disabled branch made --disable=false set
+// nothing at all.
+func TestNotificationPrefsSetEnableDisableMutuallyExclusive(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var refused capturedRequest
+	refuseServer := inboxServer(t, http.StatusOK, notificationPrefFixture, &refused)
+	defer refuseServer.Close()
+	_, err := runRoot(t, refuseServer.URL, "notifications", "prefs", "set",
+		"--channel", "inbox", "--enable", "--disable", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), "--enable and --disable are mutually exclusive") {
+		t.Fatalf("error = %v, want the mutual-exclusion refusal", err)
+	}
+	if refused.Method != "" || refused.Body != "" {
+		t.Errorf("conflicting flags reached the API: %s %s", refused.Method, refused.Body)
+	}
+
+	for _, tc := range []struct {
+		name string
+		flag string
+		want bool
+	}{
+		{name: "enable", flag: "--enable", want: true},
+		{name: "enable false", flag: "--enable=false", want: false},
+		{name: "disable", flag: "--disable", want: false},
+		{name: "disable false", flag: "--disable=false", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured capturedRequest
+			server := inboxServer(t, http.StatusOK, notificationPrefFixture, &captured)
+			defer server.Close()
+
+			if _, err := runRoot(t, server.URL, "notifications", "prefs", "set",
+				"--channel", "inbox", tc.flag, "--workspace", "ws_1"); err != nil {
+				t.Fatalf("prefs set %s: %v", tc.flag, err)
+			}
+			var body struct {
+				Enabled *bool `json:"enabled"`
+			}
+			if err := json.Unmarshal([]byte(captured.Body), &body); err != nil {
+				t.Fatalf("decode request body %q: %v", captured.Body, err)
+			}
+			if body.Enabled == nil {
+				t.Fatalf("request body carries no enabled field: %s", captured.Body)
+			}
+			if *body.Enabled != tc.want {
+				t.Errorf("enabled = %v, want %v", *body.Enabled, tc.want)
+			}
+		})
+	}
+}
+
 // TestPrefsSetEventsCompletionOffersAllTypes covers the --events shell
 // completion: every server notification type, including comment.received
 // (issue #200), must be discoverable there.
