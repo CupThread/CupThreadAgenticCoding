@@ -563,6 +563,129 @@ func TestAppsUpdateLocalValidationBeforeUpload(t *testing.T) {
 	}
 }
 
+// TestValidateAppsUpdateFlagsNameCountsCodePoints pins issue #336: --name
+// length is checked in Unicode code points — what the server's zod rule
+// (min(2).max(120)) counts — not bytes, so multibyte names inside the limit
+// pass and over-limit rejections report the code-point count.
+func TestValidateAppsUpdateFlagsNameCountsCodePoints(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   string
+		wantErr string // "" means the value must pass validation
+	}{
+		{"ascii lower bound", "ab", ""},
+		{"ascii upper bound", strings.Repeat("x", 120), ""},
+		{"ascii below bound", "a", "got 1"},
+		{"ascii above bound", strings.Repeat("x", 121), "got 121"},
+		{"45 CJK chars pass (135 bytes)", strings.Repeat("一", 45), ""},
+		{"121 CJK code points fail", strings.Repeat("一", 121), "got 121"},
+		{"61 emoji pass (surrogate pairs count once)", strings.Repeat("\U0001F600", 61), ""},
+		{"121 emoji fail with code-point count", strings.Repeat("\U0001F600", 121), "got 121"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newAppsUpdateCmd()
+			if err := cmd.Flags().Set("name", tc.value); err != nil {
+				t.Fatalf("set --name: %v", err)
+			}
+			err := validateAppsUpdateFlags(cmd, tc.value, "", "", "", "", nil, "")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want message containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestAppsUpdateMultibyteNameReachesAPI verifies end to end that a 45-character
+// CJK --name (135 bytes) survives local validation and the metadata PUT goes
+// out with the name verbatim (issue #336).
+func TestAppsUpdateMultibyteNameReachesAPI(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	name := strings.Repeat("一", 45)
+	var sawPUT bool
+	var gotName string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1":
+			sawPUT = true
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode PUT body: %v", err)
+			}
+			gotName, _ = body["name"].(string)
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"x","slug":"ios"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "update", "app_1", "--name", name, "--workspace", "ws_1"); err != nil {
+		t.Fatalf("apps update --name (45 CJK chars): %v", err)
+	}
+	if !sawPUT {
+		t.Fatal("metadata PUT never sent")
+	}
+	if gotName != name {
+		t.Errorf("PUT name = %q, want the 45-character CJK name verbatim", gotName)
+	}
+}
+
+// TestAppsCreateNameLengthMatchesServer verifies `apps create --name` applies
+// the same code-point pre-flight as update, so both commands agree on what the
+// server accepts (issue #336): multibyte names inside the limit reach the API,
+// out-of-bounds names fail locally with zero requests.
+func TestAppsCreateNameLengthMatchesServer(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var sawPOST bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps" {
+			sawPOST = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"appId":"app_new","appKey":"key_live_new","slug":"new-app","name":"x"}`))
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "apps", "create", "--name", strings.Repeat("一", 45), "--workspace", "ws_1"); err != nil {
+		t.Errorf("create with 45 CJK chars (135 bytes): %v", err)
+	}
+	if !sawPOST {
+		t.Error("create POST never sent for an in-limit multibyte name")
+	}
+
+	cases := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{"one character", "A", "got 1"},
+		{"121 ascii chars", strings.Repeat("x", 121), "got 121"},
+		{"121 CJK code points", strings.Repeat("一", 121), "got 121"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runRoot(t, server.URL, "apps", "create", "--name", tc.value, "--workspace", "ws_1")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want local validation containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // newUpdateTwoStepServer mocks the app lookup, the metadata PUT and the icon
 // upload, recording the request order so tests can assert the sequence.
 func newUpdateTwoStepServer(t *testing.T, putStatus, iconStatus int, order *[]string) *httptest.Server {
