@@ -230,34 +230,62 @@ func (a *app) warnOAuthIssuerDivergence() {
 }
 
 // repairConfigPermissions is the seam warnUnsafeConfigPermissions tightens
-// the credential file through; a var so tests can force the repair-failure
-// path that a read-only directory or foreign ownership produces in production.
+// each swept credential file through; a var so tests can force the
+// repair-failure path that a read-only directory or foreign ownership
+// produces in production.
 var repairConfigPermissions = config.RepairPermissions
 
-// warnUnsafeConfigPermissions re-checks the credential file's hygiene at load
-// time (issue #186): Save always writes 0600, but a backup restore, a
+// warnUnsafeConfigPermissions re-checks the credential files' hygiene at load
+// time (issues #186 and #390 for the config, #401 for the recovery files):
+// Save and writeRecoveryCredential always write 0600, but a backup restore, a
 // permissive-umask copy or a dotfiles sync can loosen the mode afterwards,
 // and nothing flagged the stored tokens sitting readable — or, just as
 // dangerously, writable (issue #390: a hostile baseUrl repoint makes the next
-// command leak the token) — by every local account. A group/world-accessible
-// file that StoresCredentials gets exactly one warning on stderr in every
-// output mode — direct like the sibling warnOAuthIssuerDivergence, because
-// warnf would print on stdout in table mode — and an immediate chmod 0600
-// repair, so the exposure window closes without user action while the
-// warning still says the credential may have been read or tampered with. A
-// failed repair degrades to the warning-only path (hinting at the manual
-// chmod) and never blocks the command, and platforms without meaningful mode
-// bits skip both halves via the no-op UnsafePermissions.
+// command leak the token) — by every local account. The sweep covers the
+// config itself and every OAuth recovery file next to it: a recovery file
+// holds the same full bearer+refresh pair (issue #299) and is auto-adopted as
+// a live credential on the next invalid_grant, so an exposure there is at
+// least as serious as one in the config. Each group/world-accessible file
+// that stores credentials gets exactly one warning on stderr in every output
+// mode — direct like the sibling warnOAuthIssuerDivergence, because warnf
+// would print on stdout in table mode — and an immediate chmod 0600 repair,
+// so the exposure window closes without user action while the warning still
+// says the credential may have been read or tampered with. A failed repair
+// degrades to the warning-only path (hinting at the manual chmod) and never
+// blocks the command, a file that vanished between the glob and the chmod is
+// another caller's successful cleanup (the same race tolerance as
+// removeRecoveryFiles), and platforms without meaningful mode bits skip both
+// halves via the no-op UnsafePermissions.
 func (a *app) warnUnsafeConfigPermissions() {
-	mode, unsafe := config.UnsafePermissions(a.cfgPath)
-	if !unsafe || !a.cfg.StoresCredentials() {
+	a.warnUnsafeCredentialFile(a.cfgPath, "config file", "stores your cupthread credentials", a.cfg.StoresCredentials())
+	// Recovery files are credential-bearing by construction — they are only
+	// ever written from a live bearer+refresh pair — so the sweep does not
+	// consult the config's own StoresCredentials: a stale recovery file next
+	// to a since-logged-out config is still a live adoptable credential.
+	matches, _ := filepath.Glob(a.cfgPath + ".recovery-*")
+	for _, path := range matches {
+		a.warnUnsafeCredentialFile(path, "OAuth recovery file", "holds a full bearer+refresh credential pair", true)
+	}
+}
+
+// warnUnsafeCredentialFile applies the sweep's one-warning-one-repair
+// contract to a single credential-bearing file: warn on stderr when its mode
+// is group/world-accessible, then tighten it back to 0600, degrading to the
+// warning-only path when the chmod cannot go through and staying silent when
+// the file vanished before the repair (another caller's successful cleanup).
+func (a *app) warnUnsafeCredentialFile(path, kind, sensitivity string, gated bool) {
+	mode, unsafe := config.UnsafePermissions(path)
+	if !unsafe || !gated {
 		return
 	}
-	if err := repairConfigPermissions(a.cfgPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: config file %s is group/world-accessible (%04o) and stores your cupthread credentials — tighten it with 'chmod 600 %s' (automatic repair failed: %v)\n", a.cfgPath, mode, a.cfgPath, err)
+	if err := repairConfigPermissions(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return
+		}
+		warnStderrLine("warning: %s %s is group/world-accessible (%04o) and %s — tighten it with 'chmod 600 %s' (automatic repair failed: %v)", kind, path, mode, sensitivity, path, err)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "warning: config file %s was group/world-accessible (%04o) and stores your cupthread credentials; tightened the mode to 0600 — run 'cupthread auth login' to rotate the credential if it may have been read or tampered with meanwhile\n", a.cfgPath, mode)
+	warnStderrLine("warning: %s %s was group/world-accessible (%04o) and %s; tightened the mode to 0600 — run 'cupthread auth login' to rotate the credential if it may have been read or tampered with meanwhile", kind, path, mode, sensitivity)
 }
 
 // buildClient wires the API client with a token provider that transparently
@@ -595,6 +623,18 @@ func writeRecoveryCredential(cfgPath string, authState *config.Auth) (string, er
 	if err := f.Close(); err != nil {
 		_ = os.Remove(path)
 		return "", fmt.Errorf("close recovery credential %s: %w", path, err)
+	}
+	// The 0600 argument above was filtered through the process umask at
+	// create time, and a umask that strips owner bits (an odd but possible
+	// dotfiles default) leaves the pair unreadable to its own user, so the
+	// next invalid_grant would silently skip the only record of the live
+	// rotation. Re-assert the exact mode best effort: the umask can only ever
+	// have removed bits here, so the chmod closes that hole and can never
+	// open group/world access (issue #401). A failed re-assertion does not
+	// fail the write — the pair on disk is still the recovery path's best
+	// record, and the load-time sweep warns on any loosened mode.
+	if fi, statErr := os.Stat(path); statErr == nil && fi.Mode().Perm() != 0o600 {
+		_ = os.Chmod(path, 0o600)
 	}
 	return path, nil
 }
