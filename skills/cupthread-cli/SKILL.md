@@ -337,8 +337,10 @@ same workspace fails with "not found" (the error names the app the scan
 covered and the `--app` escape hatch) instead of being mutated; with no app
 resolved the lookup stays workspace-wide. Resolution pages through the whole
 app's listing (200 per page), so a request past the newest page still
-resolves; prefix ambiguity is judged across every page, and resolution gives
-up after 50 pages (≈10k requests) with a clear error. To walk the
+resolves; prefix ambiguity is judged across every page, and resolution
+covers every reachable row — 51 pages of 200, up to and including the
+offset-10,000 clamp page the server still serves — before giving up with a
+clear error. To walk the
 **public** feed an end user would see, use
 `cupthread apps public-feature-requests <app-key>` — keyset-cursor-paginated
 (DATA-01): start without `--cursor`, then echo each page's `nextCursor` back

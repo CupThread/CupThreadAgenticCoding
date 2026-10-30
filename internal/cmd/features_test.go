@@ -594,11 +594,128 @@ func TestFeaturesResolutionPageCap(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "zzz_unknown")
-	if err == nil || !strings.Contains(err.Error(), "scans at most 50 pages") || !strings.Contains(err.Error(), "first 10000 requests") {
-		t.Fatalf("features get error = %v, want page-cap message", err)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("scans at most %d pages", maxFeatureRequestPages)) || !strings.Contains(err.Error(), fmt.Sprintf("first %d requests", maxFeatureRequestPages*featureRequestPageSize)) {
+		t.Fatalf("features get error = %v, want the page-cap message naming %d pages / %d requests", err, maxFeatureRequestPages, maxFeatureRequestPages*featureRequestPageSize)
 	}
 	if served != maxFeatureRequestPages {
 		t.Errorf("served %d listing pages, want %d (the cap)", served, maxFeatureRequestPages)
+	}
+}
+
+// TestFeatureRequestResolvePagesCoverTheOffsetCap pins the arithmetic of the
+// changelog twin (maxChangelogResolvePages, fixed in the PR #414 review): the
+// resolution walk must include the offset-10,000 clamp page, because the
+// server clamps offset at the shared 10,000-entry cap and still answers 200
+// with that final page — consoleListMaxOffset/featureRequestPageSize alone
+// stops one page short and re-opens the wrong-row mutation the +1 closes
+// (issue #419).
+func TestFeatureRequestResolvePagesCoverTheOffsetCap(t *testing.T) {
+	if maxFeatureRequestPages != consoleListMaxOffset/featureRequestPageSize+1 {
+		t.Errorf("maxFeatureRequestPages = %d, want consoleListMaxOffset/featureRequestPageSize + 1 = %d — the offset-10,000 clamp page must stay scanned (issue #419)", maxFeatureRequestPages, consoleListMaxOffset/featureRequestPageSize+1)
+	}
+}
+
+// TestFeatureRequestPrefixScanCoversTheOffsetCapPage ports the changelog
+// boundary test (TestChangelogPrefixScanCoversTheOffsetCapPage): a request
+// living only on the offset-10,000 clamp page resolves, with the walk's last
+// observed listing offset equal to the cap — instead of a false not-found
+// that hides the row behind "the first 10000 requests".
+func TestFeatureRequestPrefixScanCoversTheOffsetCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	// 10,000 requests fill pages 0..49 (offsets 0..9,800) and the target
+	// sits alone on the offset-10,000 clamp page, so the authoritative total
+	// is 10,001: only the clamp page exhausts the listing.
+	const totalRequests = featureRequestPageSize*(maxFeatureRequestPages-1) + 1
+	fillers := pagedRequests(featureRequestPageSize)
+	target := pagedRequests(1)[0]
+	target.ID = "fr_target000123ffffffffffff"
+	target.Title = "Cap page request"
+
+	pages := make([][]api.AdminFeatureRequest, maxFeatureRequestPages)
+	for p := range pages {
+		pages[p] = fillers
+	}
+	pages[maxFeatureRequestPages-1] = []api.AdminFeatureRequest{target}
+	capOffset := strconv.Itoa((maxFeatureRequestPages - 1) * featureRequestPageSize)
+
+	var offsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		offset := r.URL.Query().Get("offset")
+		offsets = append(offsets, offset)
+		page, _ := strconv.Atoi(offset)
+		body, err := json.Marshal(api.AdminListFeatureRequestsResponse{Requests: pages[page/featureRequestPageSize], Total: totalRequests})
+		if err != nil {
+			t.Errorf("encode page: %v", err)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "fr_target000")
+	if err != nil {
+		t.Fatalf("features get on the offset-cap page: %v", err)
+	}
+	if got := offsets[len(offsets)-1]; got != capOffset {
+		t.Errorf("last listing offset = %q, want the offset-cap page %s scanned", got, capOffset)
+	}
+	if len(offsets) != maxFeatureRequestPages {
+		t.Errorf("scanned %d pages, want %d (every page through the offset cap)", len(offsets), maxFeatureRequestPages)
+	}
+	if !strings.Contains(out, "Cap page request") || !strings.Contains(out, target.ID) {
+		t.Errorf("output must carry the resolved cap-page request:\n%s", out)
+	}
+}
+
+// TestFeaturesPrefixUniqueInWindowButAmbiguousOnCapPage pins the wrong-row
+// guard the +1 page buys (issue #419): a prefix matching both a request
+// inside the scanned window and a second one on the offset-10,000 clamp page
+// must fail locally as ambiguous — without the cap page in the walk, the
+// in-window match is the only one seen and acceptPrefixUnderCap resolves the
+// delete onto the wrong row.
+func TestFeaturesPrefixUniqueInWindowButAmbiguousOnCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	const totalRequests = featureRequestPageSize*(maxFeatureRequestPages-1) + 1
+	fillers := pagedRequests(featureRequestPageSize)
+	fillers[3].ID = "fr_dup0000aaaaaaaaaaaaaaaaa"
+	fillers[3].Title = "In-window duplicate"
+	capPage := pagedRequests(1)
+	capPage[0].ID = "fr_dup0000bbbbbbbbbbbbbbbbb"
+	capPage[0].Title = "Cap page duplicate"
+
+	pages := make([][]api.AdminFeatureRequest, maxFeatureRequestPages)
+	for p := range pages {
+		pages[p] = fillers
+	}
+	pages[maxFeatureRequestPages-1] = capPage
+
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		body, err := json.Marshal(api.AdminListFeatureRequestsResponse{Requests: pages[page/featureRequestPageSize], Total: totalRequests})
+		if err != nil {
+			t.Errorf("encode page: %v", err)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "delete", "fr_dup0000", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous feature request prefix") {
+		t.Fatalf("features delete fr_dup0000 error = %v, want ambiguous prefix spanning the cap page", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want zero — the ambiguity must stop the delete before any request", mutations)
 	}
 }
 
