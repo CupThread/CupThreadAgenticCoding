@@ -1165,3 +1165,57 @@ func TestChangelogUpdateResolvesBeyondFirstPage(t *testing.T) {
 		t.Errorf("listing offsets = %v, want %v", offsets, want)
 	}
 }
+
+// TestChangelogPrefixScanCoversTheOffsetCapPage pins the PR #414 review fix:
+// the server still serves the page at offset 10,000 (the clamp's boundary),
+// so the resolution walk must page one past the naive 100-page window — an
+// entry living only on that final page resolves, instead of a same-prefix
+// entry inside the scanned window silently winning.
+func TestChangelogPrefixScanCoversTheOffsetCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	// 10,000 entries fill offsets 0..9,900 and the target sits alone on the
+	// offset-10,000 page, so the authoritative total is 10,001: pages 0..99
+	// report hasMore, and only the cap page exhausts the listing.
+	const totalEntries = changelogPageSize*100 + 1
+	fullPage := func(entries []string) string {
+		return `{"entries":[` + strings.Join(entries, ",") + `],"total":` + fmt.Sprint(totalEntries) + `,"hasMore":true}`
+	}
+	pageEntries := make([]string, 0, changelogPageSize)
+	for i := 0; i < changelogPageSize; i++ {
+		pageEntries = append(pageEntries, changelogEntryJSON(fmt.Sprintf("cl_page%04dfffffffffffffffff", i)))
+	}
+	capPageTarget := changelogEntryJSON("cl_target000123ffffffffffff")
+
+	var offsets []string
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"id":"cl_target000123ffffffffffff"}`))
+			return
+		}
+		offsets = append(offsets, r.URL.Query().Get("offset"))
+		if r.URL.Query().Get("offset") == "10000" {
+			_, _ = w.Write([]byte(`{"entries":[` + capPageTarget + `],"total":` + fmt.Sprint(totalEntries) + `,"hasMore":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(fullPage(pageEntries)))
+	}))
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "publish", "cl_target000", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog publish on the offset-cap page: %v", err)
+	}
+	if want := "POST /api/v1/console/workspaces/ws_1/changelog/cl_target000123ffffffffffff/publish"; len(mutations) != 1 || mutations[0] != want {
+		t.Errorf("mutations = %v, want exactly [%s]", mutations, want)
+	}
+	if got := offsets[len(offsets)-1]; got != "10000" {
+		t.Errorf("last listing offset = %q, want the offset-cap page 10000 scanned", got)
+	}
+	if !strings.Contains(out, "cl_target000123ffffffffffff") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+}

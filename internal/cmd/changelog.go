@@ -132,11 +132,15 @@ func shortID(id string) string {
 	return id
 }
 
-// maxChangelogResolvePages caps ID-resolution paging: 100 pages of the
-// listing's 100-entry page cap reaches the server's shared 10,000-entry
-// offset cap, beyond which no entry is reachable through offset paging
-// anyway (issue #178).
-const maxChangelogResolvePages = consoleListMaxOffset / changelogPageSize
+// maxChangelogResolvePages caps ID-resolution paging: 101 pages of the
+// listing's 100-entry page cap covers offsets 0 through 10,000 — the whole
+// reachable universe, since the server clamps offset at the shared
+// 10,000-entry cap and still answers 200 with the final page (issue #178).
+// The +1 matters for correctness, not thrift (PR #414 review): without it
+// the offset-10,000 page is never scanned, and a prefix matching both an
+// entry in the scanned window and one on that final page would wrongly
+// resolve to the scanned entry — a delete/publish acting on the wrong row.
+const maxChangelogResolvePages = consoleListMaxOffset/changelogPageSize + 1
 
 // fetchOneChangelogEntry finds an entry by exact ID or unique ID prefix
 // (issue #413): the list table prints 12-character IDs via shortID, and the
