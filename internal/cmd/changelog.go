@@ -100,8 +100,17 @@ func newChangelogListCmd() *cobra.Command {
 			}
 			A.out.Table([]string{"ID", "Title", "Version", "State", "Linked", "Subscribers"}, rows)
 			if resp.HasMore {
-				A.out.Printf("Showing %d of %d entries — re-run with --offset %d for the next page.",
-					len(resp.Entries), resp.Total, offset+len(resp.Entries))
+				// At the server's offset cap the suggested next offset would
+				// clamp right back to the same page forever (issue #408), so
+				// the hint is replaced with the boundary disclosure instead
+				// of instructing the caller into that loop.
+				if offset < consoleListMaxOffset {
+					A.out.Printf("Showing %d of %d entries — re-run with --offset %d for the next page.",
+						len(resp.Entries), resp.Total, offset+len(resp.Entries))
+				} else {
+					A.out.Printf("Showing %d of %d entries — this listing ends at the server's %d-entry offset cap; the remaining entries are unreachable through offset paging.",
+						len(resp.Entries), resp.Total, consoleListMaxOffset)
+				}
 			}
 			return nil
 		},
