@@ -178,11 +178,12 @@ type workspaceRef struct {
 
 // workspaceClient returns the resolved workspace id, after re-scoping the
 // process-wide A.client to it. This is the one deliberate in-place mutation
-// of the shared client's scope (issue #379): every workspace command calls
-// it exactly once up front, and each command run rebuilds A from scratch, so
-// the re-scope is process-final and matches what buildClient would have set
-// had the flag carried the same value. Anything needing a *different*
-// workspace scope must value-copy the client instead of mutating this one.
+// of the shared client's scope (issue #379). The commands that use it call
+// it exactly once, before their workspace-scoped requests, and each command
+// run rebuilds A from scratch — so within one run the re-scope is final and
+// matches what buildClient would have set had the flag carried the same
+// value. Anything needing a *different* workspace scope must value-copy the
+// client instead of mutating this one.
 func workspaceClient(ctx context.Context) (string, error) {
 	ws, err := A.workspaceID()
 	if err != nil {
