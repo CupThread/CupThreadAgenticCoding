@@ -621,6 +621,121 @@ func TestChangelogListClampsLimit(t *testing.T) {
 	}
 }
 
+// TestChangelogListOffsetCapDisclosure covers issue #408: at the server's
+// 10,000-entry offset cap a hasMore=true page renders the boundary
+// disclosure instead of the next-page hint — the suggested --offset 10100
+// would clamp right back to the cap and re-serve the identical page
+// forever. The same fixture below the cap keeps the byte-identical current
+// hint shape (existing parsers unaffected), and a hasMore=false page renders
+// no hint at either offset.
+func TestChangelogListOffsetCapDisclosure(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	// total = 10150 so both the natural walk (0, 100, …, 10000) and an
+	// explicit deep offset land on a hasMore page at the cap, with 150
+	// entries genuinely unreachable through offset paging.
+	const capFixture = `{
+		"entries": [{
+			"id": "cl_entry_1",
+			"appId": "app_1",
+			"title": "v1.2.0 Release",
+			"body": "## Highlights",
+			"versionLabel": "1.2.0",
+			"versionId": null,
+			"publishedAt": "2026-09-01T12:00:00.000Z",
+			"scheduledAt": null,
+			"notifiedAt": null,
+			"linkedRequests": [],
+			"subscriberCount": 7,
+			"createdAt": "2026-08-30T09:00:00.000Z",
+			"updatedAt": "2026-09-01T12:00:00.000Z"
+		}],
+		"total": 10150,
+		"hasMore": true
+	}`
+
+	// At the cap exactly: no clamp warning fires (10,000 is not above the
+	// cap) and the boundary disclosure replaces the looping hint.
+	server, _, _ := changelogServer(t, capFixture)
+	out, err := runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+		"--offset", "10000")
+	if err != nil {
+		t.Fatalf("changelog list --offset 10000: %v", err)
+	}
+	if !strings.Contains(out, "Showing 1 of 10150 entries — this listing ends at the server's 10000-entry offset cap; the remaining entries are unreachable through offset paging.") {
+		t.Errorf("output missing the offset-cap boundary disclosure:\n%s", out)
+	}
+	if strings.Contains(out, "re-run with --offset") {
+		t.Errorf("at the cap the looping next-page hint must not appear:\n%s", out)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("boundary --offset 10000 produced a clamp warning:\n%s", out)
+	}
+
+	// Below the cap the hint keeps its byte-identical shape (the suggested
+	// next offset is offset+len(entries), as before).
+	out, err = runRoot(t, server.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+		"--offset", "9900")
+	if err != nil {
+		t.Fatalf("changelog list --offset 9900: %v", err)
+	}
+	if !strings.Contains(out, "Showing 1 of 10150 entries — re-run with --offset 9901 for the next page.") {
+		t.Errorf("below-cap output missing the unchanged next-page hint:\n%s", out)
+	}
+	if strings.Contains(out, "offset cap") {
+		t.Errorf("below-cap output must not carry the boundary disclosure:\n%s", out)
+	}
+
+	// A hasMore=false page renders no hint at either offset.
+	const lastPageFixture = `{
+		"entries": [{
+			"id": "cl_entry_1",
+			"appId": "app_1",
+			"title": "v1.2.0 Release",
+			"body": "## Highlights",
+			"versionLabel": "1.2.0",
+			"versionId": null,
+			"publishedAt": "2026-09-01T12:00:00.000Z",
+			"scheduledAt": null,
+			"notifiedAt": null,
+			"linkedRequests": [],
+			"subscriberCount": 7,
+			"createdAt": "2026-08-30T09:00:00.000Z",
+			"updatedAt": "2026-09-01T12:00:00.000Z"
+		}],
+		"total": 10001,
+		"hasMore": false
+	}`
+	lastServer, _, _ := changelogServer(t, lastPageFixture)
+	for _, offset := range []string{"10000", "9900"} {
+		out, err := runRoot(t, lastServer.URL, "changelog", "list", "--workspace", "ws_1", "--app", "app_1",
+			"--offset", offset)
+		if err != nil {
+			t.Fatalf("changelog list --offset %s: %v", offset, err)
+		}
+		for _, banned := range []string{"re-run with --offset", "offset cap"} {
+			if strings.Contains(out, banned) {
+				t.Errorf("hasMore=false at --offset %s must render no hint, found %q:\n%s", offset, banned, out)
+			}
+		}
+	}
+
+	// Structured mode is unaffected: the command returns the payload before
+	// any table/footer rendering, so --json at the cap stays pure JSON with
+	// the disclosure going nowhere.
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"changelog", "list", "--workspace", "ws_1", "--app", "app_1", "--offset", "10000", "--json")
+	if err != nil {
+		t.Fatalf("changelog list --json --offset 10000: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if strings.Contains(stderr, "offset cap") || strings.Contains(stdout, "offset cap") {
+		t.Errorf("structured mode must not render the disclosure; stdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+}
+
 // TestChangelogListClampsOffset pins the local --offset clamp on the
 // changelog listing (issue #178): the server's parseListPagination silently
 // degrades an offset above the shared console cap of 10,000 to the cap
