@@ -238,25 +238,27 @@ var repairConfigPermissions = config.RepairPermissions
 // warnUnsafeConfigPermissions re-checks the credential file's hygiene at load
 // time (issue #186): Save always writes 0600, but a backup restore, a
 // permissive-umask copy or a dotfiles sync can loosen the mode afterwards,
-// and nothing flagged the stored tokens sitting readable by every local
-// account. A group/world-readable file that StoresCredentials gets exactly
-// one warning on stderr in every output mode — direct like the sibling
-// warnOAuthIssuerDivergence, because warnf would print on stdout in table
-// mode — and an immediate chmod 0600 repair, so the exposure window closes
-// without user action while the warning still says the credential may have
-// been readable. A failed repair degrades to the warning-only path (hinting
-// at the manual chmod) and never blocks the command, and platforms without
-// meaningful mode bits skip both halves via the no-op UnsafePermissions.
+// and nothing flagged the stored tokens sitting readable — or, just as
+// dangerously, writable (issue #390: a hostile baseUrl repoint makes the next
+// command leak the token) — by every local account. A group/world-accessible
+// file that StoresCredentials gets exactly one warning on stderr in every
+// output mode — direct like the sibling warnOAuthIssuerDivergence, because
+// warnf would print on stdout in table mode — and an immediate chmod 0600
+// repair, so the exposure window closes without user action while the
+// warning still says the credential may have been read or tampered with. A
+// failed repair degrades to the warning-only path (hinting at the manual
+// chmod) and never blocks the command, and platforms without meaningful mode
+// bits skip both halves via the no-op UnsafePermissions.
 func (a *app) warnUnsafeConfigPermissions() {
 	mode, unsafe := config.UnsafePermissions(a.cfgPath)
 	if !unsafe || !a.cfg.StoresCredentials() {
 		return
 	}
 	if err := repairConfigPermissions(a.cfgPath); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: config file %s is group/world-readable (%04o) and stores your cupthread credentials — tighten it with 'chmod 600 %s' (automatic repair failed: %v)\n", a.cfgPath, mode, a.cfgPath, err)
+		fmt.Fprintf(os.Stderr, "warning: config file %s is group/world-accessible (%04o) and stores your cupthread credentials — tighten it with 'chmod 600 %s' (automatic repair failed: %v)\n", a.cfgPath, mode, a.cfgPath, err)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "warning: config file %s was group/world-readable (%04o) and stores your cupthread credentials; tightened the mode to 0600 — run 'cupthread auth login' to rotate the credential if it may have been read meanwhile\n", a.cfgPath, mode)
+	fmt.Fprintf(os.Stderr, "warning: config file %s was group/world-accessible (%04o) and stores your cupthread credentials; tightened the mode to 0600 — run 'cupthread auth login' to rotate the credential if it may have been read or tampered with meanwhile\n", a.cfgPath, mode)
 }
 
 // buildClient wires the API client with a token provider that transparently

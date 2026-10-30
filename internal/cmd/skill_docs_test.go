@@ -1365,11 +1365,13 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 //   - POST /api/v1/public/apps/{appKey}/changelog/subscribe
 //     (SubscribeChangelogInput) accepts an optional turnstileToken (string,
 //     10-2048 chars); when the server enforces Turnstile human verification an
-//     anonymous subscription requires a valid token and one that is missing or
-//     fails verification answers 403 {"error": "Human verification failed.
-//     Please try again.", "code": "turnstile_verification_failed"}, while
-//     signed-in callers subscribing with their session's verified email
-//     address are exempt.
+//     anonymous subscription requires a valid token: one that is missing
+//     answers 403 {"error": "Human verification (Turnstile) is required",
+//     "code": "turnstile_required"} (issue #247 corrected the former
+//     turnstile_verification_failed misreport) and one that fails siteverify
+//     answers 403 {"error": "Human verification failed. Please try again.",
+//     "code": "turnstile_verification_failed"}, while signed-in callers
+//     subscribing with their session's verified email address are exempt.
 //   - POST /api/v1/feature-requests/{id}/vote (VoteFeatureRequestInput)
 //     accepts an optional turnstileToken; when verification is enforced an
 //     anonymous voter that opts in via shipNotifyEmail should supply a
@@ -1387,8 +1389,9 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"The request body (`SubscribeChangelogInput`) accepts an optional `turnstileToken` (string, 10–2048 chars)",
 		`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
 		"signed-in callers subscribing with their session's verified email address are exempt",
-		// Changelog flow blockquote: the same gate in the flow summary.
-		"anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed`",
+		// Changelog flow blockquote: the same gate in the flow summary,
+		// with the issue-#247 missing-token code split.
+		"anonymous subscribe bodies must also carry a valid `turnstileToken` — a missing one answers `403` `turnstile_required` and a siteverify-rejected one `403` `turnstile_verification_failed`",
 		// Vote POST row: the field and the observable refusal warning.
 		"optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`)",
 		"on a board whose public config sets `requireAnonymousVoteTurnstile: true`, a missing or failed token rejects the vote outright with the SEC-846 `403`",
@@ -1403,7 +1406,7 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		// the vote gate — it only applies while the vote itself passes
 		// (flag false); flag-on boards reject the vote instead.
 		"When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that warning state",
-		"the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it",
+		"the opt-in guard applies to every anonymous opt-in, and on the combined vote + ship-notify request the server verifies the single token exactly once per call and accepts one minted with **either** the `vote` or the `ship-notify` widget action",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
@@ -1505,7 +1508,7 @@ func TestSkillDocsIssue243RequireAnonymousVoteTurnstile(t *testing.T) {
 				"sets `requireAnonymousVoteTurnstile` to `true`, an anonymous vote must carry a verified `turnstileToken` (string, 10–2048 chars) minted for action `vote` with cdata bound to the board's `appKey`, or it is rejected outright",
 				`403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`,
 				`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
-				"the vote is not recorded. Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
+				"the vote is not recorded. When that vote also opts in via `shipNotifyEmail`, a token minted with **either** the `vote` or the `ship-notify` widget action satisfies both guards in one verification (SEC-90; cdata must still be the board's `appKey`, and a token minted for any other intake kind is still rejected). Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
 				"and that suppression only applies while the vote itself passes: when the board sets `requireAnonymousVoteTurnstile` to `true`, a missing or failed token rejects the whole vote with the `403`s above instead of suppressing anything",
 			} {
 				if !strings.Contains(vote, marker) {
@@ -2422,7 +2425,9 @@ func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
 		// Full deterministic status-code set for POST /api/v1/feedback.
 		"`402` the workspace's monthly submission quota is exceeded (`tier_limit_submissions`) or its subscription is inactive or canceled (`subscription_inactive`)",
 		"`413` request body over the public JSON size limit (`payload_too_large`)",
-		"`403` Turnstile verification failures **and**, additionally, \"public feedback is disabled for the app\"",
+		// The 403 contract is unchanged; issue #247 (SaaS #1086) only spelled
+		// out the machine-readable Turnstile codes inside the same clause.
+		"`403` Turnstile verification failures — machine-readable `code`: a missing token answers `turnstile_required`, a siteverify rejection `turnstile_verification_failed`, and a server lacking its Turnstile secret `turnstile_not_configured` (SaaS #1086; these intakes previously answered a bare message) — **and**, additionally, \"public feedback is disabled for the app\"",
 		"`400` schema validation (including a `platform` value the app does not allow) and attachment-reference failures (`direct_attachment_forbidden`, `uploader_mismatch`) — it no longer covers rate limiting",
 		// Corrected CreateFeatureRequestCommentInput schema.
 		"Corrected request schema `CreateFeatureRequestCommentInput` (SaaS #1117 / PR #1119)",

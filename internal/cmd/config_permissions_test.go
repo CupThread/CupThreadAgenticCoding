@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -51,43 +52,49 @@ func runPermissionCheckRun(t *testing.T, cfgPath string, args ...string) (string
 	return stdout, stderr, fi.Mode().Perm()
 }
 
-// TestWorldReadableCredentialConfigWarnsAndRepairs pins the issue #186
-// acceptance contract: a group/world-readable config that stores credentials
-// makes PersistentPreRunE emit exactly one warning on stderr in table and
-// --json modes (stdout stays parse-clean) and tightens the file back to 0600.
-func TestWorldReadableCredentialConfigWarnsAndRepairs(t *testing.T) {
-	for _, mode := range []string{"table", "json"} {
-		t.Run(mode, func(t *testing.T) {
-			cfgPath := filepath.Join(t.TempDir(), "config.json")
-			writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o644)
-			var args []string
-			if mode == "json" {
-				args = []string{"--json"}
-			}
-			stdout, stderr, perm := runPermissionCheckRun(t, cfgPath, args...)
+// TestGroupWorldAccessibleCredentialConfigWarnsAndRepairs pins the issue #186
+// and #390 acceptance contract: a config that stores credentials and is
+// readable OR writable by group/other makes PersistentPreRunE emit exactly
+// one warning on stderr in table and --json modes (stdout stays
+// parse-clean) and tightens the file back to 0600. The writable seeds are
+// the #390 half: write access lets a local account repoint baseUrl so the
+// next command leaks the stored token, which is as dangerous as read access.
+func TestGroupWorldAccessibleCredentialConfigWarnsAndRepairs(t *testing.T) {
+	loosened := []os.FileMode{0o644, 0o640, 0o620, 0o602}
+	for _, loosen := range loosened {
+		for _, mode := range []string{"table", "json"} {
+			t.Run(fmt.Sprintf("%04o/%s", loosen, mode), func(t *testing.T) {
+				cfgPath := filepath.Join(t.TempDir(), "config.json")
+				writeFileMode(t, cfgPath, []byte(credentialedConfig), loosen)
+				var args []string
+				if mode == "json" {
+					args = []string{"--json"}
+				}
+				stdout, stderr, perm := runPermissionCheckRun(t, cfgPath, args...)
 
-			if n := strings.Count(stderr, "group/world-readable"); n != 1 {
-				t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
-			}
-			if strings.Contains(stdout, "group/world-readable") {
-				t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
-			}
-			if perm != 0o600 {
-				t.Errorf("config perms after run = %04o, want repaired 600", perm)
-			}
-			if mode == "json" {
-				unmarshalOneJSON(t, stdout) // structured stdout stays a single document
-			}
-		})
+				if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+					t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+				}
+				if strings.Contains(stdout, "group/world-accessible") {
+					t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+				}
+				if perm != 0o600 {
+					t.Errorf("config perms after run = %04o, want repaired 600", perm)
+				}
+				if mode == "json" {
+					unmarshalOneJSON(t, stdout) // structured stdout stays a single document
+				}
+			})
+		}
 	}
 }
 
-// TestWorldReadableCredentialConfigRepairFailureDegradesToWarning covers the
-// chmod-failure path: a repair that cannot go through (read-only directory,
-// foreign ownership) must degrade to the warning-only path — the warning
-// names the manual chmod, the command still succeeds, and the file is left
-// exactly as it was.
-func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.T) {
+// TestGroupWorldAccessibleCredentialConfigRepairFailureDegradesToWarning
+// covers the chmod-failure path: a repair that cannot go through (read-only
+// directory, foreign ownership) must degrade to the warning-only path — the
+// warning names the manual chmod, the command still succeeds, and the file is
+// left exactly as it was.
+func TestGroupWorldAccessibleCredentialConfigRepairFailureDegradesToWarning(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o644)
 	orig := repairConfigPermissions
@@ -96,7 +103,7 @@ func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.
 
 	stdout, stderr, perm := runPermissionCheckRun(t, cfgPath)
 
-	if n := strings.Count(stderr, "group/world-readable"); n != 1 {
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
 		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
 	}
 	for _, want := range []string{"chmod 600", "repair failed"} {
@@ -104,7 +111,7 @@ func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.
 			t.Errorf("stderr warning does not mention %q:\n%s", want, stderr)
 		}
 	}
-	if strings.Contains(stdout, "group/world-readable") {
+	if strings.Contains(stdout, "group/world-accessible") {
 		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
 	}
 	if perm != 0o644 {
@@ -112,15 +119,15 @@ func TestWorldReadableCredentialConfigRepairFailureDegradesToWarning(t *testing.
 	}
 }
 
-// TestWorldReadableConfigWithoutCredentialsIsSilent keeps the check from
-// producing noise: a loosened config with no stored tokens is not an exposure
-// and must not be warned about or rewritten.
-func TestWorldReadableConfigWithoutCredentialsIsSilent(t *testing.T) {
+// TestGroupWorldAccessibleConfigWithoutCredentialsIsSilent keeps the check
+// from producing noise: a loosened config with no stored tokens is not an
+// exposure and must not be warned about or rewritten.
+func TestGroupWorldAccessibleConfigWithoutCredentialsIsSilent(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.json")
 	writeFileMode(t, cfgPath, []byte(`{"defaultWorkspace":"ws_1"}`), 0o644)
 	stdout, stderr, perm := runPermissionCheckRun(t, cfgPath)
 
-	if strings.Contains(stderr, "group/world-readable") || strings.Contains(stdout, "group/world-readable") {
+	if strings.Contains(stderr, "group/world-accessible") || strings.Contains(stdout, "group/world-accessible") {
 		t.Errorf("credential-free config produced a warning:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	if perm != 0o644 {
@@ -135,7 +142,7 @@ func TestOwnerOnlyCredentialConfigIsSilent(t *testing.T) {
 	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
 	stdout, stderr, perm := runPermissionCheckRun(t, cfgPath)
 
-	if strings.Contains(stderr, "group/world-readable") || strings.Contains(stdout, "group/world-readable") {
+	if strings.Contains(stderr, "group/world-accessible") || strings.Contains(stdout, "group/world-accessible") {
 		t.Errorf("owner-only config produced a warning:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 	if perm != 0o600 {
@@ -147,7 +154,7 @@ func TestOwnerOnlyCredentialConfigIsSilent(t *testing.T) {
 // (config not created yet) into an error or a warning.
 func TestMissingConfigFileIsSilent(t *testing.T) {
 	stdout, stderr, _ := runPermissionCheckRun(t, filepath.Join(t.TempDir(), "absent.json"))
-	if strings.Contains(stderr, "group/world-readable") || strings.Contains(stdout, "group/world-readable") {
+	if strings.Contains(stderr, "group/world-accessible") || strings.Contains(stdout, "group/world-accessible") {
 		t.Errorf("missing config produced a warning:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
 	}
 }

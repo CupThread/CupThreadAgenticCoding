@@ -56,11 +56,11 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/v1/public/config/:appKey` (and the workspace/app-slug variant) | `GET` | `PublicAppConfig`: branding, platforms, anonymous-access flags, `requireAnonymousVoteTurnstile`, optional `allowedEmbedOrigins`, and the always-served `sdk` object (`theme`, feature toggles, changelog-overlay copy — SaaS #1235). Private apps and unknown keys both fail closed with the same `404` (SEC-37). |
+| `/api/v1/public/config/:appKey` (and the workspace/app-slug variant) | `GET` | `PublicAppConfig`: branding, platforms, anonymous-access flags, `requireAnonymousVoteTurnstile`, optional `allowedEmbedOrigins`, optional `turnstile.siteKey` (present only when the deployment publishes a Turnstile site key; **absent** — not `null` — otherwise, meaning no native WebView challenge; SaaS #1086), and the always-served `sdk` object (`theme`, feature toggles, changelog-overlay copy — SaaS #1235). Private apps and unknown keys both fail closed with the same `404` (SEC-37). |
 | `/api/v1/public/showcase` (alias `/api/v1/public/apps`) | `GET` | Public app showcase, newest first; `offset` clamps at 5000. |
 | `/api/v1/public/columns/:appKey`, `/api/v1/public/versions/:appKey` | `GET` | Roadmap columns and released versions; `401 authentication_required` on sign-in-only roadmaps (PRIV-12). |
 | `/api/v1/public/apps/:appKey/changelog` | `GET` | Published changelog feed, cursor-paginated; corrected entry schema in [reference/endpoints.md](reference/endpoints.md) (SaaS #1226). |
-| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Email double-opt-in subscribe; supports optional `turnstileToken`. |
+| `/api/v1/public/apps/:appKey/changelog/subscribe` | `POST` | Email double-opt-in subscribe; supports optional `turnstileToken`; a missing one answers `403 turnstile_required`, not `turnstile_verification_failed` (SaaS #1086). |
 | `/api/v1/public/apps/:appKey/changelog/confirm` | `GET`/`POST` | SEC-35 interstitial: `GET` never mutates; only `POST` consumes the single-use token. |
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET`/`POST` | Same interstitial pattern; `POST` serves RFC 8058 one-click. Unsubscribe is the exception to token expiry and the private-app `403` (#635). |
 | `/api/v1/public/digest/unsubscribe` | `GET`/`POST` | Weekly-digest one-click unsubscribe (PRIV-07); `GET` non-destructive, only `POST` mutates. |
@@ -151,6 +151,7 @@ Every response carries `X-Request-Id` (caller-supplied if it matches `^[A-Za-z0-
 ### Error-handling conventions (all endpoints)
 
 - Parse the machine-readable `code` field of `{"error": string, "code"?: string}` bodies — never the message text.
+- Turnstile-guarded public endpoints (`POST /feedback`, `POST /feature-requests`, `POST /uploads/sessions`, `POST /feature-requests/:id/vote`, `POST /changelog/subscribe`) answer coded `403`s (SaaS #1086): `turnstile_required` (token absent), `turnstile_verification_failed` (siteverify rejection), `turnstile_not_configured` (server lacks a secret). On `turnstile_required`, mint a fresh token and retry once — the hosted `/turnstile/verify` WebView challenge page mints one when the app config publishes `turnstile.siteKey` (bridge contract in `reference/endpoints.md`).
 - Validation `400`s (`"error": "Validation failed"`) additionally carry an optional `details` object — the zod `flatten()` output `{formErrors: string[], fieldErrors: Record<fieldName, string[]>}` (SaaS #1475); it is absent on every other error, so render the per-field reasons from it when present instead of only the generic message. The CLI's `APIError` already exposes it verbatim as `Details` and renders a capped summary.
 - Deterministic client errors (`402`, `409`, `422`, `413`, validation `400`s): fix the request or surface to the user; never auto-retry. Transient (`429`, `500 image_upload_failed`): retry with exponential backoff.
 - Uniform `404`s are deliberate existence hiding (private apps, unapproved requests, unknown ids) — no client may infer existence from a `404` vs `403` distinction.

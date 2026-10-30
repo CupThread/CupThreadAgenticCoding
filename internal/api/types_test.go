@@ -28,6 +28,7 @@ const publicAppConfigFixture = `{
 	"allowAnonymousChangelog": false,
 	"requireAnonymousVoteTurnstile": true,
 	"allowedEmbedOrigins": ["https://docs.example.com", "https://app.partner.com:8443"],
+	"turnstile": {"siteKey": "0x4AAAAAAAexampleSiteKey"},
 	"sdk": {
 		"theme": "midnight",
 		"features": {
@@ -82,6 +83,9 @@ func TestPublicAppConfigDecodesFullSchema(t *testing.T) {
 		cfg.AllowedEmbedOrigins[0] != "https://docs.example.com" ||
 		cfg.AllowedEmbedOrigins[1] != "https://app.partner.com:8443" {
 		t.Errorf("AllowedEmbedOrigins = %v, want the two configured origins", cfg.AllowedEmbedOrigins)
+	}
+	if cfg.Turnstile == nil || cfg.Turnstile.SiteKey != "0x4AAAAAAAexampleSiteKey" {
+		t.Errorf("Turnstile = %+v, want the SaaS #1086 site key from the full-schema payload", cfg.Turnstile)
 	}
 	if cfg.Sdk.Theme != "midnight" {
 		t.Errorf("Sdk.Theme = %q, want midnight", cfg.Sdk.Theme)
@@ -200,6 +204,42 @@ func TestPublicAppConfigEmbedOriginsPresence(t *testing.T) {
 	}
 	if strings.Contains(string(out), "allowedEmbedOrigins") {
 		t.Errorf("re-marshaled config %s invents allowedEmbedOrigins for an app without embed origins", out)
+	}
+}
+
+// TestPublicAppConfigTurnstilePresence pins the turnstile presence semantics
+// (issue #247, SaaS #1086): the object is present only when the deployment
+// publishes a Turnstile site key — absent (never null) otherwise — and
+// omitempty keeps a decoded config re-marshaling without the key when it was
+// absent, so --json/-o yaml output stays byte-faithful to the server.
+func TestPublicAppConfigTurnstilePresence(t *testing.T) {
+	var withTurnstile PublicAppConfig
+	const withBody = `{"appId":"app_1","appKey":"key_live_1","turnstile":{"siteKey":"0x4AAAAAAAexampleSiteKey"}}`
+	if err := json.Unmarshal([]byte(withBody), &withTurnstile); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	out, err := json.Marshal(&withTurnstile)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"turnstile":{"siteKey":"0x4AAAAAAAexampleSiteKey"}`) {
+		t.Errorf("re-marshaled config %s drops turnstile.siteKey", out)
+	}
+
+	var withoutTurnstile PublicAppConfig
+	const withoutBody = `{"appId":"app_2","appKey":"key_live_2"}`
+	if err := json.Unmarshal([]byte(withoutBody), &withoutTurnstile); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if withoutTurnstile.Turnstile != nil {
+		t.Errorf("Turnstile = %+v, want nil when the server omits the field", withoutTurnstile.Turnstile)
+	}
+	out, err = json.Marshal(&withoutTurnstile)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(out), "turnstile") {
+		t.Errorf("re-marshaled config %s invents turnstile for a deployment without a site key", out)
 	}
 }
 
