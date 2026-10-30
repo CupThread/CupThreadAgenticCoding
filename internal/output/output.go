@@ -184,6 +184,18 @@ const (
 // text: a future call site that interpolates such text into a human line
 // outside a table must go through PrintfSafe, not Printf.
 func sanitize(s string) string {
+	return VisibleControls(s)
+}
+
+// VisibleControls renders terminal-control runes as inert visible text
+// instead of layout or commands: tab and newline become the cell glyphs, and
+// every other control rune (C0, DEL, and the C1 range) is dropped — exactly
+// the table-cell sanitizer's predicate, shared with it so the two surfaces
+// cannot diverge. It is for human lines that display a value whose newlines
+// are structure rather than attacks (the sign-user-attrs canonical string,
+// whose \n separators delimit the signed fields): pass the result through
+// PrintfSafe, which strips anything this leaves and adds no new risk.
+func VisibleControls(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\t':

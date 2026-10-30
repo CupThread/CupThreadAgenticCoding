@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -395,7 +396,11 @@ to the body without changing the signed values.`,
 			// output above stays byte-faithful for signature replay.
 			A.out.PrintfSafe("✓ signed payment attributes for %s (userToken %s)", appKey, token)
 			A.out.PrintfSafe("canonical:")
-			A.out.PrintfSafe("%s", canonical)
+			// The canonical string's newlines are its field structure, not an
+			// attack: render them as the visible cell glyph so the signed
+			// layout stays eyeballable, and let PrintfSafe strip every other
+			// control (CodeRabbit review of #398).
+			A.out.PrintfSafe("%s", output.VisibleControls(canonical))
 			A.out.PrintfSafe("signature: %s", signature)
 			A.out.PrintfSafe("timestamp: %d", stamp)
 			if out.Note != "" {

@@ -226,6 +226,12 @@ func TestAPISignUserAttrsHumanOutputSanitized(t *testing.T) {
 	if !strings.Contains(out, stripped) {
 		t.Errorf("output %q missing inert plan rendering %q", out, stripped)
 	}
+	// The canonical string's own newlines are field structure: they render
+	// as the visible cell glyph so the signed layout stays readable without
+	// granting the newlines terminal power (CodeRabbit review of #398).
+	if !strings.Contains(out, "cpt-user-attrs-v1⏎"+signTestAppKey+"⏎"+signTestToken+"⏎true⏎") {
+		t.Errorf("output %q missing ⏎-joined canonical rendering", out)
+	}
 }
 
 // TestAPISignUserAttrsErrors covers the argument validation and the
