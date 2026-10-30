@@ -807,12 +807,26 @@ type PublicAppConfig struct {
 	// never an empty array — so omitempty keeps --json/-o yaml round-trips
 	// lossless (SEC-518).
 	AllowedEmbedOrigins []string `json:"allowedEmbedOrigins,omitempty"`
+	// Turnstile mirrors the optional turnstile object (SaaS #1086): the
+	// server sends { "siteKey": "0x…" } only when the deployment publishes
+	// a Turnstile site key — absent (never null) otherwise, meaning the
+	// hosted WebView challenge page cannot mint tokens for that app and
+	// gated intake needs a host-supplied token. omitempty keeps --json/-o
+	// yaml round-trips lossless.
+	Turnstile *TurnstileConfig `json:"turnstile,omitempty"`
 	// Sdk mirrors the SdkAppearance object the portal and SDKs read for
 	// theming (SaaS #1235). Always served from app settings — tenants that
 	// never touched the theme editor get the defaults (theme "system", all
 	// four features on, the "What's New" overlay) — so it is a value, not a
 	// pointer.
 	Sdk SdkAppearance `json:"sdk"`
+}
+
+// TurnstileConfig is the optional turnstile object inside PublicAppConfig.
+// SiteKey is the deployment's public Cloudflare Turnstile site key — public
+// by design (the web bundle already ships one).
+type TurnstileConfig struct {
+	SiteKey string `json:"siteKey"`
 }
 
 // SdkAppearance is the theme bundle inside PublicAppConfig.sdk.

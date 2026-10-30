@@ -1365,11 +1365,13 @@ func TestAPISkillIssue240VoteProposeUserTokenHeader(t *testing.T) {
 //   - POST /api/v1/public/apps/{appKey}/changelog/subscribe
 //     (SubscribeChangelogInput) accepts an optional turnstileToken (string,
 //     10-2048 chars); when the server enforces Turnstile human verification an
-//     anonymous subscription requires a valid token and one that is missing or
-//     fails verification answers 403 {"error": "Human verification failed.
-//     Please try again.", "code": "turnstile_verification_failed"}, while
-//     signed-in callers subscribing with their session's verified email
-//     address are exempt.
+//     anonymous subscription requires a valid token: one that is missing
+//     answers 403 {"error": "Human verification (Turnstile) is required",
+//     "code": "turnstile_required"} (issue #247 corrected the former
+//     turnstile_verification_failed misreport) and one that fails siteverify
+//     answers 403 {"error": "Human verification failed. Please try again.",
+//     "code": "turnstile_verification_failed"}, while signed-in callers
+//     subscribing with their session's verified email address are exempt.
 //   - POST /api/v1/feature-requests/{id}/vote (VoteFeatureRequestInput)
 //     accepts an optional turnstileToken; when verification is enforced an
 //     anonymous voter that opts in via shipNotifyEmail should supply a
@@ -1387,8 +1389,9 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		"The request body (`SubscribeChangelogInput`) accepts an optional `turnstileToken` (string, 10–2048 chars)",
 		`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
 		"signed-in callers subscribing with their session's verified email address are exempt",
-		// Changelog flow blockquote: the same gate in the flow summary.
-		"anonymous subscribe bodies must also carry a valid `turnstileToken` or they answer `403` `turnstile_verification_failed`",
+		// Changelog flow blockquote: the same gate in the flow summary,
+		// with the issue-#247 missing-token code split.
+		"anonymous subscribe bodies must also carry a valid `turnstileToken` — a missing one answers `403` `turnstile_required` and a siteverify-rejected one `403` `turnstile_verification_failed`",
 		// Vote POST row: the field and the observable refusal warning.
 		"optional `turnstileToken` (string, 10–2048 chars, `VoteFeatureRequestInput`)",
 		"on a board whose public config sets `requireAnonymousVoteTurnstile: true`, a missing or failed token rejects the vote outright with the SEC-846 `403`",
@@ -2422,7 +2425,9 @@ func TestSkillDocsIssue248FeedbackIntakeContract(t *testing.T) {
 		// Full deterministic status-code set for POST /api/v1/feedback.
 		"`402` the workspace's monthly submission quota is exceeded (`tier_limit_submissions`) or its subscription is inactive or canceled (`subscription_inactive`)",
 		"`413` request body over the public JSON size limit (`payload_too_large`)",
-		"`403` Turnstile verification failures **and**, additionally, \"public feedback is disabled for the app\"",
+		// The 403 contract is unchanged; issue #247 (SaaS #1086) only spelled
+		// out the machine-readable Turnstile codes inside the same clause.
+		"`403` Turnstile verification failures — machine-readable `code`: a missing token answers `turnstile_required`, a siteverify rejection `turnstile_verification_failed`, and a server lacking its Turnstile secret `turnstile_not_configured` (SaaS #1086; these intakes previously answered a bare message) — **and**, additionally, \"public feedback is disabled for the app\"",
 		"`400` schema validation (including a `platform` value the app does not allow) and attachment-reference failures (`direct_attachment_forbidden`, `uploader_mismatch`) — it no longer covers rate limiting",
 		// Corrected CreateFeatureRequestCommentInput schema.
 		"Corrected request schema `CreateFeatureRequestCommentInput` (SaaS #1117 / PR #1119)",
@@ -2987,6 +2992,134 @@ func TestAPISkillIssue249AttachmentDownloadUniform404(t *testing.T) {
 	} {
 		if strings.Contains(uploadsDoc, stale) || strings.Contains(endpointsDoc, stale) {
 			t.Errorf("cupthread-api docs still carry the removed issue-#249 403 denial phrasing %q", stale)
+		}
+	}
+}
+
+// TestAPISkillIssue247Turnstile403CodesSiteKeyChallengePage pins the issue
+// #247 sync of the SaaS #1086 public-surface changes:
+//   - every Turnstile-guarded public endpoint (feedback, feature-requests
+//     POST, uploads/sessions, feature-requests/:id/vote, changelog/subscribe)
+//     answers a machine-readable 403 `code`: `turnstile_required` (token
+//     absent), `turnstile_verification_failed` (siteverify rejection), and
+//     `turnstile_not_configured` (server lacks a secret); the upload/vote/
+//     subscribe routes no longer misreport an absent token as
+//     `turnstile_verification_failed`;
+//   - `PublicAppConfig` publishes an optional nested `turnstile` object
+//     carrying `siteKey`, absent (never `null`) when the deployment
+//     publishes none — absence means native WebView challenges are
+//     unavailable;
+//   - the hosted `https://app.cupthread.com/turnstile/verify` challenge
+//     page mints single-use 300-second tokens in a WebView and posts the
+//     outcome to the injected native bridge, with a documented per-platform
+//     resolution order.
+func TestAPISkillIssue247Turnstile403CodesSiteKeyChallengePage(t *testing.T) {
+	endpointsDoc := readSkillFile(t, "cupthread-api", "reference/endpoints.md")
+	for _, marker := range []string{
+		// The dedicated reference section exists.
+		"## Machine-Readable Turnstile 403 Codes and the Hosted Challenge Page (SaaS #1086)",
+		// The code contract covers all five guarded endpoints.
+		"`POST /api/v1/feedback`, `POST /api/v1/feature-requests`, `POST /api/v1/uploads/sessions`, `POST /api/v1/feature-requests/:id/vote`, and `POST /api/v1/public/apps/:appKey/changelog/subscribe`",
+		"| Token absent from the request | `turnstile_required` |",
+		"| Cloudflare siteverify rejected the token (invalid, expired, replayed, or action/cdata mismatch; also a siteverify outage) | `turnstile_verification_failed` |",
+		"| The server is asked to verify but has no Turnstile secret configured | `turnstile_not_configured` |",
+		// The misreport history and the retry-once guidance.
+		"the upload/vote/subscribe routes misreported an **absent** token as `turnstile_verification_failed`",
+		"On `turnstile_required`, mint a fresh token and retry the gated call **once**",
+		// PublicAppConfig.turnstile.siteKey: optional, absent when unpublished.
+		`"turnstile": { "siteKey": "0x…" }`,
+		"present only when the deployment publishes a site key and **absent** (never `null`) otherwise",
+		"Absence means native WebView challenges are unavailable for that app",
+		// The hosted challenge page: URL, outcomes, validity, bridges.
+		"https://app.cupthread.com/turnstile/verify?siteKey=...&action=...&cdata=...&theme=light|dark|auto&locale=...",
+		"`{status: \"success\", token}` — the token is **single-use** and valid for **300 s**: mint a fresh one per gated call, never cache or replay",
+		"`{status: \"error\", code}` — the raw client-side widget code; `110200` means the domain is not allowlisted",
+		"`{status: \"expired\"}` — the challenge timed out; reopen the page",
+		"iOS `window.webkit.messageHandlers.turnstileBridge.postMessage(object)`",
+		"Android `window.AndroidTurnstileBridge.postMessage(JSON string)` (legacy `onToken(token)` fallback)",
+		"Flutter `window.turnstileBridge.postMessage(JSON string)`",
+		"React Native `window.ReactNativeWebView.postMessage(JSON string)`",
+		// Feedback intake row: the codes are spelled out there too.
+		"a missing token answers `turnstile_required`, a siteverify rejection `turnstile_verification_failed`, and a server lacking its Turnstile secret `turnstile_not_configured`",
+		// Subscribe row: the missing-token split replaced the lumped body.
+		"a **missing** token answers `403 {\"error\": \"Human verification (Turnstile) is required\", \"code\": \"turnstile_required\"}` (previously misreported as `turnstile_verification_failed`)",
+		// Upload sessions row: same split.
+		"a missing Turnstile token answers `403 turnstile_required` (no longer misreported as `turnstile_verification_failed`)",
+	} {
+		if !strings.Contains(endpointsDoc, marker) {
+			t.Errorf("endpoints.md is missing required issue-#247 turnstile marker %q", marker)
+		}
+	}
+	// The old lumped missing/failed phrasing must be gone.
+	for _, stale := range []string{
+		"one that is missing or fails verification answers `403 {\"error\": \"Human verification failed. Please try again.\", \"code\": \"turnstile_verification_failed\"}`",
+		"or they answer `403` `turnstile_verification_failed`",
+	} {
+		if strings.Contains(endpointsDoc, stale) {
+			t.Errorf("endpoints.md still carries the superseded issue-#247 lumped missing/failed 403 phrasing %q", stale)
+		}
+	}
+
+	skillDoc := readSkillFile(t, "cupthread-api", "SKILL.md")
+	for _, marker := range []string{
+		// Config row: the optional nested object.
+		"optional `turnstile.siteKey` (present only when the deployment publishes a Turnstile site key; **absent** — not `null` — otherwise, meaning no native WebView challenge; SaaS #1086)",
+		// Subscribe row: the corrected missing-token code.
+		"a missing one answers `403 turnstile_required`, not `turnstile_verification_failed` (SaaS #1086)",
+		// Cross-cutting error-handling bullet: codes + retry-once + pointer.
+		"`turnstile_required` (token absent), `turnstile_verification_failed` (siteverify rejection), `turnstile_not_configured` (server lacks a secret)",
+		"the hosted `/turnstile/verify` WebView challenge page mints one when the app config publishes `turnstile.siteKey`",
+	} {
+		if !strings.Contains(skillDoc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#247 turnstile marker %q", marker)
+		}
+	}
+
+	voteDoc := readSkillFile(t, "cupthread-api", "reference/voting-and-submissions.md")
+	for _, marker := range []string{
+		// SEC-846 section: mint via the hosted challenge page, once per vote.
+		"a native host can mint the vote token by loading the hosted challenge page (`https://app.cupthread.com/turnstile/verify?siteKey=…&action=vote&cdata=<appKey>`) in a WebView",
+		"the token is single-use with a 300-second validity, so mint a fresh one per vote",
+	} {
+		if !strings.Contains(voteDoc, marker) {
+			t.Errorf("voting-and-submissions.md is missing required issue-#247 turnstile marker %q", marker)
+		}
+	}
+
+	uploadsDoc := readSkillFile(t, "cupthread-api", "reference/uploads-and-attachments.md")
+	for _, marker := range []string{
+		// Session-create bullet: the corrected 403 bodies.
+		"a missing token answers `403 {\"error\": \"Human verification (Turnstile) is required\", \"code\": \"turnstile_required\"}` (no longer misreported as `turnstile_verification_failed`)",
+		"`403` Turnstile with the machine-readable `turnstile_required`/`turnstile_verification_failed`/`turnstile_not_configured` codes (SaaS #1086)",
+	} {
+		if !strings.Contains(uploadsDoc, marker) {
+			t.Errorf("uploads-and-attachments.md is missing required issue-#247 turnstile marker %q", marker)
+		}
+	}
+
+	// Every SDK skill documents its platform's bridge and the
+	// mint-fresh-per-call rule for the hosted challenge page.
+	sdkBridges := map[string]string{
+		"cupthread-swift-sdk":        "the page posts the outcome to `window.webkit.messageHandlers.turnstileBridge.postMessage(object)`",
+		"cupthread-android-sdk":      "the page posts the outcome to `window.AndroidTurnstileBridge.postMessage(JSON string)` (legacy `onToken(token)` fallback)",
+		"cupthread-flutter-sdk":      "the page posts the outcome to `window.turnstileBridge.postMessage(JSON string)`",
+		"cupthread-react-native-sdk": "the page posts the outcome to `window.ReactNativeWebView.postMessage(JSON string)`",
+	}
+	for skill, bridge := range sdkBridges {
+		doc := readSkill(t, skill)
+		for _, marker := range []string{
+			// The siteKey-absence semantics.
+			"the field is present only when the deployment ships a site key and **absent** (not `null`) otherwise",
+			// The challenge-page URL with the vote action binding.
+			"https://app.cupthread.com/turnstile/verify?siteKey=...&action=vote&cdata=<appKey>",
+			// The platform bridge and the outcome envelopes.
+			bridge,
+			"(single-use, ~300 s validity — mint a fresh one per gated call)",
+			"`110200` = domain not allowlisted",
+		} {
+			if !strings.Contains(doc, marker) {
+				t.Errorf("%s is missing required issue-#247 turnstile marker %q", skill, marker)
+			}
 		}
 	}
 }
