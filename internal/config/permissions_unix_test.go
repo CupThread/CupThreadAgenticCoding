@@ -9,10 +9,12 @@ import (
 )
 
 // TestUnsafePermissions pins the load-time exposure check (issue #186): a
-// file readable by group or other is flagged with its actual mode, an
-// owner-only file is not, and a missing path is silently reported safe —
-// there is nothing on disk to expose, and a first run must not trip on the
-// config it has not created yet.
+// file readable or writable by group or other is flagged with its actual
+// mode, an owner-only file is not, and a missing path is silently reported
+// safe — there is nothing on disk to expose, and a first run must not trip on
+// the config it has not created yet. The write halves of the group/other
+// masks are issue #390: write access lets a local account repoint baseUrl (so
+// the next command leaks the stored token) or swap the credential outright.
 func TestUnsafePermissions(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, mode os.FileMode) string {
@@ -35,6 +37,9 @@ func TestUnsafePermissions(t *testing.T) {
 	}{
 		{name: "world-readable", path: write("world-readable.json", 0o644), mode: 0o644, unsafe: true},
 		{name: "group-readable", path: write("group-readable.json", 0o640), mode: 0o640, unsafe: true},
+		{name: "group-writable", path: write("group-writable.json", 0o620), mode: 0o620, unsafe: true},
+		{name: "other-writable", path: write("other-writable.json", 0o602), mode: 0o602, unsafe: true},
+		{name: "world-writable", path: write("world-writable.json", 0o666), mode: 0o666, unsafe: true},
 		{name: "owner-only", path: write("owner-only.json", 0o600), mode: 0o600, unsafe: false},
 		{name: "owner-read-only", path: write("owner-read-only.json", 0o400), mode: 0o400, unsafe: false},
 		{name: "missing path", path: filepath.Join(dir, "absent.json"), mode: 0, unsafe: false},
