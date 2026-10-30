@@ -54,6 +54,11 @@ type Client struct {
 	BaseURL string
 	HTTP    *http.Client
 	// WorkspaceID, when set, is sent as X-Workspace-Id on every request.
+	// The cmd package treats it as the scope of the current command run:
+	// buildClient seeds it from --workspace once, workspaceClient (the one
+	// deliberate mutation point) re-scopes it up front, and per-use
+	// overrides value-copy the client instead of writing it in place
+	// (issue #379).
 	WorkspaceID string
 	// AppKey, when set, is sent as X-App-Key on every request.
 	AppKey string
