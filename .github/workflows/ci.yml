@@ -47,7 +47,7 @@ jobs:
       # after the #186/#390 renames).
       - run: |
           umask 0077
-          go test ./internal/cmd/ -run 'Test(GroupWorldAccessible|OwnerOnly|MissingConfigFile|RecoveryFile)'
+          go test ./internal/cmd/ -count=1 -run 'Test(GroupWorldAccessible|OwnerOnly|MissingConfigFile|RecoveryFile)'
       # The GOOS-specific source files (lock_windows.go, the !unix && !windows
       # config-lock stub, the confirm_tty variants) are invisible to the
       # linux-only steps above; compile every supported target so a break to

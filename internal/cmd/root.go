@@ -262,10 +262,40 @@ func (a *app) warnUnsafeConfigPermissions() {
 	// ever written from a live bearer+refresh pair — so the sweep does not
 	// consult the config's own StoresCredentials: a stale recovery file next
 	// to a since-logged-out config is still a live adoptable credential.
-	matches, _ := filepath.Glob(a.cfgPath + ".recovery-*")
-	for _, path := range matches {
+	for _, path := range recoveryFilePaths(a.cfgPath) {
 		a.warnUnsafeCredentialFile(path, "OAuth recovery file", "holds a full bearer+refresh credential pair", true)
 	}
+}
+
+// recoveryFilePaths returns every directory entry beside cfgPath whose name
+// extends the config basename with the recovery prefix, matched literally:
+// writeRecoveryCredential names the files by concatenating cfgPath verbatim,
+// so a --config value carrying glob metacharacters ('config[prod].json')
+// must not be reinterpreted as a pattern — a filepath.Glob would treat
+// [prod] as a character class and silently miss every recovery file beside
+// such a config (CodeRabbit review of #402). The parent directory is
+// enumerated instead of globbed. Every entry matching the prefix is
+// returned, directories included, exactly as the glob saw them:
+// removeRecoveryFiles must still attempt (and report) the removal of a
+// non-directory entry wearing a recovery name, and every other reader skips
+// what it cannot use on its own.
+func recoveryFilePaths(cfgPath string) []string {
+	dir, base := filepath.Split(cfgPath)
+	if dir == "" {
+		dir = "." // a bare --config name lives in the process working directory
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	prefix := base + ".recovery-"
+	var matches []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) {
+			matches = append(matches, filepath.Join(dir, e.Name()))
+		}
+	}
+	return matches
 }
 
 // warnUnsafeCredentialFile applies the sweep's one-warning-one-repair
@@ -657,7 +687,7 @@ func writeRecoveryCredential(cfgPath string, authState *config.Auth) (string, er
 // the newest surviving candidate wins, because every older recovery file
 // describes an earlier, already-superseded rotation of the same chain.
 func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string, attempted map[string]struct{}) (*config.Auth, string) {
-	matches, _ := filepath.Glob(cfgPath + ".recovery-*")
+	matches := recoveryFilePaths(cfgPath)
 	prefix := filepath.Base(cfgPath) + ".recovery-"
 	type candidate struct {
 		ts   int64
@@ -704,7 +734,7 @@ func newestAdoptableRecovery(cfgPath, triedRefresh, issuer string, attempted map
 // that vanished between the glob and the remove is not a failure — that
 // race is another caller's successful cleanup.
 func (a *app) removeRecoveryFiles(keep string) error {
-	matches, _ := filepath.Glob(a.cfgPath + ".recovery-*")
+	matches := recoveryFilePaths(a.cfgPath)
 	var errs []error
 	for _, m := range matches {
 		if m == keep {

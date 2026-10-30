@@ -389,6 +389,35 @@ func TestWriteRecoveryCredentialReassertsOwnerMode(t *testing.T) {
 	}
 }
 
+// TestRecoveryFileSweepMatchesLiteralMetacharacterConfigPath pins the
+// literal matching of the recovery sweep (CodeRabbit review of #402): a
+// --config value carrying glob metacharacters must not be reinterpreted as a
+// pattern by the sweep — 'config[prod].json' under filepath.Glob would treat
+// [prod] as a character class, never match the recovery file
+// writeRecoveryCredential literally created beside it, and leave the 0644
+// bearer+refresh pair exposed forever.
+func TestRecoveryFileSweepMatchesLiteralMetacharacterConfigPath(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config[prod].json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	recovery := cfgPath + ".recovery-1729000000000000000"
+	writeFileMode(t, recovery, []byte(oauthRecoveryPair), 0o644)
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, recovery) {
+		t.Errorf("stderr warning does not name the literal recovery path:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	if recPerm := filePermOrZero(t, recovery); recPerm != 0o600 {
+		t.Errorf("recovery file perms after run = %04o, want repaired 600", recPerm)
+	}
+}
+
 // filePermOrZero reports the permission bits of path, or 0 when the file no
 // longer exists (the caller decides whether that is the expectation).
 func filePermOrZero(t *testing.T, path string) os.FileMode {
