@@ -84,6 +84,12 @@ func newNotificationsListCmd() *cobra.Command {
 				})
 			}
 			A.out.Table([]string{"ID", "Type", "Title", "State", "Created"}, rows)
+			// Always printed (even when total equals the page size) so the
+			// line's presence is a stable part of the output shape, like
+			// features list's trailers: `total` is the server's COUNT(*) over
+			// the whole notification set, so total > shown is the truncation
+			// signal (issue #410).
+			A.out.Printf("(%d shown, %d total)", len(resp.Notifications), resp.Total)
 			A.out.Printf("(%d unread)", resp.UnreadCount)
 			return nil
 		},

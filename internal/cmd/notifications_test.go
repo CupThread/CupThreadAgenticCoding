@@ -336,7 +336,8 @@ func notificationsServer(t *testing.T, respBody string) (*httptest.Server, *url.
 }
 
 // TestNotificationsListRendersReadState covers the table contract: newest
-// first rows with the read/unread state and the unread-count trailer.
+// first rows with the read/unread state, then the shown/total and
+// unread-count trailers.
 func TestNotificationsListRendersReadState(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
@@ -349,7 +350,7 @@ func TestNotificationsListRendersReadState(t *testing.T) {
 	if got := gotQuery.Get("limit"); got != "50" {
 		t.Errorf("default limit = %q, want 50", got)
 	}
-	for _, want := range []string{"feedback.received", "unread", "changelog.published", "read", "(1 unread)"} {
+	for _, want := range []string{"feedback.received", "unread", "changelog.published", "read", "(2 shown, 2 total)", "(1 unread)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table output missing %q:\n%s", want, out)
 		}
@@ -359,8 +360,8 @@ func TestNotificationsListRendersReadState(t *testing.T) {
 // TestNotificationsListClampsLimit pins the local --limit clamp on the
 // notifications listing (issue #201): the server clamps a parsed page size to
 // its parseListPagination maxLimit (200) silently, so an offset walk stepped
-// by a larger requested limit would skip rows without any hint (the command
-// prints no more-pages marker at all). The CLI clamps first — over-cap to
+// by a larger requested limit would skip rows (the shown/total trailer from
+// issue #410 is the only post-hoc signal). The CLI clamps first — over-cap to
 // 200, 0/negative to 1 (matching features list) — and announces the rewrite
 // through warnf: table mode keeps it on stdout, --json mode moves it to
 // stderr so stdout stays a single document. The 200 boundary passes through
@@ -414,8 +415,9 @@ func TestNotificationsListClampsLimit(t *testing.T) {
 // TestNotificationsListClampsOffset pins the local --offset clamp on the
 // notifications listing (issue #178): the server silently degrades an offset
 // above the shared console cap of 10,000 to the cap (still answering 200)
-// and a negative one to 0, and this command prints no more-pages marker at
-// all, so a walk past the cap re-reads the same final page undetectably. The
+// and a negative one to 0, and no ⚠-free walk can tell it re-read the same
+// final page — the shown/total trailer from issue #410 prints identical
+// numbers on every clamped page. The
 // CLI clamps first and announces the rewrite through warnf: table mode keeps
 // it on stdout, --json mode moves it to stderr so stdout stays a single
 // document. The 10,000 boundary passes through verbatim with no warning.
@@ -462,5 +464,79 @@ func TestNotificationsListClampsOffset(t *testing.T) {
 	assertNoTableOutput(t, stdout)
 	if !strings.Contains(stderr, "⚠ --offset 15000 is outside the server's 0-10000 page range; requesting 10000 instead") {
 		t.Errorf("json stderr missing clamp warning:\n%s", stderr)
+	}
+}
+
+// truncatedNotificationsFixture is the issue #410 shape: a page smaller than
+// the workspace's whole notification set (total counts every notification,
+// not just the served page), which table mode used to render
+// indistinguishably from the end of the list.
+const truncatedNotificationsFixture = `{
+	"notifications": [
+		{"id": "ntf_1111111111abcdef", "workspaceId": "ws_1", "type": "feedback.received", "title": "New feedback on Dark mode", "readAt": null, "createdAt": "2026-10-01T10:00:00.000Z"},
+		{"id": "ntf_2222222222abcdef", "workspaceId": "ws_1", "type": "changelog.published", "title": "v1.2.0 shipped", "readAt": "2026-10-02T09:00:00.000Z", "createdAt": "2026-10-01T11:00:00.000Z"}
+	],
+	"total": 450,
+	"unreadCount": 1
+}`
+
+// TestNotificationsListDisclosesTotal pins issue #410: the table footers must
+// surface the server's total next to the served page size — total > shown is
+// the truncation signal, since the route carries no hasMore. The footer shape
+// is stable: it prints with the same wording when total equals the page size
+// (the old bare "(N unread)" trailer kept its line byte-identical for
+// parsers), and --json stays a single document with total/unreadCount served
+// verbatim.
+func TestNotificationsListDisclosesTotal(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server, _ := notificationsServer(t, truncatedNotificationsFixture)
+
+	out, err := runRoot(t, server.URL, "notifications", "list", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("notifications list: %v", err)
+	}
+	if !strings.Contains(out, "(2 shown, 450 total)") {
+		t.Errorf("table output missing the shown/total truncation disclosure:\n%s", out)
+	}
+	if !strings.Contains(out, "(1 unread)") {
+		t.Errorf("table output missing the unread footer:\n%s", out)
+	}
+
+	// A complete page keeps the identical footer shape (stable output
+	// contract, like features list's always-printed lines).
+	wholeServer, _ := notificationsServer(t, notificationsListFixture)
+	whole, err := runRoot(t, wholeServer.URL, "notifications", "list", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("notifications list (total == shown): %v", err)
+	}
+	if !strings.Contains(whole, "(2 shown, 2 total)") || !strings.Contains(whole, "(1 unread)") {
+		t.Errorf("total == shown must still print both footers unchanged:\n%s", whole)
+	}
+
+	// --json stays byte-faithful: one document, fields exactly as served.
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"notifications", "list", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("notifications list --json: %v", err)
+	}
+	unmarshalOneJSON(t, stdout)
+	assertNoTableOutput(t, stdout)
+	if strings.Contains(stderr, "⚠") {
+		t.Errorf("json mode produced an unexpected warning:\n%s", stderr)
+	}
+	var doc struct {
+		Notifications []struct {
+			ID string `json:"id"`
+		} `json:"notifications"`
+		Total       int `json:"total"`
+		UnreadCount int `json:"unreadCount"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("decode --json document: %v", err)
+	}
+	if len(doc.Notifications) != 2 || doc.Total != 450 || doc.UnreadCount != 1 {
+		t.Errorf("json document = %d notifications, total %d, unread %d; want 2/450/1 exactly as served", len(doc.Notifications), doc.Total, doc.UnreadCount)
 	}
 }

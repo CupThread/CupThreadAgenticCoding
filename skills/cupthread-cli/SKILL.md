@@ -271,7 +271,7 @@ of advancing — there is nothing deeper to page to.
 
 ### Notifications
 ```sh
-cupthread notifications list               # List notifications, newest first (table ends with the unread count)
+cupthread notifications list               # List notifications, newest first (footers: shown/total, then unread count)
 cupthread notifications read <notification-id>  # Mark one notification as read
 cupthread notifications read-all           # Mark every notification as read
 cupthread notifications prefs show         # Show per-channel (inbox/email) notification preferences
@@ -288,7 +288,9 @@ channel. `--events` values are validated against this enum locally with a
 self-diagnosing error before anything is sent.
 `notifications list` is offset/limit-paginated with a server page cap of
 **200** (`--limit` is clamped into 1–200 locally, with a `⚠` notice when a
-value is rewritten) and, unlike `changelog list`, prints no more-pages hint —
+value is rewritten) and, unlike `changelog list`, prints no next-page hint —
+instead the `(N shown, N total)` trailer (same shape as `features list`)
+discloses truncation: whenever `total` exceeds `shown`, more pages exist, so
 walk it by the served page size (`--offset 0, 200, 400, …`), not by a larger
 requested limit. Like the other console listings it caps `--offset` at the
 server's shared **10,000** (above it the route clamps and still returns 200;
