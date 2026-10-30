@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -269,4 +270,51 @@ func listedRequestIDs(t *testing.T, out string) []string {
 		}
 	}
 	return ids
+}
+
+// TestFeaturesListRejectsUnknownSort pins the issue #405 local guard: the
+// server coerces every sort value other than the exact string "revenue" to
+// newest, so a typo like --sort revenuee silently returns newest-ordered
+// rows and also skips the Pro gate's 402 (which only fires for sort=revenue).
+// Every value outside {newest, revenue} — including the empty string and
+// case variants — must fail locally naming the offending value, before any
+// HTTP request; newest and revenue still pass through byte-identically
+// (newest omits the param, the server default; revenue sends sort=revenue).
+func TestFeaturesListRejectsUnknownSort(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var requests int
+	var gotSort string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		gotSort = r.URL.Query().Get("sort")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(listWithUnassignedFixture))
+	}))
+	t.Cleanup(server.Close)
+
+	for _, sort := range []string{"bogus", "", "Revenue", "revenuee", "NEWEST"} {
+		_, err := runRoot(t, server.URL, "features", "list", "--workspace", "ws_1", "--sort", sort)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("invalid --sort %q", sort)) {
+			t.Errorf("--sort %q error = %v, want it to name the offending value", sort, err)
+		}
+	}
+	if requests != 0 {
+		t.Errorf("issued %d HTTP request(s) for rejected sorts, want 0 — must fail before any round trip", requests)
+	}
+
+	// The accepted values keep their exact wire forms.
+	if _, err := runRoot(t, server.URL, "features", "list", "--workspace", "ws_1", "--sort", "newest"); err != nil {
+		t.Fatalf("features list --sort newest: %v", err)
+	}
+	if requests != 1 || gotSort != "" {
+		t.Errorf("newest wire = %d request(s), sort=%q, want one request with no sort param", requests, gotSort)
+	}
+
+	if _, err := runRoot(t, server.URL, "features", "list", "--workspace", "ws_1", "--sort", "revenue"); err != nil {
+		t.Fatalf("features list --sort revenue: %v", err)
+	}
+	if requests != 2 || gotSort != "revenue" {
+		t.Errorf("revenue wire = %d request(s), sort=%q, want one request with sort=revenue", requests, gotSort)
+	}
 }
