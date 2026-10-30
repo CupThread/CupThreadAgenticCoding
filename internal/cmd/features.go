@@ -66,6 +66,14 @@ commands (get/update/approve/delete/forward). Pass --all-apps for the
 workspace-wide cross-app view instead.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The server coerces any sort value other than the exact string
+			// "revenue" to newest, so a typo like --sort revenuee would
+			// silently return newest-ordered rows — and skip the Pro gate's
+			// 402, which only fires for sort=revenue. Fail locally naming the
+			// value instead (issue #405, matching the --triage-status guard).
+			if sort != "newest" && sort != "revenue" {
+				return fmt.Errorf("invalid --sort %q: use newest or revenue", sort)
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
