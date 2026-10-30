@@ -1003,3 +1003,112 @@ func TestAppsUpdateIconCRLFFilenameUploadsSanitized(t *testing.T) {
 		}
 	}
 }
+
+// TestFileNameReducesBothSeparators pins the issue #384 fix: the multipart
+// filename derivation cuts at the last / or \, so a Windows-style path — the
+// native spelling on the platform this repo ships a CI job for — no longer
+// travels to the server whole (leaking the user's directory structure), and
+// mixed-separator paths reduce the same way from either platform. Bare and
+// separator-free names pass through, and a trailing separator still yields ""
+// exactly as the previous /-only split did.
+func TestFileNameReducesBothSeparators(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"windows native separators", `C:\Users\lex\Pictures\icon.png`, "icon.png"},
+		{"posix separators", "/home/lex/pictures/icon.png", "icon.png"},
+		{"mixed forward then back", `C:/dir\icon.png`, "icon.png"},
+		{"mixed back then forward", `C:\dir/icon.png`, "icon.png"},
+		{"bare name", "icon.png", "icon.png"},
+		{"separator-free name", "no-separators-here", "no-separators-here"},
+		{"trailing slash", "dir/", ""},
+		{"trailing backslash", `dir\`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileName(tc.in); got != tc.want {
+				t.Errorf("fileName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAppsUpdateWindowsStylePathUploadsBasename is the end-to-end guard for
+// issue #384: `apps update --icon` with a Windows-native-separator path must
+// upload under the basename — the rendered Content-Disposition (through
+// escapeQuotes) must end in filename="icon.png", not carry the full path
+// with the user's directory structure. Windows is skipped because `:` cannot
+// appear in an on-disk name there; the Windows build is covered by the
+// pure-string TestFileNameReducesBothSeparators.
+func TestAppsUpdateWindowsStylePathUploadsBasename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip(`a C:\... path cannot be materialized as an on-disk Windows file name`)
+	}
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	windowsPath := `C:\Users\lex\Pictures\icon.png`
+	iconPath := filepath.Join(t.TempDir(), windowsPath)
+	if err := os.WriteFile(iconPath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotFilename string
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
+			_, _ = w.Write([]byte(appListFixture))
+		case r.Method == http.MethodPost &&
+			r.URL.Path == "/api/v1/console/workspaces/ws_1/apps/app_1/icon":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read body: %v", err)
+				return
+			}
+			raw = body
+			_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil {
+				t.Errorf("parse content type: %v", err)
+				return
+			}
+			form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1 << 20)
+			if err != nil {
+				t.Errorf("parse multipart: %v", err)
+				return
+			}
+			if parts := form.File["file"]; len(parts) == 1 {
+				gotFilename = parts[0].Filename
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"appId":"app_1","name":"Acme iOS","iconUrl":"https://cdn.example.com/icon.png"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "apps", "update", "app_1", "--icon", iconPath, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("apps update --icon: %v", err)
+	}
+	if gotFilename != "icon.png" {
+		t.Errorf("server saw filename %q, want the basename %q", gotFilename, "icon.png")
+	}
+	// The rendered Content-Disposition must carry the basename — the full
+	// Windows path (username and directory structure) must never reach the
+	// wire, in any escaping.
+	disposition := "Content-Disposition: form-data; name=\"file\"; filename=\"icon.png\"\r\n"
+	if !bytes.Contains(raw, []byte(disposition)) {
+		t.Errorf("raw body has no disposition line ending in filename=%q:\n%q", "icon.png", raw)
+	}
+	if bytes.Contains(raw, []byte(windowsPath)) {
+		t.Errorf("raw body leaks the full local path %q:\n%q", windowsPath, raw)
+	}
+	for _, want := range []string{"Updated app app_1", "https://cdn.example.com/icon.png"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
