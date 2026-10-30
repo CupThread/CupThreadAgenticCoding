@@ -2900,6 +2900,9 @@ func TestAPISkillIssue251ImagesPreParseAuth(t *testing.T) {
 		"runs the full app + session authorization chain **before any body byte is buffered**",
 		// The dedicated reference section.
 		"## Optional Pre-Parse Authorization on `POST /api/v1/uploads/images` (header credentials)",
+		// The pre-parse claim is scoped to server-side reading (PR review):
+		// the docs never promise the client avoided transferring the bytes.
+		"every one of these answers before the server reads a single body byte",
 		// Per-failure wire bodies in the reference section.
 		"404 {\"error\": \"App not found\"}",
 		"403 {\"error\": \"Public feedback is disabled for this app\"}",
@@ -2910,6 +2913,12 @@ func TestAPISkillIssue251ImagesPreParseAuth(t *testing.T) {
 		// Body-cap tightening and the legacy fallback.
 		"an authorized header-mode upload parses against the app's own attachment bound instead",
 		"Sending neither header preserves the legacy behavior exactly",
+		// The compatibility claim stays accurate (PR review): same schemas and
+		// status codes for corresponding outcomes, but the tighter header-mode
+		// bound means the two modes can reject different oversized bodies —
+		// coded pre-check 413 vs the legacy post-parse uncoded 413.
+		"the modes can reject **different request bodies**",
+		"while legacy mode parses the same file against the ~30 MB envelope first and rejects it only at the post-parse per-file check with the uncoded `413 {\"error\": \"Attachment exceeds the configured size limit\"}` body",
 		// Opt-in client guidance.
 		"SDK image-upload helpers can opt in by setting `X-App-Key` and `X-Upload-Session-Token` (or `Authorization`) and dropping the credential form fields",
 	} {
@@ -2922,7 +2931,7 @@ func TestAPISkillIssue251ImagesPreParseAuth(t *testing.T) {
 		// SKILL.md keeps a compact pointer on the endpoint row…
 		"Optional `X-App-Key` + `X-Upload-Session-Token` headers authorize before the body is read (SaaS #1174).",
 		// …and names the opt-in on the cross-cutting images bullet.
-		"Optionally present `X-App-Key` + `X-Upload-Session-Token` (or `Authorization: Bearer`) headers to get app/session authorization **before** the body uploads, and drop the credential form fields (SaaS #1174).",
+		"Optionally present `X-App-Key` + `X-Upload-Session-Token` (or `Authorization: Bearer`) headers to get app/session authorization **before the server reads the body**, and drop the credential form fields (SaaS #1174).",
 	} {
 		if !strings.Contains(skillDoc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#251 pre-parse-auth marker %q", marker)
