@@ -215,9 +215,17 @@ func LoginPKCE(ctx context.Context, authorizeURL, tokenURL, clientID string, ope
 // read; callback pages are static plain text that never reflect a
 // request-derived value; and completion is single-shot, so a duplicate local
 // request can neither replace the first outcome nor block on the result
-// channels. The channels must each have capacity 1.
+// channels. A request that does not know the state is answered with the
+// static mismatch page and otherwise disregarded (issue #400): it can
+// contribute nothing, so — per RFC 6749 §4.1.2 / RFC 8252 §4.4 — it must not
+// tear down the pending login it probed, whether it is a link-preview fetch
+// of the printed authorize URL, a stray local probe of the port or a stale
+// tab from an earlier login. Only a state-valid request completes the
+// transaction, and the LoginPKCE timeout keeps the wait bounded. The channels
+// must each have capacity 1.
 func newCallbackHandler(state string, codeCh chan<- string, errCh chan<- error) http.Handler {
 	var once sync.Once
+	var noticedMismatch sync.Once
 	done := make(chan struct{})
 	complete := func(code string, err error) {
 		once.Do(func() {
@@ -244,10 +252,23 @@ func newCallbackHandler(state string, codeCh chan<- string, errCh chan<- error) 
 		// RFC 6749 §4.1.2 / RFC 8252 §4.4: state ties this browser round-trip
 		// to the pending login. It gates every other query field — including
 		// the authorization-decline branch below — so a request that does not
-		// know the secret state can never reach response-rendering code.
+		// know the secret state can never reach response-rendering code, and
+		// none of its fields is ever read. That also makes it inert, so it is
+		// answered with the static mismatch page and then DISREGARDED instead
+		// of completing the transaction (issue #400): aborting here would let
+		// any process on the machine that can GET the listener — a chat
+		// link-preview of the printed authorize URL, a clipboard manager, a
+		// stale tab — kill a login the user is still completing in the
+		// browser. The transaction stays pending for the legitimate redirect,
+		// still bounded by the LoginPKCE timeout; the one-time stderr notice
+		// keeps a genuinely misdirected server redirect diagnosable instead
+		// of looking silent until that timeout. The notice is static text —
+		// the observed value is never echoed.
 		if got := q.Get("state"); got != state {
 			writeCallbackText(w, http.StatusBadRequest, "State mismatch. Please restart 'cupthread auth login'.")
-			complete("", errors.New("oauth state mismatch"))
+			noticedMismatch.Do(func() {
+				fmt.Fprintln(os.Stderr, "ignoring callback with mismatched state; still waiting for the browser redirect")
+			})
 			return
 		}
 

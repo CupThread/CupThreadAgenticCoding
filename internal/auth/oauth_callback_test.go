@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 )
@@ -92,14 +93,17 @@ func TestCallbackErrorParameterIsNeverReflected(t *testing.T) {
 // TestCallbackRejectsUnknownStateBeforeErrorBranch pins the ordering fix: a
 // callback that does not present the secret state is rejected before the
 // error branch is consulted, so an unsolicited ?error= can neither trigger
-// the decline response nor poison the login.
+// the decline response nor poison the login. Since #400 it also completes
+// nothing: the transaction stays pending, and the legitimate redirect that
+// arrives afterwards still completes the exchange with its own code.
 func TestCallbackRejectsUnknownStateBeforeErrorBranch(t *testing.T) {
 	const state = "st_real"
 	for name, query := range map[string]url.Values{
-		"wrong state":   {"error": {"access_denied"}, "state": {"st_forged"}},
-		"missing state": {"error": {"access_denied"}},
+		"wrong state":              {"error": {"access_denied"}, "state": {"st_forged"}},
+		"missing state":            {"error": {"access_denied"}},
+		"forged code, wrong state": {"code": {"ac_attacker"}, "state": {"st_forged"}},
 	} {
-		server, _, errCh := newTestCallbackServer(t, state)
+		server, codeCh, errCh := newTestCallbackServer(t, state)
 		resp, body := getCallback(t, server, query)
 
 		if resp.StatusCode != http.StatusBadRequest {
@@ -111,13 +115,34 @@ func TestCallbackRejectsUnknownStateBeforeErrorBranch(t *testing.T) {
 		if !strings.Contains(body, "State mismatch") || strings.Contains(body, "declined") {
 			t.Errorf("%s: body = %q, want the static state-mismatch text only", name, body)
 		}
+
+		// The foreign request completes nothing — not a decline, not a code
+		// delivery: the pending login must survive it untouched.
 		select {
 		case err := <-errCh:
-			if err == nil || err.Error() != "oauth state mismatch" {
-				t.Errorf("%s: err = %v, want oauth state mismatch", name, err)
+			t.Errorf("%s: foreign request failed the login: %v", name, err)
+		case code := <-codeCh:
+			t.Errorf("%s: foreign request delivered code %q", name, code)
+		default:
+		}
+
+		// The legitimate redirect still completes the exchange afterwards.
+		resp, body = getCallback(t, server, url.Values{"code": {"ac_real"}, "state": {state}})
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Logged in") {
+			t.Errorf("%s: legitimate redirect after the foreign request: status %d body %q, want a 200 success", name, resp.StatusCode, body)
+		}
+		select {
+		case code := <-codeCh:
+			if code != "ac_real" {
+				t.Errorf("%s: delivered code = %q, want the legitimate ac_real", name, code)
 			}
 		default:
-			t.Errorf("%s: expected the state mismatch to fail the login", name)
+			t.Errorf("%s: expected the legitimate code to be delivered", name)
+		}
+		select {
+		case err := <-errCh:
+			t.Errorf("%s: unexpected error after the legitimate redirect: %v", name, err)
+		default:
 		}
 	}
 }
@@ -196,7 +221,7 @@ func TestCallbackCompletionIsSingleShot(t *testing.T) {
 		}
 	})
 
-	t.Run("first outcome wins and is never replaced", func(t *testing.T) {
+	t.Run("a mismatched request never becomes the outcome", func(t *testing.T) {
 		server, codeCh, errCh := newTestCallbackServer(t, state)
 		// A local attacker without the state races ahead of the browser.
 		resp, body := getCallback(t, server, url.Values{"error": {"access_denied"}, "state": {"st_forged"}})
@@ -204,27 +229,26 @@ func TestCallbackCompletionIsSingleShot(t *testing.T) {
 			t.Fatalf("attacker request: status %d body %q, want a 400 state mismatch", resp.StatusCode, body)
 		}
 
-		// The legitimate browser redirect arrives afterwards. Its status is
-		// part of the contract: a late arrival after completion gets the
-		// static 200 already-completed answer, never a fresh verdict (issue
-		// #397 — the body alone was asserted before, so a regression to a
-		// non-200 status here would have passed).
+		// The legitimate browser redirect arrives afterwards and wins. Since
+		// #400 the foreign request was disregarded instead of settling the
+		// transaction, so this is a fresh 200 success, not an
+		// already-completed answer (issue #397 pinned the status).
 		resp, body = getCallback(t, server, url.Values{"code": {"ac_real"}, "state": {state}})
-		if resp.StatusCode != http.StatusOK || !strings.Contains(body, "already completed") {
-			t.Errorf("legitimate late request: status %d body %q, want a 200 already-completed answer", resp.StatusCode, body)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Logged in") {
+			t.Errorf("legitimate late request: status %d body %q, want a 200 success", resp.StatusCode, body)
 		}
 
 		select {
-		case err := <-errCh:
-			if err.Error() != "oauth state mismatch" {
-				t.Errorf("err = %v, want the first outcome (oauth state mismatch)", err)
+		case code := <-codeCh:
+			if code != "ac_real" {
+				t.Errorf("delivered code = %q, want the legitimate ac_real", code)
 			}
 		default:
-			t.Error("expected the first outcome (state mismatch) to be delivered")
+			t.Error("expected the legitimate code to be delivered")
 		}
 		select {
-		case code := <-codeCh:
-			t.Errorf("unexpected code delivered after completion: %q", code)
+		case err := <-errCh:
+			t.Errorf("unexpected error after the legitimate redirect: %v", err)
 		default:
 		}
 	})
@@ -257,16 +281,21 @@ func TestCallbackMissingCodeWithValidState(t *testing.T) {
 	}
 }
 
-// TestLoginPKCEIgnoresUnsolicitedCallbackError drives the full login with the
-// forged-callback attack from the issue: a local process hits the loopback
-// listener before the real browser redirect, with attacker-chosen error text
-// and no knowledge of the state. The login must fail closed with the state
-// mismatch — not render the payload — and the token endpoint must never be
-// contacted.
-func TestLoginPKCEIgnoresUnsolicitedCallbackError(t *testing.T) {
-	tokenHit := false
+// TestLoginPKCESurvivesForeignCallbackBeforeRealRedirect drives the full
+// login with the exact scenario from the issue: a link-preview bot (or a
+// stray local probe) hits the loopback listener before the real browser
+// redirect, with attacker-chosen error text and no knowledge of the state.
+// Since #400 that request is disregarded instead of failing the login: the
+// subsequent legitimate redirect completes it, the token endpoint is
+// contacted exactly once with the real code, and the forged payload reaches
+// neither the result nor the token exchange.
+func TestLoginPKCESurvivesForeignCallbackBeforeRealRedirect(t *testing.T) {
+	var tokenCalls int
+	var tokenCode string
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tokenHit = true
+		tokenCalls++
+		_ = r.ParseForm()
+		tokenCode = r.Form.Get("code")
 		_, _ = w.Write([]byte(`{"access_token":"cpt_new","token_type":"Bearer","expires_in":1209600}`))
 	}))
 	defer tokenServer.Close()
@@ -276,9 +305,16 @@ func TestLoginPKCEIgnoresUnsolicitedCallbackError(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		redirectURI := u.Query().Get("redirect_uri")
-		// The attack: no state, hostile markup in error.
+		q := u.Query()
+		redirectURI, state := q.Get("redirect_uri"), q.Get("state")
+		// The link preview: no state, hostile markup in error.
 		resp, err := http.Get(redirectURI + "?error=" + url.QueryEscape(`<script>alert(document.domain)</script>`))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		// The user's real approval redirects afterwards and must still win.
+		resp, err = http.Get(redirectURI + "?code=ac_real&state=" + url.QueryEscape(state))
 		if err != nil {
 			return err
 		}
@@ -286,18 +322,78 @@ func TestLoginPKCEIgnoresUnsolicitedCallbackError(t *testing.T) {
 		return nil
 	}
 
-	_, err := LoginPKCE(context.Background(), "http://authorize.invalid"+AuthorizePath, tokenServer.URL, FirstPartyClientID, openBrowser)
-	if err == nil {
-		t.Fatal("LoginPKCE succeeded despite an unsolicited forged callback")
+	tokenSet, err := LoginPKCE(context.Background(), "http://authorize.invalid"+AuthorizePath, tokenServer.URL, FirstPartyClientID, openBrowser)
+	if err != nil {
+		t.Fatalf("LoginPKCE failed after a foreign callback: %v", err)
 	}
-	if !strings.Contains(err.Error(), "state mismatch") {
-		t.Errorf("err = %v, want the state mismatch failure", err)
+	if tokenSet == nil || tokenSet.AccessToken != "cpt_new" {
+		t.Errorf("token set = %+v, want the exchanged cpt_new credential", tokenSet)
 	}
-	if strings.ContainsAny(err.Error(), "<>") {
-		t.Errorf("err = %v, want no reflected markup", err)
+	if tokenCalls != 1 {
+		t.Errorf("token endpoint contacted %d times, want exactly 1", tokenCalls)
 	}
-	if tokenHit {
-		t.Error("token endpoint was contacted despite the forged callback")
+	if tokenCode != "ac_real" {
+		t.Errorf("exchanged code = %q, want the legitimate ac_real", tokenCode)
+	}
+}
+
+// TestCallbackMismatchNoticePrintedOnce pins the diagnosability notice: the
+// first mismatched-state request prints exactly one static stderr line per
+// login transaction — never echoing the observed value — and further
+// mismatched requests stay silent.
+func TestCallbackMismatchNoticePrintedOnce(t *testing.T) {
+	const state = "st_notice"
+
+	oldStderr := os.Stderr
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("stderr pipe: %v", err)
+	}
+	os.Stderr = errW
+	// Restore the real stderr (and close the pipe) on every exit path: a
+	// t.Fatalf after the swap must not leave later tests writing into this
+	// pipe (CodeRabbit review of #403). The in-body restore below stays for
+	// the happy path, where the drain needs the write end closed first.
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = errW.Close()
+		_ = errR.Close()
+	})
+
+	server, _, _ := newTestCallbackServer(t, state)
+	// Two foreign requests in a row: only the first may produce a notice.
+	for _, query := range []url.Values{
+		{"code": {"ac_attacker"}, "state": {"st_forged"}},
+		{"error": {"access_denied"}},
+	} {
+		resp, _ := getCallback(t, server, query)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("foreign request: status = %d, want 400", resp.StatusCode)
+		}
+	}
+
+	os.Stderr = oldStderr
+	_ = errW.Close()
+	var b strings.Builder
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := errR.Read(buf)
+		b.Write(buf[:n])
+		if readErr != nil {
+			break
+		}
+	}
+	notice := b.String()
+
+	if n := strings.Count(notice, "ignoring callback with mismatched state"); n != 1 {
+		t.Errorf("stderr carries %d mismatch notices, want exactly 1:\n%s", n, notice)
+	}
+	// The notice is static: neither the forged state nor any part of the
+	// hostile payload may appear in it.
+	for _, leaked := range []string{"st_forged", "ac_attacker", "access_denied"} {
+		if strings.Contains(notice, leaked) {
+			t.Errorf("stderr notice leaks %q:\n%s", leaked, notice)
+		}
 	}
 }
 
