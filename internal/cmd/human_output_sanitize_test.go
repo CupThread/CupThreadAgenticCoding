@@ -832,6 +832,13 @@ var bannedPrintfExpressions = []string{
 	// echoed account email, the prefix of a server-issued access token and
 	// the persisted workspace context cleared at logout.
 	"res.Email", "res.TokenPrefix", "A.cfg.Auth.TokenPrefix", "A.cfg.DefaultWorkspace",
+	// Issue #396 additions: the sign-user-attrs human echo interpolates the
+	// raw --app-key flag and the body-derived canonical string, and a plan
+	// value passes the schema mirror with terminal control characters
+	// intact — so these local, attacker-shaped expressions get the same
+	// treatment: any raw Printf call mentioning them is a regression, the
+	// surface renders through PrintfSafe.
+	"canonical", "appKey",
 }
 
 // scanRawPrintfInterpolations scans dir's non-test Go sources for raw

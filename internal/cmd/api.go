@@ -388,13 +388,18 @@ to the body without changing the signed values.`,
 			if A.structured() {
 				return A.out.Structured(out)
 			}
-			A.out.Printf("✓ signed payment attributes for %s (userToken %s)", appKey, token)
-			A.out.Printf("canonical:")
-			A.out.Printf("%s", canonical)
-			A.out.Printf("signature: %s", signature)
-			A.out.Printf("timestamp: %d", stamp)
+			// Issue #396: appKey (raw flag) and canonical (embeds the body's
+			// plan value, which passes schema validation with control
+			// characters intact) carry attacker-shaped bytes, so every human
+			// line on this surface goes through PrintfSafe. The structured
+			// output above stays byte-faithful for signature replay.
+			A.out.PrintfSafe("✓ signed payment attributes for %s (userToken %s)", appKey, token)
+			A.out.PrintfSafe("canonical:")
+			A.out.PrintfSafe("%s", canonical)
+			A.out.PrintfSafe("signature: %s", signature)
+			A.out.PrintfSafe("timestamp: %d", stamp)
 			if out.Note != "" {
-				A.out.Printf("note: %s", out.Note)
+				A.out.PrintfSafe("note: %s", out.Note)
 			}
 			return nil
 		},
