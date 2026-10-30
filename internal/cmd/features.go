@@ -150,9 +150,17 @@ func featureRows(reqs []api.AdminFeatureRequest) [][]string {
 // request ID; the console listing endpoint clamps limit to 200.
 const featureRequestPageSize = 200
 
-// maxFeatureRequestPages caps ID-resolution paging (50 pages ≈ 10k requests)
-// so a server reporting a bogus total cannot keep the client paging forever.
-const maxFeatureRequestPages = 50
+// maxFeatureRequestPages caps ID-resolution paging so a server reporting a
+// bogus total cannot keep the client paging forever: 51 pages of the
+// listing's 200-request page cap covers offsets 0 through 10,000 — the
+// whole reachable universe, since the server clamps offset at the shared
+// 10,000-entry cap and still answers 200 with the final page (issue #178).
+// The +1 matters for correctness, not thrift (mirroring
+// maxChangelogResolvePages, PR #414 review): without it the offset-10,000
+// page is never scanned, and a prefix matching both a request in the
+// scanned window and one on that final page would wrongly resolve to the
+// scanned request — a delete/approve acting on the wrong row (issue #419).
+const maxFeatureRequestPages = consoleListMaxOffset/featureRequestPageSize + 1
 
 // fetchOneFeatureRequest finds a request by exact ID or ID prefix.
 //
