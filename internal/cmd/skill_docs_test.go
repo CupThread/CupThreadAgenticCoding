@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -2760,6 +2761,64 @@ func TestSkillDocsIssue258DeviceDecideRowBinding(t *testing.T) {
 	} {
 		if !strings.Contains(row, marker) {
 			t.Errorf("device helpers row is missing required issue-#258 marker %q; got: %s", marker, row)
+		}
+	}
+}
+
+// TestAPISkillIssue252ProposeUniform404 pins the SaaS #1176 sync on the public
+// propose create: POST /api/v1/feature-requests answers the same uniform
+// 404 {"error": "App not found"} for an unknown appKey and for a known app
+// with public feature requests disabled (existence hiding), the disabled-app
+// case sits at its handler position between the Turnstile 403 gate and the
+// 402 tier check, and a 403 from this operation now means Turnstile rejection
+// only — so a stale "disabled app answers 403" claim on the row must fail
+// this test.
+func TestAPISkillIssue252ProposeUniform404(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	row := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Submit (propose) a new feature request.")
+	for _, marker := range []string{
+		"an unknown `appKey` and a known app with public feature requests **disabled** both answer the same uniform `404 {\"error\": \"App not found\"}`",
+		"(existence hiding, SaaS #1176",
+		"the disabled-app case, previously an undocumented `403`, is no longer distinguishable from an unknown app",
+		"A `403` from this operation now means **only** Turnstile human-verification rejection (`turnstile_required` / `turnstile_verification_failed` / `turnstile_not_configured`)",
+		"without trying to distinguish the two",
+	} {
+		if !strings.Contains(row, marker) {
+			t.Errorf("propose row is missing required issue-#252 marker %q; got: %s", marker, row)
+		}
+	}
+	// Stale-contract guard: the row must never again present the disabled-app
+	// case as a present-tense `403` answer (the #1176 response body it used to
+	// share with feedback must not reappear on this route).
+	if strings.Contains(row, "disabled") && regexp.MustCompile(`disabled[^.|]*answers? `+"`403`").MatchString(row) {
+		t.Error("propose row still claims the disabled-app case answers 403; SaaS #1176 made it a uniform 404")
+	}
+	// Gate order: the 404 lookup sits after the Turnstile 403 and before the
+	// 402 tier check, matching the handler.
+	turnstileIdx := strings.Index(row, "Turnstile verification (`403`)")
+	lookupIdx := strings.Index(row, "then the app lookup")
+	tierIdx := strings.Index(row, "workspace tier check (`402`")
+	if turnstileIdx < 0 || lookupIdx < 0 || tierIdx < 0 || !(turnstileIdx < lookupIdx && lookupIdx < tierIdx) {
+		t.Errorf("propose row gate order drifted: want Turnstile 403 < app-lookup 404 < tier 402; got: %s", row)
+	}
+
+	// The SKILL.md index row and the SEC-37 cross-cutting note must carry the
+	// same contract compactly.
+	indexRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Propose a request;")
+	for _, marker := range []string{
+		"Unknown `appKey` and disabled app answer the same uniform `404` (SaaS #1176)",
+		"`403` means Turnstile rejection only",
+	} {
+		if !strings.Contains(indexRow, marker) {
+			t.Errorf("SKILL.md propose index row is missing required issue-#252 marker %q; got: %s", marker, indexRow)
+		}
+	}
+	for _, marker := range []string{
+		"every feature-request route (board listing/detail, propose create — SaaS #1176, vote, comment thread/create)",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("SEC-37 cross-cutting note is missing required issue-#252 marker %q", marker)
 		}
 	}
 }

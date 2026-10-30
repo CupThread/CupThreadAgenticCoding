@@ -65,7 +65,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET`/`POST` | Same interstitial pattern; `POST` serves RFC 8058 one-click. Unsubscribe is the exception to token expiry and the private-app `403` (#635). |
 | `/api/v1/public/digest/unsubscribe` | `GET`/`POST` | Weekly-digest one-click unsubscribe (PRIV-07); `GET` non-destructive, only `POST` mutates. |
 | `/api/v1/feature-requests` | `GET` | List/search the board; keyset cursor pagination (DATA-01), `offset` clamps at 10000. |
-| `/api/v1/feature-requests` | `POST` | Propose a request; every public submission starts unapproved (`201 {featureRequestId, pending: true}`). |
+| `/api/v1/feature-requests` | `POST` | Propose a request; every public submission starts unapproved (`201 {featureRequestId, pending: true}`). Unknown `appKey` and disabled app answer the same uniform `404` (SaaS #1176) — `403` means Turnstile rejection only. |
 | `/api/v1/feature-requests/:id` | `GET` | Deep-link read of one approved request; unapproved/missing/private all answer the same uniform `404`. |
 | `/api/v1/feature-requests/:id/vote` | `POST`/`DELETE` | Insert-only idempotent vote; `DELETE` (same JSON body as the POST) is the only un-vote. Optional `shipNotifyEmail` + `turnstileToken`. |
 | `/api/v1/feature-requests/:id/comments` | `GET` | Keyset-paginated thread; unapproved requests `404` (existence hiding). |
