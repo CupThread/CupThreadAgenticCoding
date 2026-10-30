@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# The workflow only builds and tests; it never pushes, comments, or releases.
+# Scoping the token to read-only keeps a malicious PR-controlled source file
+# (go test executes it) from reaching a write-capable GITHUB_TOKEN (CodeRabbit
+# review of #399, CWE-732).
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
