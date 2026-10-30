@@ -1406,7 +1406,7 @@ func TestAPISkillIssue242VoteSubscribeTurnstileToken(t *testing.T) {
 		// the vote gate — it only applies while the vote itself passes
 		// (flag false); flag-on boards reject the vote instead.
 		"When the flag is `true`, an anonymous opt-in with a missing or failed token never reaches that warning state",
-		"the opt-in guard applies to every anonymous opt-in, and a token that satisfies the vote gate also satisfies it",
+		"the opt-in guard applies to every anonymous opt-in, and on the combined vote + ship-notify request the server verifies the single token exactly once per call and accepts one minted with **either** the `vote` or the `ship-notify` widget action",
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api/SKILL.md is missing required issue-#242 marker %q", marker)
@@ -1508,7 +1508,7 @@ func TestSkillDocsIssue243RequireAnonymousVoteTurnstile(t *testing.T) {
 				"sets `requireAnonymousVoteTurnstile` to `true`, an anonymous vote must carry a verified `turnstileToken` (string, 10–2048 chars) minted for action `vote` with cdata bound to the board's `appKey`, or it is rejected outright",
 				`403 {"error": "Human verification (Turnstile) is required", "code": "turnstile_required"}`,
 				`403 {"error": "Human verification failed. Please try again.", "code": "turnstile_verification_failed"}`,
-				"the vote is not recorded. Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
+				"the vote is not recorded. When that vote also opts in via `shipNotifyEmail`, a token minted with **either** the `vote` or the `ship-notify` widget action satisfies both guards in one verification (SEC-90; cdata must still be the board's `appKey`, and a token minted for any other intake kind is still rejected). Signed-in voters are exempt; read the flag off `PublicAppConfig` before rendering the ballot",
 				"and that suppression only applies while the vote itself passes: when the board sets `requireAnonymousVoteTurnstile` to `true`, a missing or failed token rejects the whole vote with the `403`s above instead of suppressing anything",
 			} {
 				if !strings.Contains(vote, marker) {
@@ -3121,5 +3121,68 @@ func TestAPISkillIssue247Turnstile403CodesSiteKeyChallengePage(t *testing.T) {
 				t.Errorf("%s is missing required issue-#247 turnstile marker %q", skill, marker)
 			}
 		}
+	}
+}
+
+// TestSkillDocsIssue245VoteTokenSingleVerification pins the issue #245 sync
+// of SEC-90 (SaaS #983 / SaaS PR #1023) on POST
+// /api/v1/feature-requests/{id}/vote:
+//   - The single Cloudflare Turnstile token is verified exactly once per
+//     request.
+//   - On a combined vote + ship-notify request from an anonymous caller
+//     (board sets requireAnonymousVoteTurnstile and the payload carries
+//     shipNotifyEmail), a token minted with either the "vote" or the
+//     "ship-notify" widget action satisfies both guards (cdata must still
+//     be the board's appKey) — previously such requests could be rejected
+//     with 403 turnstile_verification_failed or silently lose the opt-in.
+//   - When only the vote guard applies the token must still carry action
+//     "vote"; when only the ship-notify guard applies (flag false) it must
+//     still carry action "ship-notify"; any other intake kind or a
+//     different app's cdata is still rejected.
+//
+// The combined-request clause is pinned in the API reference (voting and
+// endpoints files) and in every SDK skill's SEC-846 vote bullet.
+func TestSkillDocsIssue245VoteTokenSingleVerification(t *testing.T) {
+	voteDoc := readSkillFile(t, "cupthread-api", "reference/voting-and-submissions.md")
+	for _, marker := range []string{
+		// SEC-846 section: the combined-request clause.
+		"(SEC-90: when the same anonymous payload also carries `shipNotifyEmail`, the server verifies the single token exactly once per request and accepts one minted for **either** the `vote` or the `ship-notify` widget action — cdata must still be the board's `appKey`)",
+		// #242 section: single verification, either action, and the
+		// guard-specific action requirements.
+		"on the combined vote + ship-notify request the server verifies the single token exactly once per call and accepts one minted with **either** the `vote` or the `ship-notify` widget action (SEC-90; cdata still the board's `appKey` — a token minted for any other intake kind, or bound to a different app's key, is still rejected)",
+		"while when only this opt-in guard applies (the flag is `false`) the token must still be minted with action `ship-notify`",
+	} {
+		if !strings.Contains(voteDoc, marker) {
+			t.Errorf("voting-and-submissions.md is missing required issue-#245 marker %q", marker)
+		}
+	}
+
+	endpointsDoc := readSkillFile(t, "cupthread-api", "reference/endpoints.md")
+	for _, marker := range []string{
+		// Vote endpoint row: the combined-request either-action clause.
+		"though on such a combined request the server verifies the single `turnstileToken` exactly once per call and accepts one minted for **either** the `vote` or the `ship-notify` widget action (SEC-90; cdata must still be the board's `appKey`, and a token minted for any other intake kind is still rejected)",
+	} {
+		if !strings.Contains(endpointsDoc, marker) {
+			t.Errorf("endpoints.md is missing required issue-#245 marker %q", marker)
+		}
+	}
+
+	for _, skill := range []string{
+		"cupthread-swift-sdk",
+		"cupthread-android-sdk",
+		"cupthread-react-native-sdk",
+		"cupthread-flutter-sdk",
+	} {
+		t.Run(skill, func(t *testing.T) {
+			doc := readSkill(t, skill)
+			vote := skillSection(t, doc, "## Feature Request Vote Rate Limits (429 Too Many Requests)")
+			for _, marker := range []string{
+				"When that vote also opts in via `shipNotifyEmail`, a token minted with **either** the `vote` or the `ship-notify` widget action satisfies both guards in one verification (SEC-90; cdata must still be the board's `appKey`, and a token minted for any other intake kind is still rejected).",
+			} {
+				if !strings.Contains(vote, marker) {
+					t.Errorf("%s/SKILL.md vote section is missing required issue-#245 marker %q", skill, marker)
+				}
+			}
+		})
 	}
 }
