@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 )
 
 // changelogListFixture exercises the pagination metadata from issue #31
@@ -272,13 +275,43 @@ func TestAppsPublicChangelogRequiresAppKey(t *testing.T) {
 	}
 }
 
+// changelogListingJSON builds a one-entry changelog listing page carrying
+// entryID, the ID-resolution walk's page-1 answer (issue #413).
+func changelogListingJSON(entryID string) string {
+	entry, err := json.Marshal(api.ChangelogEntry{
+		ID: entryID, AppID: "app_a", Title: "Entry", Body: "b",
+		CreatedAt: "2026-10-01T00:00:00Z", UpdatedAt: "2026-10-01T00:00:00Z",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return `{"entries":[` + string(entry) + `],"total":1,"hasMore":false}`
+}
+
+// serveChangelogListing answers the console listing GET — the ID-resolution
+// walk's first hop — with a one-entry page carrying entryID, and reports
+// false for every other request so the caller's own branch stays in charge.
+func serveChangelogListing(w http.ResponseWriter, r *http.Request, entryID string) bool {
+	if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/changelog") {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(changelogListingJSON(entryID)))
+	return true
+}
+
 // sec40ForbiddenServer returns a server that answers the given 403 body on
-// the changelog publish paths and records the request method, path, and JSON
-// body for wire-format assertions.
+// the changelog mutation paths (the listing GET that ID resolution walks
+// first succeeds, so the recorded method and path stay pointed at the
+// mutation itself) and records the request method and path for wire-format
+// assertions.
 func sec40ForbiddenServer(t *testing.T, respBody string) (*httptest.Server, *string, *string) {
 	t.Helper()
 	var gotMethod, gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveChangelogListing(w, r, "cl_entry_1") {
+			return
+		}
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
@@ -524,6 +557,9 @@ func TestChangelogUpdateScheduleAtCapabilityRequired(t *testing.T) {
 func TestChangelogUpdateScheduleAtEmptySendsNull(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveChangelogListing(w, r, "cl_entry_1") {
+			return
+		}
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
@@ -550,6 +586,9 @@ func TestChangelogUpdateScheduleAtEmptySendsNull(t *testing.T) {
 func TestChangelogUpdateScheduleAtValueSendsString(t *testing.T) {
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveChangelogListing(w, r, "cl_entry_1") {
+			return
+		}
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
@@ -958,4 +997,225 @@ func TestAppsPublicChangelogContractPinCorrectedSchema(t *testing.T) {
 			}
 		}
 	})
+}
+
+// truncatedEntryFullID mirrors the issue #413 table shape: the changelog
+// listing prints the first 12 characters of this id, and that truncated form
+// is what an agent copies into the write commands.
+const (
+	truncatedEntryFullID = "cl_eabcdef1234fffffffffffffffff"
+	truncatedEntryPrefix = "cl_eabcdef1234"
+)
+
+// changelogResolutionServer serves the listing walk (entriesJSON) and
+// records every mutation as "METHOD path" so tests can pin both what fired
+// and what must not have.
+func changelogResolutionServer(t *testing.T, entriesJSON string, mutations *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			*mutations = append(*mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"id":"` + truncatedEntryFullID + `"}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/changelog") {
+			_, _ = w.Write([]byte(`{"entries":[` + entriesJSON + `],"total":1,"hasMore":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+}
+
+// changelogEntryJSON is one full-shaped entry with the #413 id.
+func changelogEntryJSON(id string) string {
+	return `{"id":"` + id + `","appId":"app_a","title":"Entry","body":"b","createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}`
+}
+
+// TestChangelogPublishResolvesTruncatedEntryID covers the core #413 case:
+// `changelog list` prints cl_eabcdef1234, publish takes that truncated form,
+// resolution walks the listing, and the wire POST hits the full resolved id
+// while the success line carries it too.
+func TestChangelogPublishResolvesTruncatedEntryID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var mutations []string
+	server := changelogResolutionServer(t, changelogEntryJSON(truncatedEntryFullID), &mutations)
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "publish", truncatedEntryPrefix, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog publish %s: %v", truncatedEntryPrefix, err)
+	}
+	if want := "POST /api/v1/console/workspaces/ws_1/changelog/" + truncatedEntryFullID + "/publish"; len(mutations) != 1 || mutations[0] != want {
+		t.Errorf("mutations = %v, want exactly [%s]", mutations, want)
+	}
+	if !strings.Contains(out, truncatedEntryFullID) {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+}
+
+// TestChangelogDeleteResolvesTruncatedEntryID pins the destructive variant:
+// --yes deletes the FULL resolved id and the confirmation line names it.
+func TestChangelogDeleteResolvesTruncatedEntryID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var mutations []string
+	server := changelogResolutionServer(t, changelogEntryJSON(truncatedEntryFullID), &mutations)
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "delete", truncatedEntryPrefix, "--workspace", "ws_1", "--yes")
+	if err != nil {
+		t.Fatalf("changelog delete %s: %v", truncatedEntryPrefix, err)
+	}
+	if want := "DELETE /api/v1/console/workspaces/ws_1/changelog/" + truncatedEntryFullID; len(mutations) != 1 || mutations[0] != want {
+		t.Errorf("mutations = %v, want exactly [%s]", mutations, want)
+	}
+	if !strings.Contains(out, "✓ Deleted changelog entry "+truncatedEntryFullID) {
+		t.Errorf("confirmation line must carry the resolved full id:\n%s", out)
+	}
+}
+
+// TestChangelogAmbiguousPrefixErrorsWithoutMutation pins the ambiguity
+// decision over the whole listing: two entries sharing the table's truncated
+// form fail locally with the shared wording and no mutation is sent.
+func TestChangelogAmbiguousPrefixErrorsWithoutMutation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	twins := changelogEntryJSON("cl_eabcdef1234twin_a00000000000") + "," + changelogEntryJSON("cl_eabcdef1234twin_b00000000000")
+	var mutations []string
+	server := changelogResolutionServer(t, twins, &mutations)
+	defer server.Close()
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "unpublish", truncatedEntryPrefix, "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous changelog entry prefix "`+truncatedEntryPrefix+`" matches 2 entries; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want none on an ambiguous prefix", mutations)
+	}
+}
+
+// TestChangelogAbsentPrefixQuotesReference pins the not-found shape: a
+// prefix nothing matches errors naming the reference and the scope the scan
+// covered — under the saved default app — with zero mutations.
+func TestChangelogAbsentPrefixQuotesReference(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var mutations []string
+	server := changelogResolutionServer(t, changelogEntryJSON(truncatedEntryFullID), &mutations)
+	defer server.Close()
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "publish", "cl_ezzzzzz9999", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("absent prefix must fail")
+	}
+	for _, want := range []string{
+		`changelog entry "cl_ezzzzzz9999" not found among the 1 entries of app app_a in workspace ws_1`,
+		"--app",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("not-found error missing %q:\n%v", want, err)
+		}
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want none on an absent prefix", mutations)
+	}
+}
+
+// TestChangelogUpdateResolvesBeyondFirstPage pins that resolution pages the
+// listing like features: an entry living past the first 100-entry page still
+// resolves, and the PUT hits the full id.
+func TestChangelogUpdateResolvesBeyondFirstPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	// 150 entries on page one (a full changelogPageSize page) plus the deep
+	// entry on page two; only the second page carries it.
+	entries := make([]string, 0, changelogPageSize+1)
+	for i := 0; i < changelogPageSize; i++ {
+		entries = append(entries, changelogEntryJSON(fmt.Sprintf("cl_page1_%03d000000000000000", i)))
+	}
+	entries = append(entries, changelogEntryJSON(truncatedEntryFullID))
+
+	var mutations []string
+	var offsets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"id":"` + truncatedEntryFullID + `"}`))
+			return
+		}
+		offsets = append(offsets, r.URL.Query().Get("offset"))
+		if r.URL.Query().Get("offset") == "0" {
+			_, _ = w.Write([]byte(`{"entries":[` + strings.Join(entries[:changelogPageSize], ",") + `],"total":` + fmt.Sprint(len(entries)) + `,"hasMore":true}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"entries":[` + changelogEntryJSON(truncatedEntryFullID) + `],"total":` + fmt.Sprint(len(entries)) + `,"hasMore":false}`))
+	}))
+	defer server.Close()
+
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "update", truncatedEntryPrefix, "--title", "Renamed", "--workspace", "ws_1"); err != nil {
+		t.Fatalf("changelog update past page one: %v", err)
+	}
+	if want := "PUT /api/v1/console/workspaces/ws_1/changelog/" + truncatedEntryFullID; len(mutations) != 1 || mutations[0] != want {
+		t.Errorf("mutations = %v, want exactly [%s]", mutations, want)
+	}
+	if want := []string{"0", "100"}; !reflect.DeepEqual(offsets, want) {
+		t.Errorf("listing offsets = %v, want %v", offsets, want)
+	}
+}
+
+// TestChangelogPrefixScanCoversTheOffsetCapPage pins the PR #414 review fix:
+// the server still serves the page at offset 10,000 (the clamp's boundary),
+// so the resolution walk must page one past the naive 100-page window — an
+// entry living only on that final page resolves, instead of a same-prefix
+// entry inside the scanned window silently winning.
+func TestChangelogPrefixScanCoversTheOffsetCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	// 10,000 entries fill offsets 0..9,900 and the target sits alone on the
+	// offset-10,000 page, so the authoritative total is 10,001: pages 0..99
+	// report hasMore, and only the cap page exhausts the listing.
+	const totalEntries = changelogPageSize*100 + 1
+	fullPage := func(entries []string) string {
+		return `{"entries":[` + strings.Join(entries, ",") + `],"total":` + fmt.Sprint(totalEntries) + `,"hasMore":true}`
+	}
+	pageEntries := make([]string, 0, changelogPageSize)
+	for i := 0; i < changelogPageSize; i++ {
+		pageEntries = append(pageEntries, changelogEntryJSON(fmt.Sprintf("cl_page%04dfffffffffffffffff", i)))
+	}
+	capPageTarget := changelogEntryJSON("cl_target000123ffffffffffff")
+
+	var offsets []string
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"id":"cl_target000123ffffffffffff"}`))
+			return
+		}
+		offsets = append(offsets, r.URL.Query().Get("offset"))
+		if r.URL.Query().Get("offset") == "10000" {
+			_, _ = w.Write([]byte(`{"entries":[` + capPageTarget + `],"total":` + fmt.Sprint(totalEntries) + `,"hasMore":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(fullPage(pageEntries)))
+	}))
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "publish", "cl_target000", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog publish on the offset-cap page: %v", err)
+	}
+	if want := "POST /api/v1/console/workspaces/ws_1/changelog/cl_target000123ffffffffffff/publish"; len(mutations) != 1 || mutations[0] != want {
+		t.Errorf("mutations = %v, want exactly [%s]", mutations, want)
+	}
+	if got := offsets[len(offsets)-1]; got != "10000" {
+		t.Errorf("last listing offset = %q, want the offset-cap page 10000 scanned", got)
+	}
+	if !strings.Contains(out, "cl_target000123ffffffffffff") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
 }

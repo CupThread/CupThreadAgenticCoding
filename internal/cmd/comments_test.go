@@ -240,19 +240,19 @@ func TestCommentsModerationNotFoundSurvivesWrappedError(t *testing.T) {
 			name:    "moderation hide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(true) },
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 		{
 			name:    "moderation unhide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(false) },
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 		{
 			name:    "moderation delete",
 			cmd:     newCommentsModerationDeleteCmd,
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 	}
 	for _, tc := range cases {
@@ -1136,5 +1136,184 @@ func TestCommentsCreateDeadFlagsRejected(t *testing.T) {
 				t.Errorf("error = %v, want unknown-flag rejection of --%s", err, flag)
 			}
 		})
+	}
+}
+
+// threadResolutionServer wires the three hops the --thread resolution walks
+// (issue #413): the feature-request listing (resolving the --thread
+// reference, itself prefix-capable), the thread's comment pages, and the
+// moderation mutation, whose method and path land in *gotMethod/*gotPath.
+func threadResolutionServer(t *testing.T, commentsJSON string, gotMethod, gotPath *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests"):
+			_, _ = w.Write([]byte(`{"requests":[{"id":"fr_full_1","appId":"app_a","title":"Thread request","status":"open","voteCount":0,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}],"total":1}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			_, _ = w.Write([]byte(commentsJSON))
+		default:
+			if gotMethod != nil {
+				*gotMethod = r.Method
+			}
+			if gotPath != nil {
+				*gotPath = r.URL.Path
+			}
+			_, _ = w.Write([]byte(`{"success":true}`))
+		}
+	}))
+}
+
+// TestCommentsModerationThreadResolvesPrefix covers the issue #413 copy
+// workflow end to end: the moderation table shows cmt_visible's first 12
+// characters, `comments moderation list` ran under fr_full_1, and hide
+// accepts both truncated forms — the --thread flag resolving through the
+// features listing (itself prefix-capable) and the thread walk resolving the
+// comment — so the PATCH carries the full resolved comment id.
+func TestCommentsModerationThreadResolvesPrefix(t *testing.T) {
+	var gotMethod, gotPath string
+	server := threadResolutionServer(t, moderationCommentsFixture, &gotMethod, &gotPath)
+	defer server.Close()
+
+	out, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_visible_", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation hide with --thread prefix: %v", err)
+	}
+	if gotMethod != http.MethodPatch || gotPath != "/api/v1/console/workspaces/ws_1/comments/cmt_visible_1234/hide" {
+		t.Errorf("request = %s %s, want the PATCH on the full resolved comment id", gotMethod, gotPath)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_visible_1234 hidden") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+
+	// The --thread reference itself accepts the features table's truncated
+	// form: the same workflow with a 12-character request prefix resolves.
+	gotMethod, gotPath = "", ""
+	out, err = runModerationRoot(t, server.URL,
+		"comments", "moderation", "unhide", "cmt_hidden_5", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation unhide with --thread: %v", err)
+	}
+	if gotPath != "/api/v1/console/workspaces/ws_1/comments/cmt_hidden_5678/hide" {
+		t.Errorf("request = %s %s, want the unhide PATCH on the full resolved id", gotMethod, gotPath)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_hidden_5678 unhidden") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+}
+
+// TestCommentsModerationAmbiguousPrefixInThreadErrors pins the ambiguity
+// decision inside one thread: a prefix matching two comments errors locally
+// naming both matches' count, and no PATCH is ever sent.
+func TestCommentsModerationAmbiguousPrefixInThreadErrors(t *testing.T) {
+	ambiguous := `{"comments":[
+		{"id":"cmt_twinaaa9999","featureRequestId":"fr_full_1","authorName":"A","body":"first","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"},
+		{"id":"cmt_twinbbbb0000","featureRequestId":"fr_full_1","authorName":"B","body":"second","isHidden":false,"createdAt":"2026-09-18T04:05:06Z"}
+	]}`
+	var gotMethod, gotPath string
+	server := threadResolutionServer(t, ambiguous, &gotMethod, &gotPath)
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_twin", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous comment prefix "cmt_twin" matches 2 comments; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if gotMethod != "" {
+		t.Errorf("mutation %s %s fired on an ambiguous prefix, want none", gotMethod, gotPath)
+	}
+}
+
+// TestCommentsModerationTruncatedRefDirect404NamesRemedy pins the #413
+// self-diagnosis: without --thread a truncated table id still 404s (bare
+// prefixes are unresolvable workspace-wide), but the error names both
+// remedies — the full id from the --json listing, or --thread — instead of
+// reading as a missing comment.
+func TestCommentsModerationTruncatedRefDirect404NamesRemedy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Comment not found in this workspace"}`))
+	}))
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL, "comments", "moderation", "hide", "cmt_visible_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("truncated ref without --thread must fail")
+	}
+	for _, want := range []string{
+		`comment "cmt_visible_1" not found in workspace ws_1`,
+		"full comment id",
+		"comments moderation list <feature-request-id> --json",
+		"--thread",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("404 hint missing %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestCommentsModerationPrefixRefusedWhenThreadWalkCaps pins the PR #414
+// review hardening: the cursor walk has no server-side end, so when the
+// maxCommentPages guard stops the scan early a prefix that matches within
+// the scanned pages must still be refused — a later page could hold a
+// second match, and a hide/delete must never act on an unverifiable choice.
+// Exact ids keep their early return, so a full id past the cap still works.
+func TestCommentsModerationPrefixRefusedWhenThreadWalkCaps(t *testing.T) {
+	filler := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		filler = append(filler, fmt.Sprintf(`{"id":"cmt_other_%04d_extra","featureRequestId":"fr_full_1","authorName":"A","body":"b","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"}`, i))
+	}
+	oneMatch := append([]string{`{"id":"cmt_prefix_match_0042_extra","featureRequestId":"fr_full_1","authorName":"A","body":"b","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"}`}, filler[1:]...)
+	fullPage := func(comments []string) string {
+		// Every page is full and carries a nextCursor: the walk always
+		// stops at the guard, never at exhaustion.
+		return `{"comments":[` + strings.Join(comments, ",") + `],"total":100000,"nextCursor":"cursor-never-dies"}`
+	}
+
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests"):
+			_, _ = w.Write([]byte(`{"requests":[{"id":"fr_full_1","appId":"app_a","title":"Thread request","status":"open","voteCount":0,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}],"total":1}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			// The matching comment lives on page 1 only; every later page
+			// (cursor set) is filler, so the scan ends holding exactly one
+			// prefix match it can never prove unique.
+			if r.URL.Query().Get("cursor") == "" {
+				_, _ = w.Write([]byte(fullPage(oneMatch)))
+				return
+			}
+			_, _ = w.Write([]byte(fullPage(filler)))
+		default:
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"success":true}`))
+		}
+	}))
+	defer server.Close()
+
+	if _, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_prefix_match_0042", "--thread", "fr_full_1", "--workspace", "ws_1"); err == nil || !strings.Contains(err.Error(), "matches within the first 10000 comments of request fr_full_1") || !strings.Contains(err.Error(), "pass the full comment id") {
+		t.Fatalf("error = %v, want the cap-stopped prefix refusal", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want none on a cap-stopped prefix scan", mutations)
+	}
+	mutations = nil
+
+	// An exact id is verifiable on the page that holds it: it returns on
+	// page 1 without needing the walk to finish, so it still hides.
+	out, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_prefix_match_0042_extra", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation hide with exact id: %v", err)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_prefix_match_0042_extra hidden") {
+		t.Errorf("exact id must hide on the page that holds it without walking on:\n%s", out)
+	}
+	if want := []string{"PATCH /api/v1/console/workspaces/ws_1/comments/cmt_prefix_match_0042_extra/hide"}; !reflect.DeepEqual(mutations, want) {
+		t.Errorf("mutations = %v, want exactly %v", mutations, want)
 	}
 }

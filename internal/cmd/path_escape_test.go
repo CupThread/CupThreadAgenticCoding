@@ -9,7 +9,10 @@ import (
 
 // escapeServer records the exact wire form of every request: EscapedPath (not
 // the decoded r.URL.Path) is what upstream routing sees, and RawQuery proves
-// no '?' in an id was promoted to a query string.
+// no '?' in an id was promoted to a query string. It answers the changelog
+// listing (the ID-resolution walk's first hop, issue #413) with one entry and
+// 404s the imports single-job GET, so an unresolvable reference stops at the
+// listing walk instead of firing a mutation.
 func escapeServer(t *testing.T, methods *[]string, paths *[]string, queries *[]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -17,6 +20,19 @@ func escapeServer(t *testing.T, methods *[]string, paths *[]string, queries *[]s
 		*paths = append(*paths, r.URL.EscapedPath())
 		*queries = append(*queries, r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/changelog") {
+			_, _ = w.Write([]byte(changelogListingJSON("entry_1")))
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/imports/") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Import job not found"}`))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/imports") {
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(server.Close)
@@ -105,14 +121,50 @@ func TestHostileIDsStayOnePathSegment(t *testing.T) {
 				_, _ = runRootWithSeededConfig(t, server.URL, defaultAppConfig, full...)
 
 				wantPath := strings.Replace(tc.wantPath, "%s", id.wireID, 1)
-				if len(paths) != 1 {
-					t.Fatalf("issued %d request(s), want exactly 1 (paths %q)", len(paths), paths)
-				}
-				if paths[0] != wantPath {
-					t.Errorf("wire path = %s, want %s (id escaped, one segment)", paths[0], wantPath)
-				}
-				if queries[0] != "" {
-					t.Errorf("wire query = %q, want none ('?' in the id must stay encoded in the path)", queries[0])
+				switch {
+				case strings.HasPrefix(tc.name, "changelog"):
+					// The resolution-based changelog writes (issue #413)
+					// match the reference locally against the listing, so a
+					// hostile id never becomes a path segment at all: the
+					// walk costs exactly one listing GET — whose paging
+					// query is the route's own — and no mutation fires.
+					if len(paths) != 1 {
+						t.Fatalf("issued %d request(s), want exactly 1 listing GET (paths %q)", len(paths), paths)
+					}
+					if methods[0] != http.MethodGet || !strings.HasSuffix(paths[0], "/changelog") {
+						t.Errorf("wire = %s %s, want the changelog listing GET only (hostile id must never reach a mutation path)", methods[0], paths[0])
+					}
+					if queries[0] == "" {
+						t.Errorf("wire query = %q, want the listing's paging query (the reference must stay local)", queries[0])
+					}
+				case strings.HasPrefix(tc.name, "imports"):
+					// The imports exact-ID GET keeps the reference on the
+					// wire (issue #175 still applies): escaped, one segment,
+					// never promoted to a query — the 404 then stops the
+					// command at the history walk with no mutation. The
+					// reference travels on the GET, so the /cancel and
+					// /rerun suffixes of the (never-fired) mutation are not
+					// part of the expected shape.
+					if len(paths) != 2 {
+						t.Fatalf("issued %d request(s), want the exact GET plus the history walk (paths %q)", len(paths), paths)
+					}
+					getPath := strings.Replace("/api/v1/console/workspaces/ws_1/imports/%s", "%s", id.wireID, 1)
+					if paths[0] != getPath {
+						t.Errorf("wire path = %s, want %s (id escaped, one segment)", paths[0], getPath)
+					}
+					if queries[0] != "" {
+						t.Errorf("wire query = %q, want none ('?' in the id must stay encoded in the path)", queries[0])
+					}
+				default:
+					if len(paths) != 1 {
+						t.Fatalf("issued %d request(s), want exactly 1 (paths %q)", len(paths), paths)
+					}
+					if paths[0] != wantPath {
+						t.Errorf("wire path = %s, want %s (id escaped, one segment)", paths[0], wantPath)
+					}
+					if queries[0] != "" {
+						t.Errorf("wire query = %q, want none ('?' in the id must stay encoded in the path)", queries[0])
+					}
 				}
 			})
 		}

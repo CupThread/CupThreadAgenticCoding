@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,5 +227,172 @@ func TestImportsListingsTotalFooterAndNotice(t *testing.T) {
 	}
 	if strings.Contains(out, "⚠") {
 		t.Errorf("complete listing produced a truncation notice:\n%s", out)
+	}
+}
+
+// truncatedJobFullID is a UUID-shaped job id whose first 12 characters are
+// exactly what the imports tables print (issue #413): the truncated form is
+// what an agent copies, and the job-taking commands must resolve it.
+const (
+	truncatedJobFullID  = "imp_abc1234567deadbeef000000000000"
+	truncatedJobPrefix  = "imp_abc1234567"
+	truncatedJobJSONJob = `{"id":"` + truncatedJobFullID + `","workspaceId":"ws_1","appId":"app_a","source":"github_issues","mode":"commit","status":"failed","attempts":1,"createdAt":"2026-10-01T00:00:00.000Z","updatedAt":"2026-10-01T00:00:00.000Z"}`
+)
+
+// importsResolutionServer plays the two listing shapes plus the mutation the
+// resolution flow touches (issue #413): the exact-job GET 404s for anything
+// but the full id, the history window serves jobsJSON, and every mutation is
+// recorded in *mutations as "METHOD path".
+func importsResolutionServer(t *testing.T, jobsJSON string, mutations *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method != http.MethodGet:
+			*mutations = append(*mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"job":{"id":"` + truncatedJobFullID + `","source":"github_issues","mode":"commit","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}}`))
+		case strings.HasSuffix(r.URL.Path, "/imports/"+truncatedJobFullID):
+			_, _ = w.Write([]byte(`{"job":` + truncatedJobJSONJob + `}`))
+		case strings.HasSuffix(r.URL.Path, "/imports"):
+			_, _ = w.Write([]byte(`{"jobs":[` + jobsJSON + `]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Import job not found"}`))
+		}
+	}))
+}
+
+// TestImportsGetResolvesTruncatedJobID covers the core #413 case for get:
+// the exact GET answers 404 for the 12-character table id, the history
+// window resolves it to the full id, and the rendered row carries the full
+// id — one history round trip, no invented paging.
+func TestImportsGetResolvesTruncatedJobID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var mutations []string
+	server := importsResolutionServer(t, truncatedJobJSONJob, &mutations)
+	defer server.Close()
+
+	cfgPath := seededConfigPath(t)
+	out, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "get", truncatedJobPrefix, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("imports get %s: %v", truncatedJobPrefix, err)
+	}
+	if !strings.Contains(out, truncatedJobFullID) {
+		t.Errorf("output must carry the resolved full id:\n%s", out)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("get mutated: %v", mutations)
+	}
+}
+
+// TestImportsCancelAndRerunResolveTruncatedJobID pins the mutating half:
+// cancel and rerun resolve the truncated table id through the history
+// window and mutate the FULL resolved id — the exact disclosure the issue
+// demands (the success lines name the full job).
+func TestImportsCancelAndRerunResolveTruncatedJobID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantVerb string
+	}{
+		{"cancel", []string{"imports", "cancel", truncatedJobPrefix, "--yes"}, "POST /api/v1/console/workspaces/ws_1/imports/" + truncatedJobFullID + "/cancel"},
+		{"rerun", []string{"imports", "rerun", truncatedJobPrefix}, "POST /api/v1/console/workspaces/ws_1/imports/" + truncatedJobFullID + "/rerun"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mutations []string
+			server := importsResolutionServer(t, truncatedJobJSONJob, &mutations)
+			defer server.Close()
+
+			cfgPath := seededConfigPath(t)
+			out, _, err := runRootCapture(t, cfgPath, server.URL, append(tc.args, "--workspace", "ws_1")...)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if len(mutations) != 1 || mutations[0] != tc.wantVerb {
+				t.Errorf("mutations = %v, want exactly [%s]", mutations, tc.wantVerb)
+			}
+			if !strings.Contains(out, truncatedJobFullID) {
+				t.Errorf("output must carry the resolved full id:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestImportsExactJobIDKeepsSingleRoundTrip pins the fast path: a full job
+// id resolves through exactly one exact GET — the history window is never
+// consulted — and the mutation follows on the same id.
+func TestImportsExactJobIDKeepsSingleRoundTrip(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var mutations []string
+	var historyHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/imports") {
+			historyHits++
+			_, _ = w.Write([]byte(`{"jobs":[]}`))
+			return
+		}
+		if r.Method != http.MethodGet {
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"job":` + truncatedJobJSONJob + `}`))
+	}))
+	defer server.Close()
+
+	cfgPath := seededConfigPath(t)
+	if _, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "cancel", truncatedJobFullID, "--yes", "--workspace", "ws_1"); err != nil {
+		t.Fatalf("imports cancel <full id>: %v", err)
+	}
+	if historyHits != 0 {
+		t.Errorf("history window hit %d time(s) for an exact id, want 0", historyHits)
+	}
+	if len(mutations) != 1 || mutations[0] != "POST /api/v1/console/workspaces/ws_1/imports/"+truncatedJobFullID+"/cancel" {
+		t.Errorf("mutations = %v, want one cancel on the full id", mutations)
+	}
+}
+
+// TestImportsAmbiguousJobPrefixFailsWithoutMutation pins the ambiguity
+// decision over the history window: a prefix matching two jobs errors
+// locally and no mutation is ever sent.
+func TestImportsAmbiguousJobPrefixFailsWithoutMutation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	twin := `{"id":"imp_abc1234567twin_a000000000000","workspaceId":"ws_1","appId":"app_a","source":"linear","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"},` +
+		`{"id":"imp_abc1234567twin_b000000000000","workspaceId":"ws_1","appId":"app_a","source":"linear","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-02T00:00:00Z","updatedAt":"2026-10-02T00:00:00Z"}`
+	var mutations []string
+	server := importsResolutionServer(t, twin, &mutations)
+	defer server.Close()
+
+	cfgPath := seededConfigPath(t)
+	_, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "rerun", truncatedJobPrefix, "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous import job prefix "`+truncatedJobPrefix+`" matches 2 jobs; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want none on an ambiguous prefix", mutations)
+	}
+}
+
+// TestImportsAbsentPrefixReportsTheWindow pins the honest not-found shape:
+// a prefix no job in the history window matches errors naming the scanned
+// window and its server cap, instead of a bare 404 that implies the job
+// cannot exist.
+func TestImportsAbsentPrefixReportsTheWindow(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var mutations []string
+	server := importsResolutionServer(t, truncatedJobJSONJob, &mutations)
+	defer server.Close()
+
+	cfgPath := seededConfigPath(t)
+	_, _, err := runRootCapture(t, cfgPath, server.URL, "imports", "get", "imp_nothing1234", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `import job "imp_nothing1234" not found`) || !strings.Contains(err.Error(), "newest 100") {
+		t.Fatalf("error = %v, want the window-naming not-found error", err)
 	}
 }

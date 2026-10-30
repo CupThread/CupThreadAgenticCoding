@@ -39,6 +39,20 @@ func destructiveServer(t *testing.T) (*httptest.Server, *[]*http.Request) {
 			_, _ = w.Write([]byte(`{"requests":[{"id":"fr_123"}],"total":1,"hasMore":false}`))
 			return
 		}
+		if serveChangelogListing(w, r, "cl_1") {
+			return
+		}
+		// imports cancel resolves its reference before mutating (issue
+		// #413): answer both the exact-job GET and the history-window GET.
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/imports") {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/imports") {
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"job_1","source":"linear","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"job":{"id":"job_1","source":"linear","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}}`))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
@@ -98,8 +112,9 @@ func TestFeaturesDeleteYesResolvesThenDeletes(t *testing.T) {
 	}
 }
 
-// TestChangelogDeleteYesSendsExactlyOneDelete pins the simple no-resolution
-// delete: --yes goes straight to a single DELETE.
+// TestChangelogDeleteYesSendsExactlyOneDelete pins the no-surprises delete:
+// --yes sends the ID-resolution listing GET and exactly one DELETE, in that
+// order, and the confirmation line echoes the resolved full id.
 func TestChangelogDeleteYesSendsExactlyOneDelete(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 	withConfirmHooks(t, strings.NewReader(""), false)
@@ -112,10 +127,10 @@ func TestChangelogDeleteYesSendsExactlyOneDelete(t *testing.T) {
 	if !strings.Contains(out, "✓ Deleted changelog entry cl_1") {
 		t.Errorf("output missing confirmation line:\n%s", out)
 	}
-	if n := len(*reqs); n != 1 {
-		t.Fatalf("want exactly one request, saw %d", n)
+	if n := len(*reqs); n != 2 {
+		t.Fatalf("want the resolution GET plus one DELETE, saw %d requests", n)
 	}
-	r := (*reqs)[0]
+	r := (*reqs)[1]
 	if r.Method != http.MethodDelete || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog/cl_1" {
 		t.Errorf("request = %s %s", r.Method, r.URL.Path)
 	}
@@ -123,18 +138,20 @@ func TestChangelogDeleteYesSendsExactlyOneDelete(t *testing.T) {
 
 // TestRemainingDestructiveCommandsConfirmAndFire walks the other four
 // irreversible commands: without --yes they refuse with zero requests, with
-// --yes they send exactly their one wire call.
+// --yes they send their wire calls — one for the plain deletions, and the
+// ID-resolution GET plus the mutation for imports cancel (issue #413).
 func TestRemainingDestructiveCommandsConfirmAndFire(t *testing.T) {
 	cases := []struct {
-		name       string
-		args       []string
-		wantMethod string
-		wantPath   string
+		name         string
+		args         []string
+		wantMethod   string
+		wantPath     string
+		wantRequests int
 	}{
-		{"columns delete", []string{"columns", "delete", "col_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/columns/col_1"},
-		{"versions delete", []string{"versions", "delete", "v_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/versions/v_1"},
-		{"members remove", []string{"workspaces", "members", "remove", "m_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/members/m_1"},
-		{"imports cancel", []string{"imports", "cancel", "job_1"}, http.MethodPost, "/api/v1/console/workspaces/ws_1/imports/job_1/cancel"},
+		{"columns delete", []string{"columns", "delete", "col_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/columns/col_1", 1},
+		{"versions delete", []string{"versions", "delete", "v_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/versions/v_1", 1},
+		{"members remove", []string{"workspaces", "members", "remove", "m_1"}, http.MethodDelete, "/api/v1/console/workspaces/ws_1/members/m_1", 1},
+		{"imports cancel", []string{"imports", "cancel", "job_1"}, http.MethodPost, "/api/v1/console/workspaces/ws_1/imports/job_1/cancel", 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" refuses without --yes", func(t *testing.T) {
@@ -160,10 +177,10 @@ func TestRemainingDestructiveCommandsConfirmAndFire(t *testing.T) {
 			if _, err := runRoot(t, server.URL, yesArgs...); err != nil {
 				t.Fatalf("%s --yes: %v", tc.name, err)
 			}
-			if n := len(*reqs); n != 1 {
-				t.Fatalf("want exactly one request, saw %d", n)
+			if n := len(*reqs); n != tc.wantRequests {
+				t.Fatalf("want exactly %d request(s), saw %d", tc.wantRequests, n)
 			}
-			r := (*reqs)[0]
+			r := (*reqs)[tc.wantRequests-1]
 			if r.Method != tc.wantMethod || r.URL.Path != tc.wantPath {
 				t.Errorf("request = %s %s, want %s %s", r.Method, r.URL.Path, tc.wantMethod, tc.wantPath)
 			}

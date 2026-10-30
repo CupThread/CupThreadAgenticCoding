@@ -37,6 +37,12 @@ func mutationResultServer(t *testing.T) *httptest.Server {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests"):
 			_, _ = w.Write(filteredFixture(t, r.URL.Query().Get("appId")))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/changelog"):
+			_, _ = w.Write([]byte(changelogListingJSON("entry_1")))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/imports/job_1"):
+			_, _ = w.Write([]byte(`{"job":{"id":"job_1","workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/imports"):
+			_, _ = w.Write([]byte(`{"jobs":[{"id":"job_1","workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}]}`))
 		case r.URL.Path == "/api/v1/console/workspaces/ws_1/apps":
 			_, _ = w.Write([]byte(appListFixture))
 		default:
@@ -324,6 +330,12 @@ func mutationGuardServer(t *testing.T) (*httptest.Server, *int) {
 				_, _ = w.Write([]byte(appListFixture))
 			case strings.HasSuffix(r.URL.Path, "/feature-requests"):
 				_, _ = w.Write([]byte(`{"requests":[{"id":"fr_1","title":"Guard request","status":"open","voteCount":1,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}],"total":1}`))
+			case strings.HasSuffix(r.URL.Path, "/changelog"):
+				_, _ = w.Write([]byte(changelogListingJSON("entry_1")))
+			case strings.HasSuffix(r.URL.Path, "/imports/job_1"):
+				_, _ = w.Write([]byte(`{"job":{"id":"job_1","workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}}`))
+			case strings.HasSuffix(r.URL.Path, "/imports"):
+				_, _ = w.Write([]byte(`{"jobs":[{"id":"job_1","workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}]}`))
 			default:
 				_, _ = w.Write([]byte(`{}`))
 			}

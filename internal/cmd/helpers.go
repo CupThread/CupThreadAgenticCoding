@@ -342,6 +342,82 @@ func (a *app) clampListOffset(requested int) int {
 	return effective
 }
 
+// idRefNouns carries one command family's nouns for the shared ID-resolution
+// errors, so every family reads the same way while naming its own resource.
+type idRefNouns struct {
+	what     string // singular resource name, e.g. "changelog entry"
+	plural   string // plural resource name, e.g. "entries"
+	listHint string // the listing command whose table printed the IDs, e.g. "cupthread changelog list"
+}
+
+// resolveIDRef resolves an ID reference copied out of a family's table — the
+// exact ID or a unique prefix of one — against that family's listing, the
+// fetchOneFeatureRequest contract generalized (issue #413): the console
+// tables print 12-character IDs, so every sibling command that consumes one
+// of those IDs must accept the truncated form instead of forwarding a
+// guaranteed 404 (or a misleading 400) to the server.
+//
+// fetchPage is called with the 0-based page index and returns that page's
+// items plus whether the listing ends there; the pagination mechanics stay
+// with each family (offset steps, a cursor walk, or a single fixed window),
+// which keeps the helper independent of how the server pages. The walk stops
+// at maxPages so a server reporting endless pages cannot hang the CLI. An
+// exact ID match returns immediately; prefix matches accumulate across every
+// page before the ambiguity decision, so a prefix that looks unique on the
+// first page still errors once a later page adds a second match. One unique
+// match resolves; several produce the shared ambiguous-prefix error; none
+// produce notFound, which each family tailors (scope wording, --app hints)
+// from the reference, the scanned count, the exhaustion flag, and the
+// prefix-match count (nonzero only in the refused under-cap case).
+//
+// acceptPrefixUnderCap marks whether a maxPages-stopped scan is still the
+// whole reachable universe, so a prefix unique within it is genuinely
+// unique. The offset-capped listings are: the server clamps offset at the
+// same window resolution pages to, so rows past the cap cannot be served —
+// and are passed true. A cursor-walked family with no server cap passes
+// false: there maxPages is a pure hang-guard, a unique match within the
+// scanned pages could gain a second match on an unscanned page, and the
+// prefix is refused so a mutation cannot act on an unverifiable choice
+// (PR #414 review).
+//
+// An empty (or whitespace-only) reference is rejected before any lookup:
+// strings.HasPrefix(id, "") is true for every id, so with a single item in
+// scope an empty ref — the canonical unset-shell-variable accident — would
+// silently resolve to it and the mutation commands would act on a resource
+// the caller never named (issue #289).
+func resolveIDRef[T any](ref string, nouns idRefNouns, maxPages int, acceptPrefixUnderCap bool, fetchPage func(page int) (items []T, done bool, err error), notFound func(ref string, scanned int, exhausted bool, prefixMatches int) error, idOf func(*T) string) (*T, error) {
+	if strings.TrimSpace(ref) == "" {
+		return nil, fmt.Errorf("%s reference is empty — pass an id or non-empty id prefix (see '%s')", nouns.what, nouns.listHint)
+	}
+	var matches []T
+	scanned := 0
+	exhausted := false
+	for page := 0; page < maxPages && !exhausted; page++ {
+		items, done, err := fetchPage(page)
+		if err != nil {
+			return nil, err
+		}
+		for i := range items {
+			id := idOf(&items[i])
+			if id == ref {
+				return &items[i], nil
+			}
+			if strings.HasPrefix(id, ref) {
+				matches = append(matches, items[i])
+			}
+		}
+		scanned += len(items)
+		exhausted = done
+	}
+	if len(matches) == 1 && (exhausted || acceptPrefixUnderCap) {
+		return &matches[0], nil
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("ambiguous %s prefix %q matches %d %s; use a longer prefix", nouns.what, ref, len(matches), nouns.plural)
+	}
+	return nil, notFound(ref, scanned, exhausted, len(matches))
+}
+
 // decodeStrictRawJSON validates that data holds exactly one JSON value and
 // returns it verbatim as json.RawMessage (only trailing whitespace is
 // allowed). Decoding into any instead would rebuild every number through

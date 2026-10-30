@@ -505,7 +505,7 @@ func TestFeaturesAmbiguousPrefixAcrossPages(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "features", "get", "dup_")
-	if err == nil || !strings.Contains(err.Error(), "ambiguous request prefix") {
+	if err == nil || !strings.Contains(err.Error(), "ambiguous feature request prefix") {
 		t.Fatalf("features get dup_ error = %v, want ambiguous-prefix error spanning pages", err)
 	}
 
@@ -720,7 +720,7 @@ func TestFeaturesEmptyRefGuardKeepsNonEmptyResolution(t *testing.T) {
 	// Ambiguous prefix across the workspace-wide listing (no default app so
 	// both apps' requests are in scope) still errors as before.
 	_, err = runRootWithSeededConfig(t, server.URL, `{"defaultWorkspace":"ws_1"}`, "features", "get", "fr_")
-	if err == nil || !strings.Contains(err.Error(), "ambiguous request prefix") {
+	if err == nil || !strings.Contains(err.Error(), "ambiguous feature request prefix") {
 		t.Fatalf("features get fr_ error = %v, want ambiguous-prefix error", err)
 	}
 }

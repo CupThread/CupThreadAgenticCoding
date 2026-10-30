@@ -934,13 +934,17 @@ func TestIssue181CommentsCreateFailFastHelp(t *testing.T) {
 }
 
 // TestIssue135CommandHelp pins the cobra flag help agents read for comment
-// replies: --parent-id states the same-request visible-parent rule and
+// replies: --parent-id states the same-request visible-parent rule, demands
+// the full comment id (the table form is truncated, issue #413), and
 // --reply-to-author-name admits the server ignores it.
 func TestIssue135CommandHelp(t *testing.T) {
 	create := newCommentsCreateCmd()
 	parentID := create.Flags().Lookup("parent-id")
 	if parentID == nil || !strings.Contains(parentID.Usage, "visible comment on the same feature request") || !strings.Contains(parentID.Usage, "400 invalid_parent") {
 		t.Errorf("parent-id flag usage = %#v, want the SEC-50 rule and the wire code", parentID)
+	}
+	if parentID == nil || !strings.Contains(parentID.Usage, "full comment id") || !strings.Contains(parentID.Usage, "truncate") {
+		t.Errorf("parent-id flag usage = %#v, want the issue-#413 full-id requirement", parentID)
 	}
 	replyName := create.Flags().Lookup("reply-to-author-name")
 	if replyName == nil || !strings.Contains(replyName.Usage, "ignored by the API") {
