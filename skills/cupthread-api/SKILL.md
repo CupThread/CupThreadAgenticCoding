@@ -65,7 +65,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/public/apps/:appKey/changelog/unsubscribe` | `GET`/`POST` | Same interstitial pattern; `POST` serves RFC 8058 one-click. Unsubscribe is the exception to token expiry and the private-app `403` (#635). |
 | `/api/v1/public/digest/unsubscribe` | `GET`/`POST` | Weekly-digest one-click unsubscribe (PRIV-07); `GET` non-destructive, only `POST` mutates. |
 | `/api/v1/feature-requests` | `GET` | List/search the board; keyset cursor pagination (DATA-01), `offset` clamps at 10000. |
-| `/api/v1/feature-requests` | `POST` | Propose a request; every public submission starts unapproved (`201 {featureRequestId, pending: true}`). Unknown `appKey` and disabled app answer the same uniform `404` (SaaS #1176) — `403` means Turnstile rejection only. |
+| `/api/v1/feature-requests` | `POST` | Propose a request; every public submission starts unapproved (`201 {featureRequestId, pending: true}`). Unknown `appKey` and disabled app answer the same uniform `404` (SaaS #1176) — `403` means Turnstile rejection only. Sign-in-only roadmaps (`allowAnonymousRoadmap` off) answer the uniform `401 authentication_required` to anonymous proposals — keyed by the roadmap setting, not anonymous feedback (PRIV-12). |
 | `/api/v1/feature-requests/:id` | `GET` | Deep-link read of one approved request; unapproved/missing/private all answer the same uniform `404`. |
 | `/api/v1/feature-requests/:id/vote` | `POST`/`DELETE` | Insert-only idempotent vote; `DELETE` (same JSON body as the POST) is the only un-vote. Optional `shipNotifyEmail` + `turnstileToken`. |
 | `/api/v1/feature-requests/:id/comments` | `GET` | Keyset-paginated thread; unapproved requests `404` (existence hiding). |
@@ -119,7 +119,7 @@ Five public GETs (board detail, comment threads, changelog feed, columns, versio
 
 ### Per-app anonymous-access enforcement (PRIV-12)
 
-`PublicAppConfig` flags (`allowAnonymousRoadmap`, `allowAnonymousChangelog`, `allowAnonymousVote`, `allowAnonymousFeedback`) are enforced server-side on **every** surface of the family. A disabled flag turns the family's reads/writes into `401 {"error": …, "code": "authentication_required"}` for anonymous callers — surface the host app's sign-in flow, do not retry. The vote gates run **ahead of** the existence lookup, so missing and approved ids are indistinguishable. `404` on a detail read or comment thread means "not available" (missing, private, or not yet approved) — never tell the user the request never existed (existence hiding).
+`PublicAppConfig` flags (`allowAnonymousRoadmap`, `allowAnonymousChangelog`, `allowAnonymousVote`, `allowAnonymousFeedback`) are enforced server-side on **every** surface of the family. A disabled flag turns the family's reads/writes into `401 {"error": …, "code": "authentication_required"}` for anonymous callers — surface the host app's sign-in flow, do not retry. The vote gates run **ahead of** the existence lookup, so missing and approved ids are indistinguishable; the propose create joins the same roadmap family with its gate running **last**, after the Turnstile `403`, app-lookup `404` and tier `402` checks, keyed by `allowAnonymousRoadmap` alone (the anonymous-feedback setting no longer gates it). `404` on a detail read or comment thread means "not available" (missing, private, or not yet approved) — never tell the user the request never existed (existence hiding).
 
 ### User identifiers (PRIV-06)
 
