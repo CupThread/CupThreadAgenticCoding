@@ -527,7 +527,12 @@ name the resolved **full** id. A prefix matching several entries fails with
 `ambiguous changelog entry prefix …; use a longer prefix`; resolution pages
 up to the 10,000-entry offset cap, and an id belonging to another app than
 the resolved one errors naming the scope the scan covered (the `--app`
-escape hatch applies, as in `features`).
+escape hatch applies, as in `features`). `changelog create/update
+--link-request-ids` resolves each listed request the same way (full ids or
+unique prefixes), and after the save it discloses any request the server
+silently dropped — unknown, already-deleted, or belonging to another app —
+with a `⚠` naming the dropped references (stderr in `--json`/`-o yaml`
+mode), instead of the missing links vanishing into a `200 OK`.
 
 Drafts (create/edit/delete without publishing) work for every workspace role
 and with `cpt_` API tokens. Publishing, `--publish-now`, and setting a

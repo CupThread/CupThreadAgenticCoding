@@ -1219,3 +1219,186 @@ func TestChangelogPrefixScanCoversTheOffsetCapPage(t *testing.T) {
 		t.Errorf("success line must carry the resolved full id:\n%s", out)
 	}
 }
+
+// linkRequestIDsServer serves both sides of the issue #416 flow: the
+// features listing (requestsJSON) that --link-request-ids resolution walks,
+// the changelog listing (listingJSON — only update's entry-ID resolution
+// reads it) and the changelog write route, whose request body is captured
+// into *gotBody and answered with entryJSON. Writes are recorded in
+// *mutations as "METHOD path" so tests can pin both what fired and what
+// must not have.
+func linkRequestIDsServer(t *testing.T, requestsJSON, listingJSON, entryJSON string, gotBody *string, mutations *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			*mutations = append(*mutations, r.Method+" "+r.URL.Path)
+			data, _ := io.ReadAll(r.Body)
+			*gotBody = string(data)
+			_, _ = w.Write([]byte(entryJSON))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/feature-requests") {
+			_, _ = w.Write([]byte(`{"requests":[` + requestsJSON + `],"total":1,"hasMore":false}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/changelog") {
+			_, _ = w.Write([]byte(`{"entries":[` + listingJSON + `],"total":1,"hasMore":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+}
+
+// changelogEntryWithLinksJSON is one full-shaped saved entry whose
+// linkedRequests carry exactly the given ids — what create/update answer
+// with, and what the disclosure check compares the sent ids against.
+func changelogEntryWithLinksJSON(linked ...string) string {
+	parts := make([]string, len(linked))
+	for i, id := range linked {
+		parts[i] = `{"id":"` + id + `","title":"Request"}`
+	}
+	return `{"id":"cl_new_entry_1","appId":"app_a","title":"Release 1.0","body":"b","createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z","linkedRequests":[` + strings.Join(parts, ",") + `]}`
+}
+
+// TestChangelogCreateResolvesTruncatedLinkRequestIDs covers the #416 core
+// case: the 12-character forms the features table prints resolve to the
+// full IDs on the wire, and a fully-linked save renders no disclosure.
+func TestChangelogCreateResolvesTruncatedLinkRequestIDs(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	const requestFullID = "fr_target000123ffffffffffff"
+	var gotBody string
+	var mutations []string
+	server := linkRequestIDsServer(t,
+		`{"id":"`+requestFullID+`","appId":"app_a","title":"Target"}`,
+		"", changelogEntryWithLinksJSON(requestFullID),
+		&gotBody, &mutations)
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "create", "--title", "Release 1.0", "--body", "Ship it",
+		"--link-request-ids", "fr_target000", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog create with a truncated link id: %v", err)
+	}
+	if want := `"linkedRequestIds":["` + requestFullID + `"]`; !strings.Contains(gotBody, want) {
+		t.Errorf("wire body = %s, want the resolved full id in it (%s)", gotBody, want)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("fully-linked save must render no disclosure:\n%s", out)
+	}
+}
+
+// TestChangelogCreateAmbiguousLinkRequestIDFailsWithoutWrite pins the
+// resolution layer: a prefix matching two requests fails locally naming the
+// offending list entry, and no changelog write is sent.
+func TestChangelogCreateAmbiguousLinkRequestIDFailsWithoutWrite(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	twins := `{"id":"fr_dup0000aaaaaaaaaaaaaaaaa","appId":"app_a","title":"A"},` +
+		`{"id":"fr_dup0000bbbbbbbbbbbbbbbbb","appId":"app_a","title":"B"}`
+	var gotBody string
+	var mutations []string
+	server := linkRequestIDsServer(t, twins, "", `{}`, &gotBody, &mutations)
+	defer server.Close()
+
+	_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "create", "--title", "Release 1.0", "--body", "Ship it",
+		"--link-request-ids", "fr_dup0000", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `invalid --link-request-ids entry "fr_dup0000"`) || !strings.Contains(err.Error(), "ambiguous feature request prefix") {
+		t.Fatalf("error = %v, want the ambiguity error naming the list entry", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want zero — resolution must stop the write", mutations)
+	}
+}
+
+// TestChangelogCreateDisclosesUnlinkedRequestIDs pins the disclosure net
+// (issue #416): when the saved entry is missing a sent id, the advisory
+// names it on stdout in table mode and rides stderr in --json mode while
+// the structured document keeps linkedRequests verbatim.
+func TestChangelogCreateDisclosesUnlinkedRequestIDs(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	const requestFullID = "fr_target000123ffffffffffff"
+	var gotBody string
+	var mutations []string
+	server := linkRequestIDsServer(t,
+		`{"id":"`+requestFullID+`","appId":"app_a","title":"Target"}`,
+		"", changelogEntryWithLinksJSON(), // the server "dropped" the only sent id
+		&gotBody, &mutations)
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "create", "--title", "Release 1.0", "--body", "Ship it",
+		"--link-request-ids", requestFullID, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog create: %v", err)
+	}
+	if want := "⚠ 1 of the --link-request-ids were not linked (unknown or not part of this app): " + requestFullID; !strings.Contains(out, want) {
+		t.Errorf("table output missing the disclosure:\n%s", out)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"changelog", "create", "--title", "Release 1.0", "--body", "Ship it",
+		"--link-request-ids", requestFullID, "--workspace", "ws_1", "--app", "app_a", "--json")
+	if err != nil {
+		t.Fatalf("changelog create --json: %v", err)
+	}
+	if strings.Contains(stdout, "⚠") || !strings.Contains(stderr, requestFullID) {
+		t.Errorf("structured mode must keep the document clean and the advisory on stderr:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, `"linkedRequests": []`) {
+		t.Errorf("json document must carry linkedRequests verbatim:\n%s", stdout)
+	}
+}
+
+// TestChangelogUpdateLinkRequestIDsResolveDiscloseAndSkip covers update: a
+// passed flag's entries resolve to full ids on the wire and a server-side
+// drop is disclosed naming the sent id, while an update that does not touch
+// the flag keeps the exact same wire shape and renders no disclosure even
+// though the saved entry carries links.
+func TestChangelogUpdateLinkRequestIDsResolveDiscloseAndSkip(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	const kept = "fr_kept00000000000000000001"
+	const dropped = "fr_gone0000000000000000001"
+	requests := `{"id":"` + kept + `","appId":"app_a","title":"Kept"},` +
+		`{"id":"` + dropped + `","appId":"app_a","title":"Gone"}`
+	var gotBody string
+	var mutations []string
+	server := linkRequestIDsServer(t, requests,
+		changelogEntryJSON(truncatedEntryFullID),
+		changelogEntryWithLinksJSON(kept), // the server drops the second id
+		&gotBody, &mutations)
+	defer server.Close()
+
+	out, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "update", truncatedEntryPrefix,
+		"--link-request-ids", "fr_kept000,"+dropped, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog update --link-request-ids: %v", err)
+	}
+	if want := `"linkedRequestIds":["` + kept + `","` + dropped + `"]`; !strings.Contains(gotBody, want) {
+		t.Errorf("wire body = %s, want both resolved full ids in it (%s)", gotBody, want)
+	}
+	if !strings.Contains(out, "⚠ 1 of the --link-request-ids were not linked") || !strings.Contains(out, dropped) {
+		t.Errorf("update output missing the drop disclosure:\n%s", out)
+	}
+
+	// Without the flag the pre-existing links are none of this run's
+	// business: no disclosure, and the wire body stays byte-identical.
+	out, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig,
+		"changelog", "update", truncatedEntryPrefix, "--title", "Renamed", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("changelog update --title: %v", err)
+	}
+	if gotBody != `{"title":"Renamed"}` {
+		t.Errorf("flag-less update wire body = %s, want the unchanged {\"title\":\"Renamed\"} shape", gotBody)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Errorf("flag-less update must not disclose:\n%s", out)
+	}
+}

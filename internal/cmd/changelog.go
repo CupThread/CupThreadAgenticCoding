@@ -265,6 +265,51 @@ func validateChangelogWriteFlags(cmd *cobra.Command, title, versionLabel, schedu
 	return nil
 }
 
+// resolveLinkRequestIDs resolves each --link-request-ids entry through the
+// features family's exact-or-unique-prefix resolution before the write
+// (issue #416): the flag is a *body field* of cross-family IDs, so unlike
+// the changelog entry arguments it used to be forwarded verbatim — and the
+// 12-character forms every features table prints could never match the
+// server's app-scoped `id IN (...)`, which silently drops unmatched IDs
+// from the saved entry. An error names the offending list entry and fails
+// before any write; full IDs keep their fast path (an exact match returns
+// on the first listing page).
+func resolveLinkRequestIDs(ctx context.Context, refs []string) ([]string, error) {
+	resolved := make([]string, len(refs))
+	for i, ref := range refs {
+		r, err := fetchOneFeatureRequest(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --link-request-ids entry %q: %w", ref, err)
+		}
+		resolved[i] = r.ID
+	}
+	return resolved, nil
+}
+
+// warnUnlinkedRequests discloses IDs the server silently dropped from the
+// saved entry's links (issue #416): the create/update routes answer 200 and
+// simply omit unknown, cross-app, or otherwise unmatched request IDs, which
+// made the partial link set indistinguishable from a complete one — and the
+// close-the-loop voter blast quietly never reached the dropped requests'
+// voters. warnf keeps the structured stdout document byte-faithful (the
+// advisory rides stderr in --json/-o yaml mode).
+func warnUnlinkedRequests(sent []string, linked []api.LinkedRequest) {
+	linkedIDs := make(map[string]bool, len(linked))
+	for _, l := range linked {
+		linkedIDs[l.ID] = true
+	}
+	var dropped []string
+	for _, id := range sent {
+		if !linkedIDs[id] {
+			dropped = append(dropped, id)
+		}
+	}
+	if len(dropped) == 0 {
+		return
+	}
+	A.warnf("⚠ %d of the --link-request-ids were not linked (unknown or not part of this app): %s", len(dropped), strings.Join(dropped, ", "))
+}
+
 func newChangelogCreateCmd() *cobra.Command {
 	var title, bodyText, bodyFile, versionLabel, versionID, scheduleAt string
 	var linkIDs []string
@@ -317,6 +362,14 @@ requested schedule, so the CLI refuses the pair before any request.`,
 			if err != nil {
 				return err
 			}
+			// Resolve the cross-family --link-request-ids entries before the
+			// write (issue #416): the server silently drops any ID it cannot
+			// match, so a truncated table form sent verbatim would save an
+			// entry quietly missing its links.
+			linkIDs, err = resolveLinkRequestIDs(cmd.Context(), linkIDs)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{
 				"appId": appID, "title": title, "body": text,
 				"linkedRequestIds": orEmptySlice(linkIDs), "publishNow": publishNow,
@@ -334,6 +387,7 @@ requested schedule, so the CLI refuses the pair before any request.`,
 			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog"), nil, body, &resp); err != nil {
 				return err
 			}
+			warnUnlinkedRequests(linkIDs, resp.LinkedRequests)
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
@@ -346,7 +400,7 @@ requested schedule, so the CLI refuses the pair before any request.`,
 	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
 	create.Flags().StringVar(&versionLabel, "version-label", "", "Version label to show, e.g. 1.2.0")
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
-	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop")
+	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop (full IDs or unique prefixes, resolved like 'features get')")
 	create.Flags().BoolVar(&publishNow, "publish-now", false, "Publish immediately (mutually exclusive with --schedule-at)")
 	create.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z; mutually exclusive with --publish-now)")
 	return create
@@ -424,6 +478,17 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Resolve the cross-family --link-request-ids entries before the
+			// write (issue #416, mirroring create): only when the flag is
+			// passed — an untouched flag means the caller is not touching the
+			// links, so the pre-existing set must not trigger the drop check.
+			changedLinks := cmd.Flags().Changed("link-request-ids")
+			if changedLinks {
+				linkIDs, err = resolveLinkRequestIDs(cmd.Context(), linkIDs)
+				if err != nil {
+					return err
+				}
+			}
 			body := map[string]any{}
 			if cmd.Flags().Changed("title") {
 				body["title"] = title
@@ -450,6 +515,9 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+pathID(e.ID)), nil, body, &resp); err != nil {
 				return err
 			}
+			if changedLinks {
+				warnUnlinkedRequests(linkIDs, resp.LinkedRequests)
+			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
@@ -462,7 +530,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
 	update.Flags().StringVar(&versionLabel, "version-label", "", "Version label (\"\" clears it)")
 	update.Flags().StringVar(&versionID, "version-id", "", "Linked version ID (\"\" clears it)")
-	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link")
+	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link (full IDs or unique prefixes, resolved like 'features get')")
 	update.Flags().StringVar(&scheduleAt, "schedule-at", "", "Schedule publishing (strict UTC ISO 8601 datetime, e.g. 2026-11-05T09:00:00Z; \"\" clears it)")
 	return update
 }
