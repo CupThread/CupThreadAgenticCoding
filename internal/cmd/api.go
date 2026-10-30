@@ -40,9 +40,11 @@ body is sent byte-for-byte as given, so JSON numbers keep full precision
 (issue #75). This is the escape hatch for endpoints the CLI does not wrap yet.
 
 The body is capped locally at the server's request-body limits (SEC-36):
-1 MB on console routes, 256 KB on /api/v1/public/ routes. Larger input fails
-in-process with input_too_large before anything is sent — no partial read of
-a huge file or pipe ever reaches the network.
+1 MB on console routes, 256 KB on public JSON intake — the /api/v1/public/
+family plus the propose/comment/vote/feedback, me/link, me/erase, and
+uploads/sessions routes. Larger input fails in-process with input_too_large
+before anything is sent — no partial read of a huge file or pipe ever
+reaches the network.
 
 Every invocation sends an X-Request-Id correlation header (cli-<uuid>); the
 API echoes it on the response and CLI errors quote it as request-id=… —
@@ -141,18 +143,54 @@ include that value in bug reports and support requests.`,
 			return nil
 		},
 	}
-	req.Flags().StringVar(&inputPath, "input", "", "JSON request body: file path, \"@path\", or \"-\"/\"@\" for stdin; max 1 MB, 256 KB on /api/v1/public/ routes")
+	req.Flags().StringVar(&inputPath, "input", "", "JSON request body: file path, \"@path\", or \"-\"/\"@\" for stdin; max 1 MB, 256 KB on public-intake routes")
 	return req
 }
 
 // bodyLimitForPath picks the client-side request-body cap for a raw
-// `api request` path: the documented SEC-36 limits are 256 KB on public
-// routes and 1 MB everywhere else (console JSON).
+// `api request` path, mirroring the server's SEC-36 classification: 256 KB
+// on the public JSON intake class, 1 MB everywhere else (console JSON).
 func bodyLimitForPath(path string) int64 {
-	if strings.HasPrefix(path, "/api/v1/public/") {
+	if publicIntakeBodyLimit(path) {
 		return maxPublicBodyBytes
 	}
 	return maxConsoleBodyBytes
+}
+
+// publicIntakeBodyLimit reports whether the path belongs to the server's
+// 256 KB public JSON intake class (SEC-36 PUBLIC_JSON_BODY_LIMIT_BYTES —
+// "public intake: FRs, comments, votes, user, feedback"). Most of that class
+// lives under /api/v1/public/, but four route families sit outside it and
+// are capped just the same (issue #382): the feature-request propose create,
+// the id-scoped comment and vote mutations (the DELETE reads its body
+// through the same 256 KB bound), POST /api/v1/feedback, and upload-session
+// creation; the end-user POST /api/v1/me/link and /api/v1/me/erase routes
+// are enforced at the same 256 KB server-side. The binary upload surfaces
+// deliberately stay console-class: /api/v1/uploads/images accepts the 11 MB
+// multipart envelope class and /api/v1/uploads/{uploadId} is bounded by the
+// session's declared file size, not this JSON cap.
+func publicIntakeBodyLimit(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/v1/")
+	if !ok {
+		return false
+	}
+	rest, _, _ = strings.Cut(rest, "?")
+	segs := strings.Split(rest, "/")
+	switch {
+	case segs[0] == "public":
+		return true
+	case segs[0] == "feature-requests":
+		// The propose create (exact) plus /:id/comments and /:id/vote; the
+		// console equivalents all start /api/v1/console/ and cannot match.
+		return len(segs) == 1 || (len(segs) == 3 && (segs[2] == "comments" || segs[2] == "vote"))
+	case segs[0] == "feedback":
+		return len(segs) == 1
+	case segs[0] == "me":
+		return len(segs) == 2 && (segs[1] == "link" || segs[1] == "erase")
+	case segs[0] == "uploads":
+		return len(segs) == 2 && segs[1] == "sessions"
+	}
+	return false
 }
 
 func upper(s string) string {

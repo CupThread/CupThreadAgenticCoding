@@ -114,9 +114,31 @@ func TestBodyLimitForPath(t *testing.T) {
 		path string
 		want int64
 	}{
+		// The /api/v1/public/ family keeps its 256 KB class.
 		{"/api/v1/public/apps/app_1/user", maxPublicBodyBytes},
+		// Public JSON intake outside /api/v1/public/ (issue #382): the
+		// propose create, the id-scoped comment and vote routes, feedback,
+		// the end-user me/link and me/erase calls, and upload-session
+		// creation are all enforced at 256 KB server-side.
+		{"/api/v1/feature-requests", maxPublicBodyBytes},
+		{"/api/v1/feature-requests?limit=10", maxPublicBodyBytes},
+		{"/api/v1/feature-requests/req_1/comments", maxPublicBodyBytes},
+		{"/api/v1/feature-requests/req_1/vote", maxPublicBodyBytes},
+		{"/api/v1/feedback", maxPublicBodyBytes},
+		{"/api/v1/me/link", maxPublicBodyBytes},
+		{"/api/v1/me/erase", maxPublicBodyBytes},
+		{"/api/v1/uploads/sessions", maxPublicBodyBytes},
+		// Console routes keep 1 MB — including the console feature-request
+		// routes that merely contain the same words, and the binary upload
+		// surfaces governed by the attachment-size classes instead.
 		{"/api/v1/console/me", maxConsoleBodyBytes},
-		{"/api/v1/feature-requests", maxConsoleBodyBytes},
+		{"/api/v1/console/workspaces/ws_1/feature-requests", maxConsoleBodyBytes},
+		{"/api/v1/feature-requests/req_1", maxConsoleBodyBytes},
+		{"/api/v1/feature-requests/req_1/comments/com_1", maxConsoleBodyBytes},
+		{"/api/v1/feedback/attachments/att_1", maxConsoleBodyBytes},
+		{"/api/v1/uploads/images", maxConsoleBodyBytes},
+		{"/api/v1/uploads/up_1", maxConsoleBodyBytes},
+		{"/api/v1/users/user_1/profile", maxConsoleBodyBytes},
 	} {
 		if got := bodyLimitForPath(tc.path); got != tc.want {
 			t.Errorf("bodyLimitForPath(%q) = %d, want %d", tc.path, got, tc.want)
@@ -228,6 +250,46 @@ func TestAPIRequestPublicRouteUsesPublicLimit(t *testing.T) {
 	}
 	if payload.Limit != maxPublicBodyBytes {
 		t.Errorf("limit = %d, want the public 256 KB cap %d", payload.Limit, maxPublicBodyBytes)
+	}
+}
+
+// TestAPIRequestPublicIntakeOutsidePublicPrefixUsesPublicLimit pins the rest
+// of the server's 256 KB public JSON intake class — the routes that sit
+// outside /api/v1/public/ and were misclassified at the console 1 MB cap
+// until issue #382: a maxPublicBodyBytes+1 body bound for them must fail
+// in-process with zero requests, exactly like the /api/v1/public/ family.
+func TestAPIRequestPublicIntakeOutsidePublicPrefixUsesPublicLimit(t *testing.T) {
+	for _, path := range []string{
+		"/api/v1/feature-requests",
+		"/api/v1/feature-requests/req_1/comments",
+		"/api/v1/feature-requests/req_1/vote",
+		"/api/v1/feedback",
+		"/api/v1/uploads/sessions",
+		"/api/v1/me/link",
+	} {
+		t.Run(path, func(t *testing.T) {
+			server, sent := countingServer(t)
+
+			body := padBodyJSON(int(maxPublicBodyBytes) + 1)
+			out, err := runRoot(t, server.URL, "api", "request", "POST", path,
+				"--input", writeInputFile(t, body), "--json")
+			if err == nil {
+				t.Fatal("api request succeeded with an over-limit public-intake body, want a local failure")
+			}
+			if *sent != 0 {
+				t.Errorf("server observed %d requests, want 0 — the body must fail before sending", *sent)
+			}
+			var payload struct {
+				Code  string `json:"code"`
+				Limit int64  `json:"limit"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+				t.Fatalf("stdout %q is not one JSON document: %v", out, err)
+			}
+			if payload.Code != "input_too_large" || payload.Limit != maxPublicBodyBytes {
+				t.Errorf("payload = %+v, want code input_too_large with the 256 KB limit %d", payload, maxPublicBodyBytes)
+			}
+		})
 	}
 }
 

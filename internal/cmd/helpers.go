@@ -62,10 +62,13 @@ func pathID(ref string) string {
 const (
 	// maxConsoleBodyBytes caps bodies sent to console JSON surfaces: apps
 	// settings, imports options, changelog bodies, and `api request` on
-	// non-public routes.
+	// routes outside the public JSON intake class.
 	maxConsoleBodyBytes int64 = 1 << 20 // 1 MB
-	// maxPublicBodyBytes caps bodies sent to public JSON intake
-	// (/api/v1/public/...), e.g. the signed payment-attribute user update.
+	// maxPublicBodyBytes caps bodies sent to the server's public JSON intake
+	// class (SEC-36 PUBLIC_JSON_BODY_LIMIT_BYTES): the /api/v1/public/...
+	// family — e.g. the signed payment-attribute user update — plus the
+	// propose/comment/vote/feedback, me/link, me/erase, and uploads/sessions
+	// routes outside it; bodyLimitForPath holds the exact split.
 	maxPublicBodyBytes int64 = 256 << 10 // 256 KB
 	// maxSecretBytes caps piped credentials (`--secret -`, `--token -`):
 	// tokens are short, and the bound keeps a runaway pipe from hanging the

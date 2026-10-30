@@ -2822,3 +2822,46 @@ func TestAPISkillIssue252ProposeUniform404(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue382PublicIntakeBodySplit pins the SEC-36 public-intake
+// body-limit split the CLI's `api request --input` cap now mirrors
+// (bodyLimitForPath): the 256 KB public JSON intake class is documented as a
+// route set that reaches beyond /api/v1/public/ — the feature-request
+// propose/comment/vote routes, the signed user update, feedback, and upload
+// sessions — and the reference client guidance promises that every CLI
+// file/stdin body is bounded locally against the route's cap, failing with
+// input_too_large before anything is sent. Pinning the rows keeps the docs
+// and the CLI classification from drifting apart in either direction: a
+// rewrite that narrows the documented class back to "/api/v1/public/ only"
+// would re-bless the wasted-round-trip 413 the CLI precheck exists to
+// prevent, and one that widens it over the binary upload surfaces (11 MB
+// multipart images, session-sized file puts) would push the CLI to reject
+// legitimate large uploads locally.
+func TestSkillDocsIssue382PublicIntakeBodySplit(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	sec36 := skillLineByPrefix(t, doc, "| Public JSON intake — feature requests")
+	for _, marker := range []string{
+		"`POST /feedback`, upload sessions",
+		"| 256 KB |",
+	} {
+		if !strings.Contains(sec36, marker) {
+			t.Errorf("SEC-36 public-intake row is missing required issue-#382 marker %q; got: %s", marker, sec36)
+		}
+	}
+	skillRow := skillLineByPrefix(t, doc, "| Public JSON intake (feature requests")
+	for _, marker := range []string{
+		"`/feedback`",
+		"| 256 KB |",
+	} {
+		if !strings.Contains(skillRow, marker) {
+			t.Errorf("SKILL.md SEC-36 row is missing required issue-#382 marker %q; got: %s", marker, skillRow)
+		}
+	}
+	for _, marker := range []string{
+		"is read through a bounded reader against the route's cap first — over-limit input fails locally with `input_too_large` and nothing is sent",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#382 CLI-bounded-input marker %q", marker)
+		}
+	}
+}
