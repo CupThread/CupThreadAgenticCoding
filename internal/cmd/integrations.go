@@ -229,13 +229,18 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 					return err
 				}
 				if A.structured() {
-					return A.out.Structured(resp)
+					if err := A.out.Structured(resp); err != nil {
+						return err
+					}
+					warnGitHubReposTruncation(A, &resp)
+					return nil
 				}
 				rows := make([][]string, 0, len(resp.Repos))
 				for _, r := range resp.Repos {
 					rows = append(rows, []string{r.FullName, boolYesNo(r.IsPrivate), boolYesNo(r.HasDiscussions), boolYesNo(r.HasIssues), orDash(r.HTMLURL)})
 				}
 				A.out.Table([]string{"Repository", "Private", "Discussions", "Issues", "URL"}, rows)
+				warnGitHubReposTruncation(A, &resp)
 				return nil
 			},
 		},
@@ -244,6 +249,31 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 		newGitHubSyncCmd(),
 	)
 	return cmd
+}
+
+// githubReposTruncationNotice is the cap-keyed advisory. The 1,000 mirror's
+// the server's window (it pages GitHub at 100 per page up to
+// USER_REPOS_MAX_PAGES = 10, SaaS packages/integrations/src/github.ts) and
+// carries its thousands separator to match the SKILL.md wording. Like the
+// sibling cap notices, it says "may be": the server sets truncated whenever
+// the final page is still full, so an account with exactly 1,000 visible
+// repositories trips it with nothing omitted (PR #415 review).
+var githubReposTruncationNotice = "⚠ Listing may be truncated: this listing serves only the newest 1,000 repositories the integration can see; anything older is not shown — pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'"
+
+// warnGitHubReposTruncation discloses the repos route's server-side window
+// so a capped answer is never indistinguishable from the whole set (issue
+// #412, the #346 disclosure discipline — this route's signal is the
+// server's boolean rather than a total, since the route offers no paging).
+// The listing sorts by updated desc, so the hidden repositories are exactly
+// the oldest ones; the advisory names the sanctioned fallback (direct
+// --owner/--repo) instead of implying more pages can be fetched. warnf
+// routes the notice: stdout in table mode, stderr in --json/-o yaml mode so
+// the structured document stays byte-faithful (which now carries the
+// truncated flag itself).
+func warnGitHubReposTruncation(a *app, resp *api.GitHubReposResponse) {
+	if resp.Truncated {
+		a.warnf("%s", githubReposTruncationNotice)
+	}
 }
 
 func newGitHubConnectCmd() *cobra.Command {

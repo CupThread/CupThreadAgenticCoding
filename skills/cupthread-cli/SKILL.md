@@ -389,7 +389,7 @@ its full id from `imports history --json` instead.
 ### Integrations (GitHub / Linear / Notion / Slack)
 ```sh
 cupthread integrations status              # Connection status of every integration (account, connected)
-cupthread integrations github repos        # GitHub repositories accessible to the integration
+cupthread integrations github repos        # GitHub repositories accessible to the integration (newest 1,000 by update)
 cupthread integrations github categories --owner acme --repo app  # Discussion categories of a repository
 cupthread integrations github config <app-id-or-slug> --owner acme --repo app  # Per-app repo + sync options
                                            # (also --category-slug, --sync-enabled, --status-sync, --comments-sync)
@@ -397,6 +397,18 @@ cupthread integrations linear status       # Per-provider status (also notion, s
 ```
 The reads and the per-app GitHub config above are `[token-safe]` (workspace
 read; `github config` needs `app.configure`, admin/owner).
+
+`integrations github repos` is **capped, not paginated**: the server pages
+GitHub up to the newest **1,000** repositories the connected account can see
+(sorted by last update) and answers a `truncated` flag whenever that final
+page is still full — so exactly 1,000 visible repositories trip it too, and
+the flag means "the cap was reached; older repositories may exist", not a
+confirmed cut. The CLI passes the flag through in `--json` and prints a `⚠`
+advisory in table mode (on stderr in `--json`/`-o yaml` mode); for anything
+past the cap — typically the oldest repositories — wire them by hand with
+`integrations github config <app> --owner … --repo …` (or read categories
+with `integrations github categories --owner … --repo …`), which take the
+owner/repo pair directly.
 
 **Console-only (interactive session required — AUTH-01):**
 `integrations github|linear|notion|slack auth-url/connect/disconnect` and

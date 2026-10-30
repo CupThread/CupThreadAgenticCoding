@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -503,5 +504,90 @@ func TestGitHubConfigWebhookSecretFlagHelp(t *testing.T) {
 		if !strings.Contains(f.Usage, want) {
 			t.Errorf("webhook-secret usage %q missing %q", f.Usage, want)
 		}
+	}
+}
+
+// githubReposFixture is a two-repo page of the integrations repos route;
+// githubReposTruncatedFixture is the same page with the server's truncation
+// flag set (issue #412).
+var (
+	githubReposFixture = `{"repos":[
+	{"id":1,"owner":"acme","name":"ios","fullName":"acme/ios","isPrivate":false,"hasDiscussions":true,"hasIssues":true,"htmlUrl":"https://github.com/acme/ios"},
+	{"id":2,"owner":"acme","name":"android","fullName":"acme/android","isPrivate":true,"hasDiscussions":false,"hasIssues":true,"htmlUrl":"https://github.com/acme/android"}
+],"truncated":false}`
+
+	githubReposTruncatedFixture = strings.Replace(githubReposFixture, `"truncated":false`, `"truncated":true`, 1)
+)
+
+// TestIntegrationsGitHubReposDisclosesTruncation pins issue #412: the server
+// discloses when the connected account sees more repositories than the
+// route's 1,000-repo window serves, and the CLI must carry that signal into
+// every output mode — the ⚠ advisory in table mode, the verbatim truncated
+// flag (and no human markers) in --json — with a complete listing staying
+// advisory-free.
+func TestIntegrationsGitHubReposDisclosesTruncation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(githubReposTruncatedFixture))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "integrations", "github", "repos", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("integrations github repos: %v", err)
+	}
+	if !strings.Contains(out, "⚠ Listing may be truncated: this listing serves only the newest 1,000 repositories the integration can see; anything older is not shown — pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'") {
+		t.Errorf("truncated listing missing the cap advisory:\n%s", out)
+	}
+
+	// A complete listing stays advisory-free (stable output shape).
+	wholeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(githubReposFixture))
+	}))
+	defer wholeServer.Close()
+	whole, err := runRoot(t, wholeServer.URL, "integrations", "github", "repos", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("integrations github repos (whole): %v", err)
+	}
+	if strings.Contains(whole, "⚠") {
+		t.Errorf("untruncated listing produced an advisory:\n%s", whole)
+	}
+
+	// --json stays a single byte-faithful document carrying the server's
+	// truncated flag verbatim; the advisory moves to stderr and stdout
+	// keeps no human markers.
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, stderr, err := runRootCapture(t, cfgPath, server.URL,
+		"integrations", "github", "repos", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("integrations github repos --json: %v", err)
+	}
+	assertNoTableOutput(t, stdout)
+	if !strings.Contains(stdout, `"truncated": true`) {
+		t.Errorf("structured stdout must carry the server's truncated flag:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "⚠") {
+		t.Errorf("structured stdout must stay free of human markers:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "⚠ Listing may be truncated") {
+		t.Errorf("json stderr missing the truncation advisory:\n%s", stderr)
+	}
+
+	// The untruncated --json answer carries truncated: false (the field
+	// survives structured decoding both ways) and produces no advisory
+	// anywhere.
+	stdout, stderr, err = runRootCapture(t, cfgPath, wholeServer.URL,
+		"integrations", "github", "repos", "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("integrations github repos --json (whole): %v", err)
+	}
+	if !strings.Contains(stdout, `"truncated": false`) {
+		t.Errorf("structured stdout must carry truncated=false verbatim:\n%s", stdout)
+	}
+	if strings.Contains(stderr, "⚠") {
+		t.Errorf("untruncated json answer produced an advisory:\n%s", stderr)
 	}
 }
