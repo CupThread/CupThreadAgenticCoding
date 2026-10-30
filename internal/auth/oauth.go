@@ -346,15 +346,19 @@ type deviceAuthorizeResponse struct {
 }
 
 // maxAdvertisedDeviceIntervalSecs caps the poll spacing honored from a
-// device-authorization response's interval field (issue #394). RFC 8628
-// deployments use 5–60 s, and the ceiling matches maxHonoredRetryAfter; the
-// clamp only fires on values no conforming server sends — an ms-vs-s unit
-// bug (interval: 60000 meant as 60 s → read as ~16.7 h) or a hostile target
-// (interval: 9e9 → the login would effectively never poll again, while
-// values past the int64-nanosecond wrap point flip to the 5 s default
-// arbitrarily). A clamped value prints its stderr notice, mirroring the
-// omitted-expires_in warning.
-const maxAdvertisedDeviceIntervalSecs = 60
+// device-authorization response's interval field (issue #394). The interval
+// is a minimum spacing the client must respect (RFC 8628 §3.5), so the
+// ceiling sits far above every real deployment — known providers advertise
+// 5–60 s, and even the slowest conforming IdP stays under five minutes —
+// while still bounding the pathological values no server sends: an
+// ms-vs-s unit bug (interval: 60000 meant as 60 s → read as ~16.7 h) or a
+// hostile target (interval: 9e9 → the login would effectively never poll
+// again, while values past the int64-nanosecond wrap point flip to the 5 s
+// default arbitrarily). A clamped value prints its stderr notice, mirroring
+// the omitted-expires_in warning, so the deviation from the advertisement
+// is diagnosable rather than silent; below the ceiling the advertised
+// minimum is honored verbatim (CodeRabbit review of #395).
+const maxAdvertisedDeviceIntervalSecs = 300
 
 // DeviceStart is the pending device-flow session shown to the user.
 type DeviceStart struct {

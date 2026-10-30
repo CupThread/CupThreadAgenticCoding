@@ -612,7 +612,7 @@ func TestStartDeviceHugeExpiresInStaysFuture(t *testing.T) {
 // ms-vs-s unit bug (60000 meant as 60 s reads as ~16.7 h), a hostile target
 // (9000000000 ≈ 285 years; values past the int64-nanosecond wrap point used
 // to flip to the 5 s default arbitrarily), or anything else no conforming
-// server sends — is clamped to 60 s with a stderr notice. The comparison
+// server sends — is clamped to 300 s with a stderr notice. The comparison
 // runs on raw seconds, so no time.Duration multiplication can wrap first,
 // and the slow_down plateau anchors on the clamped value.
 func TestStartDeviceClampsUnreasonableInterval(t *testing.T) {
@@ -623,7 +623,7 @@ func TestStartDeviceClampsUnreasonableInterval(t *testing.T) {
 		{name: "unit confusion: 60000 meant as 60s", interval: "60000"},
 		{name: "hostile, just under the duration wrap", interval: "9000000000"},
 		{name: "past the duration wrap point", interval: "9300000000"},
-		{name: "just above the ceiling", interval: "61"},
+		{name: "just above the ceiling", interval: "301"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -654,8 +654,9 @@ func TestStartDeviceClampsUnreasonableInterval(t *testing.T) {
 
 // TestStartDeviceIntervalBoundaries pins the values the clamp must not
 // touch: an interval inside the RFC-practical range is honored verbatim
-// without a warning, the ceiling itself is honored, and zero/negative keeps
-// the 5 s default silently (issue #394).
+// without a warning — including the >60 s spacings RFC 8628 permits and the
+// ceiling itself — and zero/negative keeps the 5 s default silently
+// (issue #394; the 120 s case is CodeRabbit review of #395).
 func TestStartDeviceIntervalBoundaries(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -663,7 +664,8 @@ func TestStartDeviceIntervalBoundaries(t *testing.T) {
 		want     time.Duration
 	}{
 		{name: "rfc-practical 5s", interval: "5", want: 5 * time.Second},
-		{name: "at the ceiling", interval: "60", want: 60 * time.Second},
+		{name: "above 60s is still honored", interval: "120", want: 120 * time.Second},
+		{name: "at the ceiling", interval: "300", want: 300 * time.Second},
 		{name: "zero defaults", interval: "0", want: 5 * time.Second},
 		{name: "negative defaults", interval: "-7", want: 5 * time.Second},
 	}
