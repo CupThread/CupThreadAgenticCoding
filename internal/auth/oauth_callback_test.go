@@ -204,10 +204,14 @@ func TestCallbackCompletionIsSingleShot(t *testing.T) {
 			t.Fatalf("attacker request: status %d body %q, want a 400 state mismatch", resp.StatusCode, body)
 		}
 
-		// The legitimate browser redirect arrives afterwards.
+		// The legitimate browser redirect arrives afterwards. Its status is
+		// part of the contract: a late arrival after completion gets the
+		// static 200 already-completed answer, never a fresh verdict (issue
+		// #397 — the body alone was asserted before, so a regression to a
+		// non-200 status here would have passed).
 		resp, body = getCallback(t, server, url.Values{"code": {"ac_real"}, "state": {state}})
-		if !strings.Contains(body, "already completed") {
-			t.Errorf("legitimate late request: body = %q, want the static already-completed text", body)
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, "already completed") {
+			t.Errorf("legitimate late request: status %d body %q, want a 200 already-completed answer", resp.StatusCode, body)
 		}
 
 		select {

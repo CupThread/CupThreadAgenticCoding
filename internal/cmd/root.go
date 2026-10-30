@@ -54,9 +54,8 @@ type app struct {
 	// changed instead of a stale whole-file copy (issue #139).
 	cfgBaseline *config.Config
 
-	client     *api.Client
-	clientOnce sync.Once
-	refreshMu  sync.Mutex
+	client    *api.Client
+	refreshMu sync.Mutex
 
 	// degradedRefreshAccessToken records the access token a transparent
 	// refresh minted when the response carried no expires_in (issue #314):

@@ -575,7 +575,10 @@ Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
 					}
 					return err
 				}
-				applied = append(applied, "icon")
+				// applied feeds only reportPartialUpdate above, which runs
+				// when the icon step failed and so can never name it as
+				// landed; nothing on the success path consumes it (issue
+				// #397), so the icon step is not appended here.
 				if updated == nil {
 					updated = iconRec
 				}
