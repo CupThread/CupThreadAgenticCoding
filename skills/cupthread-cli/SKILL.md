@@ -531,10 +531,12 @@ up to the 10,000-entry offset cap, and an id belonging to another app than
 the resolved one errors naming the scope the scan covered (the `--app`
 escape hatch applies, as in `features`). `changelog create/update
 --link-request-ids` resolves each listed request the same way (full ids or
-unique prefixes), and after the save it discloses any request the server
-silently dropped — unknown, already-deleted, or belonging to another app —
-with a `⚠` naming the dropped references (stderr in `--json`/`-o yaml`
-mode), instead of the missing links vanishing into a `200 OK`.
+unique prefixes): an ambiguous or unresolvable reference fails **before the
+write**, naming the offending list entry. After a successful save, the
+command then discloses any request the server silently omitted from the
+links — unknown, already-deleted, or belonging to another app — with a `⚠`
+naming the dropped references (stderr in `--json`/`-o yaml` mode), instead
+of the missing links vanishing into a `200 OK`.
 
 Drafts (create/edit/delete without publishing) work for every workspace role
 and with `cpt_` API tokens. Publishing, `--publish-now`, and setting a
