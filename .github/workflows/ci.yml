@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# The workflow only builds and tests; it never pushes, comments, or releases.
+# Scoping the token to read-only keeps a malicious PR-controlled source file
+# (go test executes it) from reaching a write-capable GITHUB_TOKEN (CodeRabbit
+# review of #399, CWE-732).
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,6 +32,11 @@ jobs:
           fi
       - run: go build ./...
       - run: go vet ./...
+      # staticcheck (issue #397): vet misses the dead-state/unused-field/style
+      # class (SA4006, U1000, S1017, ST1005) that had accumulated on main; run
+      # it unpinned so every CI run sees the current release, and keep the
+      # tree at zero findings.
+      - run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
       - run: go test ./...
       # Runners use umask 0022, so a permission fixture that silently depends
       # on it would only fail on contributor machines (issue #281). Re-run the

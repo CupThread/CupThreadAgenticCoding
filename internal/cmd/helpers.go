@@ -122,10 +122,7 @@ func readInputFile(ctx context.Context, path string, max int64) ([]byte, error) 
 	if path == "@" || path == "-" {
 		return readBounded(interruptibleReader{ctx: ctx, r: os.Stdin}, max)
 	}
-	if strings.HasPrefix(path, "@") {
-		path = path[1:]
-	}
-	return readRegularFile(path, max)
+	return readRegularFile(strings.TrimPrefix(path, "@"), max)
 }
 
 // interruptibleReader makes a blocking reader — always os.Stdin in

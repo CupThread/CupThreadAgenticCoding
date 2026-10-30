@@ -66,7 +66,7 @@ open/in_progress/resolved/archived.`,
 				switch priority {
 				case "!!!", "!!", "!":
 				default:
-					return fmt.Errorf("invalid --priority %q: use !!!, !! or !", priority)
+					return fmt.Errorf("invalid --priority %q: use \"!!!\", \"!!\" or \"!\"", priority)
 				}
 			}
 			ws, err := workspaceClient(cmd.Context())
@@ -238,7 +238,7 @@ func newInboxPriorityCmd() *cobra.Command {
 			switch p {
 			case "!!!", "!!", "!":
 			default:
-				return fmt.Errorf("invalid priority %q: use !!!, !! or !", p)
+				return fmt.Errorf("invalid priority %q: use \"!!!\", \"!!\" or \"!\"", p)
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
