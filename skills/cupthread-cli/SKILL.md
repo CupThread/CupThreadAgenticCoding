@@ -390,10 +390,12 @@ read; `github config` needs `app.configure`, admin/owner).
 
 `integrations github repos` is **capped, not paginated**: the server pages
 GitHub up to the newest **1,000** repositories the connected account can see
-(sorted by last update) and answers a `truncated` flag when more exist. The
-CLI passes the flag through in `--json` and prints a `⚠` advisory in table
-mode (on stderr in `--json`/`-o yaml` mode); for anything past the cap —
-typically the oldest repositories — wire them by hand with
+(sorted by last update) and answers a `truncated` flag whenever that final
+page is still full — so exactly 1,000 visible repositories trip it too, and
+the flag means "the cap was reached; older repositories may exist", not a
+confirmed cut. The CLI passes the flag through in `--json` and prints a `⚠`
+advisory in table mode (on stderr in `--json`/`-o yaml` mode); for anything
+past the cap — typically the oldest repositories — wire them by hand with
 `integrations github config <app> --owner … --repo …` (or read categories
 with `integrations github categories --owner … --repo …`), which take the
 owner/repo pair directly.

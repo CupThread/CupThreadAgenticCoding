@@ -538,7 +538,7 @@ func TestIntegrationsGitHubReposDisclosesTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("integrations github repos: %v", err)
 	}
-	if !strings.Contains(out, "⚠ Listing truncated: showing the 1,000 most-recently-updated repositories the integration can see; for anything older, pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'") {
+	if !strings.Contains(out, "⚠ Listing may be truncated: this listing serves only the newest 1,000 repositories the integration can see; anything older is not shown — pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'") {
 		t.Errorf("truncated listing missing the cap advisory:\n%s", out)
 	}
 
@@ -572,7 +572,7 @@ func TestIntegrationsGitHubReposDisclosesTruncation(t *testing.T) {
 	if strings.Contains(stdout, "⚠") {
 		t.Errorf("structured stdout must stay free of human markers:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "⚠ Listing truncated") {
+	if !strings.Contains(stderr, "⚠ Listing may be truncated") {
 		t.Errorf("json stderr missing the truncation advisory:\n%s", stderr)
 	}
 

@@ -254,8 +254,11 @@ func newIntegrationsGitHubCmd() *cobra.Command {
 // githubReposTruncationNotice is the cap-keyed advisory. The 1,000 mirror's
 // the server's window (it pages GitHub at 100 per page up to
 // USER_REPOS_MAX_PAGES = 10, SaaS packages/integrations/src/github.ts) and
-// carries its thousands separator to match the SKILL.md wording.
-var githubReposTruncationNotice = "⚠ Listing truncated: showing the 1,000 most-recently-updated repositories the integration can see; for anything older, pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'"
+// carries its thousands separator to match the SKILL.md wording. Like the
+// sibling cap notices, it says "may be": the server sets truncated whenever
+// the final page is still full, so an account with exactly 1,000 visible
+// repositories trips it with nothing omitted (PR #415 review).
+var githubReposTruncationNotice = "⚠ Listing may be truncated: this listing serves only the newest 1,000 repositories the integration can see; anything older is not shown — pass --owner/--repo directly to 'integrations github config' or 'integrations github categories'"
 
 // warnGitHubReposTruncation discloses the repos route's server-side window
 // so a capped answer is never indistinguishable from the whole set (issue
