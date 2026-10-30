@@ -2938,3 +2938,55 @@ func TestAPISkillIssue251ImagesPreParseAuth(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillIssue249AttachmentDownloadUniform404 pins the issue #249 sync of
+// the attachment download endpoints (SaaS PR #1138, fixes SaaS #1110):
+// `GET /api/v1/feedback/attachments/{id}/download` (and its
+// `GET …/attachments/{id}` alias) no longer answer the documented `403`
+// ("Authentication or valid download token required"). `404` is now the
+// uniform denial for every unauthorized caller — a missing attachment, an
+// expired or invalid signed token, and a caller without workspace membership
+// all return the same `404` `attachment_not_found` body, hiding existence
+// from unauthorized callers — while the `200` binary stream and `429` rate
+// limit are unchanged and no request parameter, auth flow, or success shape
+// moved.
+func TestAPISkillIssue249AttachmentDownloadUniform404(t *testing.T) {
+	uploadsDoc := readSkillFile(t, "cupthread-api", "reference/uploads-and-attachments.md")
+	for _, marker := range []string{
+		// The 403 removal is stated with the upstream reference.
+		"The previously documented `403` (\"Authentication or valid download token required\") is **removed** (SaaS PR #1138)",
+		// 404 is the single denial outcome, uniform across denial causes.
+		"`404` is now the **uniform denial** for every unauthorized caller",
+		"an expired or invalid signed token, and a caller without workspace membership all answer `404` `{\"error\": \"Attachment not found\", \"code\": \"attachment_not_found\"}`",
+		// Existence is hidden from unauthorized callers.
+		"existence is hidden from unauthorized callers",
+		// Client guidance: no 403 pattern-match, no existence probing.
+		"Drop any `403` pattern-match for these two routes and never probe ids to infer existence",
+		// Unchanged outcomes stay documented.
+		"Success is the unchanged `200` binary stream; `429` when rate limited",
+		// The authorized-caller storage-miss keeps its distinct body.
+		"Missing storage object (authorized caller) → `404` `file_not_found`",
+	} {
+		if !strings.Contains(uploadsDoc, marker) {
+			t.Errorf("uploads-and-attachments.md is missing required issue-#249 uniform-404 marker %q", marker)
+		}
+	}
+	endpointsDoc := readSkillFile(t, "cupthread-api", "reference/endpoints.md")
+	for _, marker := range []string{
+		// The endpoint row carries the uniform-denial contract.
+		"every unauthorized caller — missing attachment, expired/invalid token, or no workspace membership — gets the same `404` `{\"error\": \"Attachment not found\", \"code\": \"attachment_not_found\"}` (uniform denial; the old `403` response is removed, SaaS PR #1138)",
+	} {
+		if !strings.Contains(endpointsDoc, marker) {
+			t.Errorf("endpoints.md is missing required issue-#249 uniform-404 marker %q", marker)
+		}
+	}
+	// The stale denial phrasings must be gone from both files.
+	for _, stale := range []string{
+		"Without either: `403`",
+		"anonymous callers without a valid token get `403`",
+	} {
+		if strings.Contains(uploadsDoc, stale) || strings.Contains(endpointsDoc, stale) {
+			t.Errorf("cupthread-api docs still carry the removed issue-#249 403 denial phrasing %q", stale)
+		}
+	}
+}
