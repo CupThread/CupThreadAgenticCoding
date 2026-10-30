@@ -577,13 +577,17 @@ func TestIntegrationsGitHubReposDisclosesTruncation(t *testing.T) {
 	}
 
 	// The untruncated --json answer carries truncated: false (the field
-	// survives structured decoding both ways).
-	stdout, _, err = runRootCapture(t, cfgPath, wholeServer.URL,
+	// survives structured decoding both ways) and produces no advisory
+	// anywhere.
+	stdout, stderr, err = runRootCapture(t, cfgPath, wholeServer.URL,
 		"integrations", "github", "repos", "--workspace", "ws_1", "--json")
 	if err != nil {
 		t.Fatalf("integrations github repos --json (whole): %v", err)
 	}
 	if !strings.Contains(stdout, `"truncated": false`) {
 		t.Errorf("structured stdout must carry truncated=false verbatim:\n%s", stdout)
+	}
+	if strings.Contains(stderr, "⚠") {
+		t.Errorf("untruncated json answer produced an advisory:\n%s", stderr)
 	}
 }
