@@ -535,6 +535,15 @@ type AuthorizeURLResponse struct {
 
 type GitHubReposResponse struct {
 	Repos []GitHubRepo `json:"repos"`
+	// Truncated is the server's disclosure that the connected account sees
+	// more repositories than the route serves: the server pages GitHub at
+	// 100 per page up to USER_REPOS_MAX_PAGES = 10 (1,000 repos) and sets
+	// truncated when the final page is still full (SaaS #694), precisely so
+	// the console can signpost the manual --owner/--repo fallback instead
+	// of silently hiding the rest (issue #412). Dropped by the decoder
+	// until the field existed — both output modes then rendered a capped
+	// page indistinguishable from the full list.
+	Truncated bool `json:"truncated"`
 }
 
 type GitHubRepo struct {
