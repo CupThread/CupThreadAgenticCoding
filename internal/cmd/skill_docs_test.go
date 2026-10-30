@@ -2990,3 +2990,80 @@ func TestAPISkillIssue249AttachmentDownloadUniform404(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillIssue244ProposeRoadmapGate401 pins the SaaS roadmap-gate sync on
+// the public propose create: POST /api/v1/feature-requests answers its
+// anonymous-caller 401 from the app's allowAnonymousRoadmap setting — the same
+// PRIV-12 roadmap gate the board reads and the vote writes use — and no longer
+// from the app's separate anonymous-feedback setting. The docs must carry the
+// uniform 401 body, the last-in-order gate position after the tier 402 check
+// (opposite the vote writes), and the independence of the proposal outcome
+// from allowAnonymousFeedback, so a stale "anonymous feedback disabled answers
+// 401" claim fails this test.
+func TestAPISkillIssue244ProposeRoadmapGate401(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+
+	row := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Submit (propose) a new feature request.")
+	for _, marker := range []string{
+		"finally the roadmap gate (PRIV-12)",
+		`a board with anonymous roadmap view disabled answers the uniform ` + "`401 {\"error\": \"Sign in is required to view this roadmap\", \"code\": \"authentication_required\"}`" + ` to anonymous callers`,
+		"keyed by the app's **`allowAnonymousRoadmap`** setting",
+		"**not** by the app's separate anonymous-feedback setting",
+		"anonymous proposals succeed on `allowAnonymousRoadmap=true` boards even when anonymous feedback is off",
+		"The gate runs last",
+	} {
+		if !strings.Contains(row, marker) {
+			t.Errorf("propose row is missing required issue-#244 marker %q; got: %s", marker, row)
+		}
+	}
+	// Stale-contract guard: the row must never again key the 401 gate on the
+	// anonymous-feedback setting (the pre-sync contract issue #244 records).
+	if strings.Contains(row, "anonymous feedback disabled answers `401`") {
+		t.Error("propose row still keys the 401 gate on anonymous feedback; the SaaS sync re-keyed it to allowAnonymousRoadmap")
+	}
+	// Gate order: the 401 roadmap gate sits after the tier 402 check — the
+	// loosest position in the PRIV-12 family, opposite the vote writes.
+	tierIdx := strings.Index(row, "workspace tier check (`402`")
+	gateIdx := strings.Index(row, "finally the roadmap gate")
+	if tierIdx < 0 || gateIdx < 0 || tierIdx > gateIdx {
+		t.Errorf("propose row gate order drifted: want tier 402 < roadmap 401; got: %s", row)
+	}
+
+	// The SKILL.md index row must carry the same contract compactly.
+	indexRow := skillLineByPrefix(t, doc, "| `/api/v1/feature-requests` | `POST` | Propose a request;")
+	for _, marker := range []string{
+		"answer the uniform `401 authentication_required` to anonymous proposals",
+		"keyed by the roadmap setting, not anonymous feedback (PRIV-12)",
+	} {
+		if !strings.Contains(indexRow, marker) {
+			t.Errorf("SKILL.md propose index row is missing required issue-#244 marker %q; got: %s", marker, indexRow)
+		}
+	}
+
+	// The PRIV-12 cross-cutting note must name the propose create's family
+	// membership and its last-in-order gate position.
+	section := skillSection(t, doc, "### Per-app anonymous-access enforcement (PRIV-12)")
+	for _, marker := range []string{
+		"the propose create joins the same roadmap family",
+		"after the Turnstile `403`, app-lookup `404` and tier `402` checks",
+	} {
+		if !strings.Contains(section, marker) {
+			t.Errorf("PRIV-12 section is missing required issue-#244 marker %q", marker)
+		}
+	}
+
+	// The PRIV-12 gate table in the reference topic must carry the propose row
+	// with the ordering note and the allowAnonymousFeedback independence.
+	limits := readSkillFile(t, "cupthread-api", "reference/rate-limits-and-cache.md")
+	proposeGateRow := skillLineByPrefix(t, limits, "| `POST /api/v1/feature-requests` (propose) | anonymous proposal, `allowAnonymousRoadmap` off |")
+	for _, marker := range []string{
+		"`401` `authentication_required`",
+		"runs **last**",
+		"keyed by `allowAnonymousRoadmap` alone",
+		"fires even when `allowAnonymousFeedback` is on",
+	} {
+		if !strings.Contains(proposeGateRow, marker) {
+			t.Errorf("PRIV-12 gate table propose row is missing required issue-#244 marker %q; got: %s", marker, proposeGateRow)
+		}
+	}
+}
