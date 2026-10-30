@@ -337,8 +337,28 @@ type deviceAuthorizeResponse struct {
 	VerificationURI         string `json:"verification_uri"`
 	VerificationURIComplete string `json:"verification_uri_complete"`
 	ExpiresIn               int64  `json:"expires_in"`
-	Interval                int    `json:"interval"`
+	// Interval decodes into an int64, not int: on 32-bit builds an int is
+	// 32 bits wide, so a hostile or unit-confused endpoint sending an
+	// out-of-range value would fail json.Unmarshal outright where 64-bit
+	// builds decode it — and the clamp below, not the decode, must decide
+	// the behavior (issue #394).
+	Interval int64 `json:"interval"`
 }
+
+// maxAdvertisedDeviceIntervalSecs caps the poll spacing honored from a
+// device-authorization response's interval field (issue #394). The interval
+// is a minimum spacing the client must respect (RFC 8628 §3.5), so the
+// ceiling sits far above every real deployment — known providers advertise
+// 5–60 s, and even the slowest conforming IdP stays under five minutes —
+// while still bounding the pathological values no server sends: an
+// ms-vs-s unit bug (interval: 60000 meant as 60 s → read as ~16.7 h) or a
+// hostile target (interval: 9e9 → the login would effectively never poll
+// again, while values past the int64-nanosecond wrap point flip to the 5 s
+// default arbitrarily). A clamped value prints its stderr notice, mirroring
+// the omitted-expires_in warning, so the deviation from the advertisement
+// is diagnosable rather than silent; below the ceiling the advertised
+// minimum is honored verbatim (CodeRabbit review of #395).
+const maxAdvertisedDeviceIntervalSecs = 300
 
 // DeviceStart is the pending device-flow session shown to the user.
 type DeviceStart struct {
@@ -347,8 +367,9 @@ type DeviceStart struct {
 	clientID        string
 	UserCode        string
 	VerificationURI string
-	// Interval is the live poll spacing: the advertised interval as grown
-	// by slow_down escalations, capped at
+	// Interval is the live poll spacing: the advertised interval (clamped
+	// to maxAdvertisedDeviceIntervalSecs, issue #394) as grown by
+	// slow_down escalations, capped at
 	// baseInterval + slowDownPlateauOverBase.
 	Interval  time.Duration
 	ExpiresAt time.Time
@@ -371,10 +392,21 @@ func StartDevice(ctx context.Context, deviceAuthorizeURL, tokenURL, clientID str
 	if parsed.DeviceCode == "" || parsed.UserCode == "" {
 		return nil, errors.New("device authorization endpoint did not return device_code/user_code")
 	}
-	interval := time.Duration(parsed.Interval) * time.Second
-	if interval <= 0 {
-		interval = 5 * time.Second
+	// The advertised interval is compared and clamped in raw seconds,
+	// before any time.Duration multiplication: `Interval` seconds cannot
+	// wrap or overflow the conversion, so the behavior boundary is the
+	// explicit ceiling — not an overflow artifact (issue #394). A
+	// non-positive value keeps the 5 s default.
+	intervalSecs := parsed.Interval
+	switch {
+	case intervalSecs <= 0:
+		intervalSecs = 5
+	case intervalSecs > maxAdvertisedDeviceIntervalSecs:
+		fmt.Fprintf(os.Stderr, "warning: device authorization response advertised an unreasonable interval (%ds); polling every %ds instead\n",
+			intervalSecs, maxAdvertisedDeviceIntervalSecs)
+		intervalSecs = maxAdvertisedDeviceIntervalSecs
 	}
+	interval := time.Duration(intervalSecs) * time.Second
 	start := &DeviceStart{
 		deviceCode:      parsed.DeviceCode,
 		tokenURL:        tokenURL,

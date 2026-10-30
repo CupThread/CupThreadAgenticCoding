@@ -607,6 +607,89 @@ func TestStartDeviceHugeExpiresInStaysFuture(t *testing.T) {
 	}
 }
 
+// TestStartDeviceClampsUnreasonableInterval pins the issue #394 contract: a
+// device_authorize response advertising an interval above the ceiling — an
+// ms-vs-s unit bug (60000 meant as 60 s reads as ~16.7 h), a hostile target
+// (9000000000 ≈ 285 years; values past the int64-nanosecond wrap point used
+// to flip to the 5 s default arbitrarily), or anything else no conforming
+// server sends — is clamped to 300 s with a stderr notice. The comparison
+// runs on raw seconds, so no time.Duration multiplication can wrap first,
+// and the slow_down plateau anchors on the clamped value.
+func TestStartDeviceClampsUnreasonableInterval(t *testing.T) {
+	cases := []struct {
+		name     string
+		interval string
+	}{
+		{name: "unit confusion: 60000 meant as 60s", interval: "60000"},
+		{name: "hostile, just under the duration wrap", interval: "9000000000"},
+		{name: "past the duration wrap point", interval: "9300000000"},
+		{name: "just above the ceiling", interval: "301"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","interval":` + tc.interval + `}`)
+			defer server.Close()
+
+			stop := captureStderr(t)
+			start, err := StartDevice(context.Background(), server.URL, server.URL, FirstPartyClientID)
+			stderr := stop()
+			if err != nil {
+				t.Fatalf("StartDevice: %v", err)
+			}
+			want := time.Duration(maxAdvertisedDeviceIntervalSecs) * time.Second
+			if start.Interval != want {
+				t.Errorf("Interval = %v, want the %v clamp", start.Interval, want)
+			}
+			// baseInterval anchors the slow_down plateau; it must become the
+			// clamped value so Wait cannot escalate away from the ceiling.
+			if start.baseInterval != want {
+				t.Errorf("baseInterval = %v, want the %v clamp (the slow_down plateau anchors on it)", start.baseInterval, want)
+			}
+			if !strings.Contains(stderr, "warning") || !strings.Contains(stderr, "interval") {
+				t.Errorf("stderr = %q, want a warning naming the unreasonable interval", stderr)
+			}
+		})
+	}
+}
+
+// TestStartDeviceIntervalBoundaries pins the values the clamp must not
+// touch: an interval inside the RFC-practical range is honored verbatim
+// without a warning — including the >60 s spacings RFC 8628 permits and the
+// ceiling itself — and zero/negative keeps the 5 s default silently
+// (issue #394; the 120 s case is CodeRabbit review of #395).
+func TestStartDeviceIntervalBoundaries(t *testing.T) {
+	cases := []struct {
+		name     string
+		interval string
+		want     time.Duration
+	}{
+		{name: "rfc-practical 5s", interval: "5", want: 5 * time.Second},
+		{name: "above 60s is still honored", interval: "120", want: 120 * time.Second},
+		{name: "at the ceiling", interval: "300", want: 300 * time.Second},
+		{name: "zero defaults", interval: "0", want: 5 * time.Second},
+		{name: "negative defaults", interval: "-7", want: 5 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := deviceAuthorizeServer(`{"device_code":"dc","user_code":"ABCD-EFGH","verification_uri":"https://example.com/verify","expires_in":900,"interval":` + tc.interval + `}`)
+			defer server.Close()
+
+			stop := captureStderr(t)
+			start, err := StartDevice(context.Background(), server.URL, server.URL, FirstPartyClientID)
+			stderr := stop()
+			if err != nil {
+				t.Fatalf("StartDevice: %v", err)
+			}
+			if start.Interval != tc.want {
+				t.Errorf("Interval = %v, want %v", start.Interval, tc.want)
+			}
+			if strings.Contains(stderr, "warning") {
+				t.Errorf("stderr = %q, want no warning for interval %s", stderr, tc.interval)
+			}
+		})
+	}
+}
+
 // TestDeviceWaitCompletesWithoutExpiresIn pins the issue #185 behavior end
 // to end: a server that omits expires_in must not abort the flow before the
 // first poll — Wait keeps polling and completes the login.
