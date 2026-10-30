@@ -76,7 +76,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/public/apps/:appKey/user` | `PUT` | Sync end-user attributes; payment attributes (`isPaying`, `mrr`, `plan`, `currency`) require HMAC `signature` + `timestamp` (DATA-03). |
 | `/api/v1/uploads/sessions` | `POST` | Create an upload session (1–8 reserved slots); anonymous callers must send `X-User-Token` (SEC-28). |
 | `/api/v1/uploads/:uploadId` | `PUT`/`POST` | Fill one reserved slot with raw bytes or multipart; `Authorization: Bearer <sessionToken>`. |
-| `/api/v1/uploads/images` | `POST` | Session-metered feedback image upload; PNG/JPEG/WebP/GIF only, stored as a private attachment (PRIV-02). |
+| `/api/v1/uploads/images` | `POST` | Session-metered feedback image upload; PNG/JPEG/WebP/GIF only, stored as a private attachment (PRIV-02). Optional `X-App-Key` + `X-Upload-Session-Token` headers authorize before the body is read (SaaS #1174). |
 | `/api/v1/feedback` | `POST` | Submit feedback referencing finalized `uploadId`s (≤ 8); `422 scan_rejected` fails the whole submission (SEC-25). |
 | `/api/v1/feedback/attachments/:id/download` (alias `GET …/attachments/:id`) | `GET` | Private attachment download via signed `?token=` or workspace-member auth. |
 | `/api/v1/files/:key` | `GET` | Public serving of console image assets only; optional fixed `width` thumbnail set. Private feedback attachments answer `403 private_attachment_forbidden`. |
@@ -141,7 +141,7 @@ Always: **create session → fill each reserved slot → submit feedback referen
 
 - Submission quota (`402 Payment Required`): parse `code` — `tier_limit_submissions` (upgrade or wait) and `subscription_inactive` (renew). Deterministic business rules, never transient errors; do not auto-retry.
 - Free-form `metadata` is sanitized server-side before persistence, never rejected (PRIV-01): key allowlist (24 keys), credential redaction (`"[redacted]"`), 512-char string truncation, depth cap 4, 8 KB budget. Pre-sanitize client-side for immediate feedback.
-- Feedback images: `POST /api/v1/uploads/images` accepts PNG/JPEG/WebP/GIF only (SVG and declared-vs-content mismatches → `415`), stores a **private attachment**, and answers a stable provider-agnostic `500 image_upload_failed` on storage failure (SaaS PR #793). Console app-icon uploads accept screened SVG instead.
+- Feedback images: `POST /api/v1/uploads/images` accepts PNG/JPEG/WebP/GIF only (SVG and declared-vs-content mismatches → `415`), stores a **private attachment**, and answers a stable provider-agnostic `500 image_upload_failed` on storage failure (SaaS PR #793). Optionally present `X-App-Key` + `X-Upload-Session-Token` (or `Authorization: Bearer`) headers to get app/session authorization **before** the body uploads, and drop the credential form fields (SaaS #1174). Console app-icon uploads accept screened SVG instead.
 - The 402 tier enum is `free` | `pro` only (BILL-553) — never model `business`. All import sources require Pro.
 
 ### Request correlation IDs (OPS-01)
