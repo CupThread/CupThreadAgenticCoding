@@ -3072,3 +3072,94 @@ func TestAPISkillIssue244ProposeRoadmapGate401(t *testing.T) {
 		}
 	}
 }
+
+// TestAPISkillIssue246OAuthBasicClientAuth pins the SaaS #992/#1031 sync on
+// the OAuth client-authentication surface: every token-facing endpoint
+// (/oauth/token, /oauth/revoke, /oauth/device/authorize, /oauth/device/token)
+// accepts client_secret_basic per RFC 6749 §2.3.1 — form-urlencoded before
+// Base64 — with the single-authentication-method merge rules (both methods →
+// 400 invalid_request, disagreeing client_ids → 400 invalid_request, a
+// repeating body id allowed), a malformed Basic header answering 401
+// invalid_client, and the discovery document advertising the method set, so a
+// docs regression that drops the Basic option or the merge rules fails this
+// test.
+func TestAPISkillIssue246OAuthBasicClientAuth(t *testing.T) {
+	oauthDoc := readSkillFile(t, "cupthread-api", "reference/oauth.md")
+
+	// The dedicated client-authentication section carries the shared contract.
+	section := skillSection(t, oauthDoc, "### Client authentication (client_secret_basic)")
+	for _, marker := range []string{
+		"`POST /api/v1/oauth/token`",
+		"`POST /api/v1/oauth/revoke`",
+		"`POST /api/v1/oauth/device/authorize`",
+		"`POST /api/v1/oauth/device/token`",
+		"`client_secret_basic`, an `Authorization: Basic base64(client_id:client_secret)` header",
+		"both credential parts are **form-urlencoded before the Base64 step**",
+		"rejected with `400 invalid_request`",
+		"a body `client_id` that merely **repeats** the header's id is identification, not a second method, and stays allowed",
+		"`401 invalid_client` with `error_description` `Malformed Basic authorization header`",
+		"its credentials **win**",
+		"`token_endpoint_auth_methods_supported: [\"none\", \"client_secret_post\", \"client_secret_basic\"]`",
+	} {
+		if !strings.Contains(section, marker) {
+			t.Errorf("client-authentication section is missing required issue-#246 marker %q", marker)
+		}
+	}
+	// Stale-contract guard: the section must not present body credentials as
+	// the only confidential-client method (the pre-sync contract).
+	if strings.Contains(section, "must send `client_secret` — a missing or wrong one is `401`") {
+		t.Error("oauth.md still presents client_secret_post as the only confidential method; SaaS #1031 added client_secret_basic")
+	}
+
+	// The discovery sentence must spell out the advertised method set.
+	if !strings.Contains(oauthDoc, "`token_endpoint_auth_methods_supported: [\"none\", \"client_secret_post\", \"client_secret_basic\"]`") {
+		t.Error("oauth.md discovery sentence does not list the client_secret_basic method set")
+	}
+
+	// The token row must offer both methods instead of body-only.
+	tokenRow := skillLineByPrefix(t, oauthDoc, "| `POST /api/v1/oauth/token` |")
+	for _, marker := range []string{
+		"must authenticate via `client_secret_post` or `client_secret_basic`",
+		"a missing or wrong secret is `401 invalid_client`",
+	} {
+		if !strings.Contains(tokenRow, marker) {
+			t.Errorf("token row is missing required issue-#246 marker %q; got: %s", marker, tokenRow)
+		}
+	}
+	if strings.Contains(tokenRow, "must send `client_secret` — a missing or wrong one is `401`") {
+		t.Error("token row still documents body-only confidential credentials")
+	}
+
+	// The revoke row must allow the Basic header to carry the id and secret.
+	revokeRow := skillLineByPrefix(t, oauthDoc, "| `POST /api/v1/oauth/revoke` |")
+	for _, marker := range []string{
+		"a request authenticating via `client_secret_basic` has the header's id merged into the parameters",
+		"body or Basic header, never both",
+	} {
+		if !strings.Contains(revokeRow, marker) {
+			t.Errorf("revoke row is missing required issue-#246 marker %q; got: %s", marker, revokeRow)
+		}
+	}
+
+	// Both device endpoints must advertise the Basic option.
+	deviceAuthorizeRow := skillLineByPrefix(t, oauthDoc, "| `POST /api/v1/oauth/device/authorize` |")
+	if !strings.Contains(deviceAuthorizeRow, "Accepts RFC 6749 §2.3.1 client authentication") {
+		t.Errorf("device/authorize row is missing the client-authentication marker; got: %s", deviceAuthorizeRow)
+	}
+	deviceTokenRow := skillLineByPrefix(t, oauthDoc, "| `POST /api/v1/oauth/device/token` |")
+	if !strings.Contains(deviceTokenRow, "Accepts RFC 6749 §2.3.1 client authentication") {
+		t.Errorf("device/token row is missing the client-authentication marker; got: %s", deviceTokenRow)
+	}
+
+	// The SKILL.md access bullet must carry the compact cross-cutting note.
+	skill := readSkillFile(t, "cupthread-api", "SKILL.md")
+	cliBullet := skillLineByPrefix(t, skill, "- **CLI / OAuth Access**:")
+	for _, marker := range []string{
+		"`token_endpoint_auth_methods_supported` includes `client_secret_basic`",
+		"via `Authorization: Basic` (RFC 6749 §2.3.1) or body credentials — never both",
+	} {
+		if !strings.Contains(cliBullet, marker) {
+			t.Errorf("SKILL.md CLI/OAuth bullet is missing required issue-#246 marker %q; got: %s", marker, cliBullet)
+		}
+	}
+}
