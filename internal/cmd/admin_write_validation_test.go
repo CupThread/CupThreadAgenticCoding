@@ -202,13 +202,13 @@ func TestChangelogUpdateValidatesBoundsLocally(t *testing.T) {
 func TestChangelogUpdateInRangeStillPuts(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 	var probe writeProbe
-	server := serveWriteProbe(t, &probe, nil)
+	server := serveWriteProbe(t, &probe, []byte(changelogListingJSON("cl_1")))
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"changelog", "update", "cl_1", "--title", "Renamed entry", "--version-label", ""); err != nil {
 		t.Fatalf("changelog update: %v", err)
 	}
-	if probe.requests != 1 || probe.method != http.MethodPut {
-		t.Fatalf("wire = %d request(s), %s, want one PUT", probe.requests, probe.method)
+	if probe.requests != 2 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), %s, want the resolution GET plus one PUT", probe.requests, probe.method)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(probe.body, &got); err != nil {
@@ -439,13 +439,13 @@ func TestImportsRerunValidatesModeLocally(t *testing.T) {
 func TestImportsRerunInRangeStillPosts(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 	var probe writeProbe
-	server := serveWriteProbe(t, &probe, nil)
+	server := serveWriteProbe(t, &probe, []byte(`{"job":{"id":"imp_1","source":"linear","mode":"preview","status":"queued","attempts":0,"createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}}`))
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"imports", "rerun", "imp_1", "--mode", "commit"); err != nil {
 		t.Fatalf("imports rerun: %v", err)
 	}
-	if probe.requests != 1 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/imports/imp_1/rerun") {
-		t.Fatalf("wire = %d request(s), %s %s, want one POST to /imports/imp_1/rerun", probe.requests, probe.method, probe.path)
+	if probe.requests != 2 || probe.method != http.MethodPost || !strings.HasSuffix(probe.path, "/imports/imp_1/rerun") {
+		t.Fatalf("wire = %d request(s), %s %s, want the resolution GET plus one POST to /imports/imp_1/rerun", probe.requests, probe.method, probe.path)
 	}
 	if string(probe.body) != `{"mode":"commit"}` {
 		t.Errorf("body = %s, want the mode-only body unchanged", probe.body)
@@ -705,13 +705,13 @@ func TestChangelogUpdateValidatesScheduleAtLocally(t *testing.T) {
 func TestChangelogUpdateScheduleAtInRangeStillPuts(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 	var probe writeProbe
-	server := serveWriteProbe(t, &probe, nil)
+	server := serveWriteProbe(t, &probe, []byte(changelogListingJSON("cl_1")))
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"changelog", "update", "cl_1", "--schedule-at", "2026-11-05T09:00:00.123Z"); err != nil {
 		t.Fatalf("changelog update: %v", err)
 	}
-	if probe.requests != 1 || probe.method != http.MethodPut {
-		t.Fatalf("wire = %d request(s), %s, want one PUT", probe.requests, probe.method)
+	if probe.requests != 2 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), %s, want the resolution GET plus one PUT", probe.requests, probe.method)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(probe.body, &got); err != nil {
@@ -725,13 +725,13 @@ func TestChangelogUpdateScheduleAtInRangeStillPuts(t *testing.T) {
 func TestChangelogUpdateScheduleAtEmptyStillClears(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 	var probe writeProbe
-	server := serveWriteProbe(t, &probe, nil)
+	server := serveWriteProbe(t, &probe, []byte(changelogListingJSON("cl_1")))
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig,
 		"changelog", "update", "cl_1", "--schedule-at", ""); err != nil {
 		t.Fatalf("changelog update: %v", err)
 	}
-	if probe.requests != 1 || probe.method != http.MethodPut {
-		t.Fatalf("wire = %d request(s), %s, want one PUT", probe.requests, probe.method)
+	if probe.requests != 2 || probe.method != http.MethodPut {
+		t.Fatalf("wire = %d request(s), %s, want the resolution GET plus one PUT", probe.requests, probe.method)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(probe.body, &got); err != nil {

@@ -376,6 +376,16 @@ exceeds the returned jobs. In `--json`/`-o yaml` mode the advisory goes to
 stderr. Treat an advisory as "older jobs may exist", not as a complete
 history.
 
+The imports tables print job ids truncated to **12 characters** (as does
+`changelog list`, and the features and comments tables — same convention
+everywhere). The job-taking commands accept that form: `imports
+get/cancel/rerun` resolve a unique id **prefix** through the workspace
+history window (newest 100) and then act on the **full** id — a full id
+takes the one-request exact path instead. A prefix matching several jobs
+fails with `ambiguous import job prefix …; use a longer prefix`, and a job
+older than the history window is reported as unreachable by prefix — pass
+its full id from `imports history --json` instead.
+
 ### Integrations (GitHub / Linear / Notion / Slack)
 ```sh
 cupthread integrations status              # Connection status of every integration (account, connected)
@@ -417,7 +427,9 @@ reads neither header. Under any future credential, `--parent-id` must
 reference a visible comment on the same feature request (not hidden or
 deleted); the API rejects anything else with `400 invalid_parent` — "The
 comment you are replying to was not found on this feature request" — and
-stores nothing; take `--parent-id` from `comments list` on the same request.
+stores nothing; take `--parent-id` — the **full** comment id, not the table's
+truncated 12-character form (use `comments list --json` in table workflows) —
+from a visible comment on the same request.
 `--reply-to-author-name` stays ignored: the server always resolves the
 replied-to author from the parent comment itself.
 
@@ -444,6 +456,15 @@ cupthread comments moderation delete <commentId>       # Permanently delete a co
 ```
 The moderation group is `[token-safe]` (content.manage) and works from any
 workspace role whose capabilities include it.
+
+The moderation table prints comment ids truncated to **12 characters**.
+`hide`/`unhide`/`delete` take the **full** comment id — copy it from
+`comments moderation list --json` — or resolve a unique id **prefix** within
+one request's thread by passing `--thread <feature-request-ref>` (the thread
+reference itself accepts the features table's truncated form, and the
+success line names the resolved full id). The workspace has no comment
+listing, so a bare truncated prefix without `--thread` cannot resolve: the
+404 names both remedies instead of reading as a missing comment.
 
 ### User Profiles
 ```sh
@@ -484,6 +505,17 @@ walking it forever.
 The public feed (`apps public-changelog`) instead uses opaque keyset cursors,
 and it clamps `--limit` into 1–100 locally with the same `⚠` notice before
 the request (the server would silently degrade 0 to the default 100).
+
+Like the features family, the `changelog list` table prints entry ids
+truncated to **12 characters**, and the write commands accept that form:
+`changelog update/delete/publish/unpublish` resolve a unique id **prefix**
+through the same app-scoped listing (the resolved app, or the whole
+workspace when none is resolved) before mutating, and their success lines
+name the resolved **full** id. A prefix matching several entries fails with
+`ambiguous changelog entry prefix …; use a longer prefix`; resolution pages
+up to the 10,000-entry offset cap, and an id belonging to another app than
+the resolved one errors naming the scope the scan covered (the `--app`
+escape hatch applies, as in `features`).
 
 Drafts (create/edit/delete without publishing) work for every workspace role
 and with `cpt_` API tokens. Publishing, `--publish-now`, and setting a

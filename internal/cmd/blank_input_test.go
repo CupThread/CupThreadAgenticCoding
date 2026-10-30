@@ -208,6 +208,9 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 	var bodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
+		if serveChangelogListing(w, r, "entry_1") {
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
 			bodies = append(bodies, body)
@@ -260,8 +263,8 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 		if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "update", "entry_1", "--body", "text body"); err != nil {
 			t.Fatalf("update --body: %v", err)
 		}
-		if hits != 1 || len(bodies) != 1 || bodies[0]["body"] != "text body" {
-			t.Errorf("wire body = %v (hits %d), want body=%q", bodies, hits, "text body")
+		if hits != 2 || len(bodies) != 1 || bodies[0]["body"] != "text body" {
+			t.Errorf("wire body = %v (hits %d), want the resolution GET plus one PUT with body=%q", bodies, hits, "text body")
 		}
 	})
 
@@ -270,8 +273,8 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 		if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "update", "entry_1", "--body-file", bodyFile); err != nil {
 			t.Fatalf("update --body-file path: %v", err)
 		}
-		if hits != 1 || len(bodies) != 1 || bodies[0]["body"] != "file body" {
-			t.Errorf("wire body = %v (hits %d), want the file contents", bodies, hits)
+		if hits != 2 || len(bodies) != 1 || bodies[0]["body"] != "file body" {
+			t.Errorf("wire body = %v (hits %d), want the resolution GET plus one PUT with the file contents", bodies, hits)
 		}
 	})
 
@@ -280,8 +283,8 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 		if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "update", "entry_1", "--body-file", "@"+bodyFile); err != nil {
 			t.Fatalf("update --body-file @path: %v", err)
 		}
-		if hits != 1 || len(bodies) != 1 || bodies[0]["body"] != "file body" {
-			t.Errorf("wire body = %v (hits %d), want the file contents", bodies, hits)
+		if hits != 2 || len(bodies) != 1 || bodies[0]["body"] != "file body" {
+			t.Errorf("wire body = %v (hits %d), want the resolution GET plus one PUT with the file contents", bodies, hits)
 		}
 	})
 
@@ -292,8 +295,8 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 		if err != nil {
 			t.Fatalf("update --body-file -: %v", err)
 		}
-		if hits != 1 || len(bodies) != 1 || bodies[0]["body"] != "stdin body" {
-			t.Errorf("wire body = %v (hits %d), want the stdin contents", bodies, hits)
+		if hits != 2 || len(bodies) != 1 || bodies[0]["body"] != "stdin body" {
+			t.Errorf("wire body = %v (hits %d), want the resolution GET plus one PUT with the stdin contents", bodies, hits)
 		}
 	})
 }

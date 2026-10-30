@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -363,24 +364,67 @@ raw ImportOptions JSON instead of the per-source flags.`,
 	return create
 }
 
+// fetchOneImportJob finds a job by exact ID or unique ID prefix (issue
+// #413): the imports tables print 12-character job IDs via shortID, and the
+// job-taking commands used to forward the truncated form verbatim, which the
+// server can only answer with a guaranteed 404.
+//
+// The exact ID keeps its one-call fast path — a single-item GET — and only
+// its 404 falls back to the workspace history window for a unique prefix,
+// via the shared resolveIDRef. The history route has no paging: its newest
+// importsWorkspacePageSize jobs are all resolution can see, and the
+// not-found error says so instead of implying more pages exist.
+func fetchOneImportJob(ctx context.Context, ref string) (*api.ImportJob, error) {
+	ws, err := workspaceClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var resp api.GetImportJobResponse
+	if err := A.client.Do(ctx, "GET", wsPath(ws, "/imports/"+pathID(ref)), nil, nil, &resp); err == nil {
+		return &resp.Job, nil
+	} else if !apiNotFound(err) {
+		return nil, err
+	}
+	return resolveIDRef(ref, idRefNouns{what: "import job", plural: "jobs", listHint: "cupthread imports history"}, 1,
+		func(page int) ([]api.ImportJob, bool, error) {
+			var history api.ListImportJobsResponse
+			if err := A.client.Do(ctx, "GET", wsPath(ws, "/imports"), nil, nil, &history); err != nil {
+				return nil, false, err
+			}
+			// The window is the whole listing: one page, no next.
+			return history.Jobs, true, nil
+		},
+		importJobNotFound(ws),
+		func(j *api.ImportJob) string { return j.ID },
+	)
+}
+
+// importJobNotFound reports absence against the history window the scan
+// actually covered, naming the cap so a job older than the newest 100 reads
+// as unreachable (the full id from 'imports history --json' still works —
+// the exact GET takes any full id regardless of age).
+func importJobNotFound(ws string) func(ref string, scanned int, exhausted bool) error {
+	return func(ref string, scanned int, exhausted bool) error {
+		return fmt.Errorf("import job %q not found (scanned %d jobs in the workspace history window of workspace %s; the server serves only the newest %d — older jobs are unreachable by prefix but still take the full id)", ref, scanned, ws, importsWorkspacePageSize)
+	}
+}
+
 func newImportsGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <job-id>",
 		Short: "Show one import job (including preview candidates)",
 		Args:  exactNonBlankArg("import job id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ws, err := workspaceClient(cmd.Context())
+			j, err := fetchOneImportJob(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
-			var resp api.GetImportJobResponse
-			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/imports/"+pathID(args[0])), nil, nil, &resp); err != nil {
-				return err
-			}
 			if A.structured() {
-				return A.out.Structured(resp)
+				// The {job: …} envelope stays the command's documented
+				// --json shape whether the id arrived whole or was resolved
+				// from a prefix.
+				return A.out.Structured(api.GetImportJobResponse{Job: *j})
 			}
-			j := resp.Job
 			errMsg := "—"
 			if j.LastError != nil {
 				errMsg = *j.LastError
@@ -414,17 +458,21 @@ sent; non-interactive callers must pass --yes.`,
 			if err := confirmDestructive(cmd, fmt.Sprintf("cancel import job %q", args[0])); err != nil {
 				return err
 			}
+			j, err := fetchOneImportJob(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(args[0])+"/cancel"), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(j.ID)+"/cancel"), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
-				return A.emitMutationResult("canceled", args[0])
+				return A.emitMutationResult("canceled", j.ID)
 			}
-			A.out.Printf("✓ Canceled import %s", args[0])
+			A.out.Printf("✓ Canceled import %s", j.ID)
 			return nil
 		},
 	}
@@ -442,9 +490,14 @@ func newImportsRerunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// ImportModeSchema is a preview/commit enum: a Changed but invalid
 			// --mode (including "") is a guaranteed 400, so fail locally
-			// before any request (issue #345).
+			// before any request (issue #345) — including the ID-resolution
+			// round trips.
 			if cmd.Flags().Changed("mode") && mode != "preview" && mode != "commit" {
 				return fmt.Errorf("invalid --mode %q: use preview or commit", mode)
+			}
+			j, err := fetchOneImportJob(cmd.Context(), args[0])
+			if err != nil {
+				return err
 			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -458,7 +511,7 @@ func newImportsRerunCmd() *cobra.Command {
 				body["includeDuplicates"] = includeDuplicates
 			}
 			var resp api.GetImportJobResponse
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(args[0])+"/rerun"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/imports/"+pathID(j.ID)+"/rerun"), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {

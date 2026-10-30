@@ -240,19 +240,19 @@ func TestCommentsModerationNotFoundSurvivesWrappedError(t *testing.T) {
 			name:    "moderation hide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(true) },
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 		{
 			name:    "moderation unhide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(false) },
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 		{
 			name:    "moderation delete",
 			cmd:     newCommentsModerationDeleteCmd,
 			args:    []string{"cmt_gone"},
-			wantErr: `comment "cmt_gone" not found in workspace ws_1`,
+			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
 		},
 	}
 	for _, tc := range cases {
@@ -1136,5 +1136,120 @@ func TestCommentsCreateDeadFlagsRejected(t *testing.T) {
 				t.Errorf("error = %v, want unknown-flag rejection of --%s", err, flag)
 			}
 		})
+	}
+}
+
+// threadResolutionServer wires the three hops the --thread resolution walks
+// (issue #413): the feature-request listing (resolving the --thread
+// reference, itself prefix-capable), the thread's comment pages, and the
+// moderation mutation, whose method and path land in *gotMethod/*gotPath.
+func threadResolutionServer(t *testing.T, commentsJSON string, gotMethod, gotPath *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests"):
+			_, _ = w.Write([]byte(`{"requests":[{"id":"fr_full_1","appId":"app_a","title":"Thread request","status":"open","voteCount":0,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}],"total":1}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			_, _ = w.Write([]byte(commentsJSON))
+		default:
+			if gotMethod != nil {
+				*gotMethod = r.Method
+			}
+			if gotPath != nil {
+				*gotPath = r.URL.Path
+			}
+			_, _ = w.Write([]byte(`{"success":true}`))
+		}
+	}))
+}
+
+// TestCommentsModerationThreadResolvesPrefix covers the issue #413 copy
+// workflow end to end: the moderation table shows cmt_visible's first 12
+// characters, `comments moderation list` ran under fr_full_1, and hide
+// accepts both truncated forms — the --thread flag resolving through the
+// features listing (itself prefix-capable) and the thread walk resolving the
+// comment — so the PATCH carries the full resolved comment id.
+func TestCommentsModerationThreadResolvesPrefix(t *testing.T) {
+	var gotMethod, gotPath string
+	server := threadResolutionServer(t, moderationCommentsFixture, &gotMethod, &gotPath)
+	defer server.Close()
+
+	out, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_visible_", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation hide with --thread prefix: %v", err)
+	}
+	if gotMethod != http.MethodPatch || gotPath != "/api/v1/console/workspaces/ws_1/comments/cmt_visible_1234/hide" {
+		t.Errorf("request = %s %s, want the PATCH on the full resolved comment id", gotMethod, gotPath)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_visible_1234 hidden") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+
+	// The --thread reference itself accepts the features table's truncated
+	// form: the same workflow with a 12-character request prefix resolves.
+	gotMethod, gotPath = "", ""
+	out, err = runModerationRoot(t, server.URL,
+		"comments", "moderation", "unhide", "cmt_hidden_5", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation unhide with --thread: %v", err)
+	}
+	if gotPath != "/api/v1/console/workspaces/ws_1/comments/cmt_hidden_5678/hide" {
+		t.Errorf("request = %s %s, want the unhide PATCH on the full resolved id", gotMethod, gotPath)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_hidden_5678 unhidden") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+}
+
+// TestCommentsModerationAmbiguousPrefixInThreadErrors pins the ambiguity
+// decision inside one thread: a prefix matching two comments errors locally
+// naming both matches' count, and no PATCH is ever sent.
+func TestCommentsModerationAmbiguousPrefixInThreadErrors(t *testing.T) {
+	ambiguous := `{"comments":[
+		{"id":"cmt_twinaaa9999","featureRequestId":"fr_full_1","authorName":"A","body":"first","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"},
+		{"id":"cmt_twinbbbb0000","featureRequestId":"fr_full_1","authorName":"B","body":"second","isHidden":false,"createdAt":"2026-09-18T04:05:06Z"}
+	]}`
+	var gotMethod, gotPath string
+	server := threadResolutionServer(t, ambiguous, &gotMethod, &gotPath)
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_twin", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous comment prefix "cmt_twin" matches 2 comments; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if gotMethod != "" {
+		t.Errorf("mutation %s %s fired on an ambiguous prefix, want none", gotMethod, gotPath)
+	}
+}
+
+// TestCommentsModerationTruncatedRefDirect404NamesRemedy pins the #413
+// self-diagnosis: without --thread a truncated table id still 404s (bare
+// prefixes are unresolvable workspace-wide), but the error names both
+// remedies — the full id from the --json listing, or --thread — instead of
+// reading as a missing comment.
+func TestCommentsModerationTruncatedRefDirect404NamesRemedy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Comment not found in this workspace"}`))
+	}))
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL, "comments", "moderation", "hide", "cmt_visible_1", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("truncated ref without --thread must fail")
+	}
+	for _, want := range []string{
+		`comment "cmt_visible_1" not found in workspace ws_1`,
+		"full comment id",
+		"comments moderation list --json",
+		"--thread",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("404 hint missing %q:\n%v", want, err)
+		}
 	}
 }

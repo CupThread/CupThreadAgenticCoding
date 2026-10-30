@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
@@ -160,71 +159,50 @@ const maxFeatureRequestPages = 50
 // The console API has no single-item endpoint, so resolution pages through
 // the workspace feature-request listing (newest first) until the reference
 // resolves or the listing is exhausted — any request in the workspace is
-// addressable, not just the newest page. An exact ID match returns
-// immediately; prefix matches accumulate across every page before the
-// ambiguity decision, so a prefix that looks unique on the first page still
-// errors once a later page adds a second match.
+// addressable, not just the newest page. Matching, ambiguity, and the
+// page-cap guard live in the shared resolveIDRef (issue #413).
 //
 // The lookup is scoped to the resolved app (--app flag, else the saved
 // default from 'apps use') so ID resolution cannot cross into another app's
 // requests; with no app resolved it stays workspace-wide. The not-found
 // error names the app the scan actually covered and points at --app as the
 // escape hatch, so an ID copied from the wrong scope is diagnosable.
-//
-// An empty (or whitespace-only) reference is rejected before any lookup:
-// strings.HasPrefix(id, "") is true for every id, so with a single request
-// in scope an empty ref — the canonical unset-shell-variable accident —
-// would silently resolve to it and the mutation commands would act on a
-// resource the caller never named (issue #289).
 func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureRequest, error) {
-	if strings.TrimSpace(ref) == "" {
-		return nil, errors.New("feature request reference is empty — pass a request id or non-empty id prefix (see 'cupthread features list')")
-	}
 	ws, err := workspaceClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 	appID := A.optionalAppID()
-	var matches []api.AdminFeatureRequest
-	scanned := 0
-	exhausted := false
-	for page := 0; page < maxFeatureRequestPages && !exhausted; page++ {
-		offset := page * featureRequestPageSize
-		resp, err := listFeatureRequests(ctx, ws, appID, featureRequestPageSize, offset, "", false)
-		if err != nil {
-			return nil, err
-		}
-		for i := range resp.Requests {
-			if resp.Requests[i].ID == ref {
-				return &resp.Requests[i], nil
+	return resolveIDRef(ref, idRefNouns{what: "feature request", plural: "requests", listHint: "cupthread features list"}, maxFeatureRequestPages,
+		func(page int) ([]api.AdminFeatureRequest, bool, error) {
+			offset := page * featureRequestPageSize
+			resp, err := listFeatureRequests(ctx, ws, appID, featureRequestPageSize, offset, "", false)
+			if err != nil {
+				return nil, false, err
 			}
-			if strings.HasPrefix(resp.Requests[i].ID, ref) {
-				matches = append(matches, resp.Requests[i])
+			return resp.Requests, len(resp.Requests) < featureRequestPageSize || offset+len(resp.Requests) >= resp.Total, nil
+		},
+		featureRequestNotFound(ws, appID),
+		func(r *api.AdminFeatureRequest) string { return r.ID },
+	)
+}
+
+// featureRequestNotFound keeps the #187 error contract for scans that find
+// nothing: under a resolved app it names the app the scan actually covered
+// and the --app escape hatch instead of mislabeling the scan workspace-wide.
+func featureRequestNotFound(ws, appID string) func(ref string, scanned int, exhausted bool) error {
+	return func(ref string, scanned int, exhausted bool) error {
+		if appID != "" {
+			if !exhausted {
+				return fmt.Errorf("feature request %q not found in the first %d requests of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxFeatureRequestPages)
 			}
+			return fmt.Errorf("feature request %q not found among the %d requests of app %s in workspace %s (resolution is scoped to the resolved app: pass --app <id> to search another app, or run 'cupthread apps use' to change the default)", ref, scanned, appID, ws)
 		}
-		scanned += len(resp.Requests)
-		if len(resp.Requests) < featureRequestPageSize || offset+len(resp.Requests) >= resp.Total {
-			exhausted = true
-		}
-	}
-	if len(matches) == 1 {
-		return &matches[0], nil
-	}
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("ambiguous request prefix %q matches %d requests; use a longer prefix", ref, len(matches))
-	}
-	if appID != "" {
-		// The scan covered only the resolved app, so name that scope and the
-		// escape hatches instead of mislabeling it workspace-wide (issue #187).
 		if !exhausted {
-			return nil, fmt.Errorf("feature request %q not found in the first %d requests of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxFeatureRequestPages)
+			return fmt.Errorf("feature request %q not found in the first %d requests (resolution scans at most %d pages); narrow the search with --app", ref, scanned, maxFeatureRequestPages)
 		}
-		return nil, fmt.Errorf("feature request %q not found among the %d requests of app %s in workspace %s (resolution is scoped to the resolved app: pass --app <id> to search another app, or run 'cupthread apps use' to change the default)", ref, scanned, appID, ws)
+		return fmt.Errorf("feature request %q not found (scanned %d requests in workspace %s)", ref, scanned, ws)
 	}
-	if !exhausted {
-		return nil, fmt.Errorf("feature request %q not found in the first %d requests (resolution scans at most %d pages); narrow the search with --app", ref, scanned, maxFeatureRequestPages)
-	}
-	return nil, fmt.Errorf("feature request %q not found (scanned %d requests in workspace %s)", ref, scanned, ws)
 }
 
 func newFeaturesGetCmd() *cobra.Command {

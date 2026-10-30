@@ -668,10 +668,14 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 		{
 			name: "imports rerun job id",
 			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/imports/job_1/rerun" {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/imports/job_1":
+					reply(t, w, `{"job":{"id":"job_1","workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":1}}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/imports/job_1/rerun":
+					reply(t, w, `{"job":{"id":`+hostile+`,"workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":1}}`)
+				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
-				reply(t, w, `{"job":{"id":`+hostile+`,"workspaceId":"ws_1","appId":"app_1","source":"github_issues","mode":"preview","status":"queued","attempts":1}}`)
 			},
 			cmd: []string{"imports", "rerun", "job_1", "--workspace", "ws_1"},
 			dig: []any{"job", "id"},
@@ -690,10 +694,14 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 		{
 			name: "changelog update entry id",
 			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPut || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog/entry_1" {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/changelog":
+					reply(t, w, changelogListingJSON("entry_1"))
+				case r.Method == http.MethodPut && r.URL.Path == "/api/v1/console/workspaces/ws_1/changelog/entry_1":
+					reply(t, w, changelogEntry)
+				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
-				reply(t, w, changelogEntry)
 			},
 			cmd: []string{"changelog", "update", "entry_1", "--title", "Test entry", "--workspace", "ws_1"},
 			dig: []any{"id"},
@@ -701,10 +709,14 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 		{
 			name: "changelog publish entry id",
 			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/changelog/entry_1/publish" {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/changelog":
+					reply(t, w, changelogListingJSON("entry_1"))
+				case r.Method == http.MethodPost && r.URL.Path == "/api/v1/console/workspaces/ws_1/changelog/entry_1/publish":
+					reply(t, w, changelogEntry)
+				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
-				reply(t, w, changelogEntry)
 			},
 			cmd: []string{"changelog", "publish", "entry_1", "--workspace", "ws_1"},
 			dig: []any{"id"},

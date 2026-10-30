@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -129,6 +130,68 @@ func shortID(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// maxChangelogResolvePages caps ID-resolution paging: 100 pages of the
+// listing's 100-entry page cap reaches the server's shared 10,000-entry
+// offset cap, beyond which no entry is reachable through offset paging
+// anyway (issue #178).
+const maxChangelogResolvePages = consoleListMaxOffset / changelogPageSize
+
+// fetchOneChangelogEntry finds an entry by exact ID or unique ID prefix
+// (issue #413): the list table prints 12-character IDs via shortID, and the
+// write commands used to take only the full form, so every copy-from-table
+// update/delete/publish/unpublish was a guaranteed 404.
+//
+// Resolution walks the changelog listing paged at the server's 100-entry
+// page cap, scoped to the resolved app (--app flag, else the saved default
+// from 'apps use') like 'changelog list'; with no app resolved it stays
+// workspace-wide, which the listing route serves when appId is omitted.
+// Matching, ambiguity, and the page-cap guard live in the shared resolveIDRef.
+func fetchOneChangelogEntry(ctx context.Context, ref string) (*api.ChangelogEntry, error) {
+	ws, err := workspaceClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	appID := A.optionalAppID()
+	return resolveIDRef(ref, idRefNouns{what: "changelog entry", plural: "entries", listHint: "cupthread changelog list"}, maxChangelogResolvePages,
+		func(page int) ([]api.ChangelogEntry, bool, error) {
+			offset := page * changelogPageSize
+			q := query(map[string]string{
+				"limit":  strconv.Itoa(changelogPageSize),
+				"offset": strconv.Itoa(offset),
+			})
+			if appID != "" {
+				q.Set("appId", appID)
+			}
+			var resp api.ListChangelogResponse
+			if err := A.client.Do(ctx, "GET", wsPath(ws, "/changelog"), q, nil, &resp); err != nil {
+				return nil, false, err
+			}
+			return resp.Entries, len(resp.Entries) < changelogPageSize || offset+len(resp.Entries) >= resp.Total, nil
+		},
+		changelogEntryNotFound(ws, appID),
+		func(e *api.ChangelogEntry) string { return e.ID },
+	)
+}
+
+// changelogEntryNotFound mirrors the features not-found contract: it names
+// the scope the scan actually covered — the resolved app, or the workspace —
+// and the --app escape hatch, so an ID copied from the wrong scope is
+// diagnosable instead of reading as a missing entry.
+func changelogEntryNotFound(ws, appID string) func(ref string, scanned int, exhausted bool) error {
+	return func(ref string, scanned int, exhausted bool) error {
+		if appID != "" {
+			if !exhausted {
+				return fmt.Errorf("changelog entry %q not found in the first %d entries of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxChangelogResolvePages)
+			}
+			return fmt.Errorf("changelog entry %q not found among the %d entries of app %s in workspace %s (resolution is scoped to the resolved app: pass --app <id> to search another app, or run 'cupthread apps use' to change the default)", ref, scanned, appID, ws)
+		}
+		if !exhausted {
+			return fmt.Errorf("changelog entry %q not found in the first %d entries (resolution scans at most %d pages); narrow the search with --app", ref, scanned, maxChangelogResolvePages)
+		}
+		return fmt.Errorf("changelog entry %q not found (scanned %d entries in workspace %s)", ref, scanned, ws)
+	}
 }
 
 // changelogBodyLimit mirrors the shared changelog schema's body intake bound
@@ -335,6 +398,24 @@ func newChangelogUpdateCmd() *cobra.Command {
 			if err := validateChangelogWriteFlags(cmd, title, versionLabel, scheduleAt, linkIDs, false); err != nil {
 				return err
 			}
+			// Resolve the body before the ID resolution: an unreadable or
+			// oversized body must fail locally without burning the listing
+			// round trips (the validate-before-lookup discipline of #341).
+			text := ""
+			if cmd.Flags().Changed("body") || cmd.Flags().Changed("body-file") {
+				resolved, err := resolveBody(cmd, bodyText, bodyFile)
+				if err != nil {
+					if perr := A.reportInputTooLarge(err); perr != nil {
+						return perr
+					}
+					return err
+				}
+				text = resolved
+			}
+			e, err := fetchOneChangelogEntry(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
@@ -344,13 +425,6 @@ func newChangelogUpdateCmd() *cobra.Command {
 				body["title"] = title
 			}
 			if cmd.Flags().Changed("body") || cmd.Flags().Changed("body-file") {
-				text, err := resolveBody(cmd, bodyText, bodyFile)
-				if err != nil {
-					if perr := A.reportInputTooLarge(err); perr != nil {
-						return perr
-					}
-					return err
-				}
 				body["body"] = text
 			}
 			if cmd.Flags().Changed("version-label") {
@@ -369,7 +443,7 @@ func newChangelogUpdateCmd() *cobra.Command {
 				return errors.New("nothing to update: pass at least one flag")
 			}
 			var resp api.ChangelogEntry
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+pathID(args[0])), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/changelog/"+pathID(e.ID)), nil, body, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -404,17 +478,21 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if err := confirmDestructive(cmd, fmt.Sprintf("permanently delete changelog entry %q", args[0])); err != nil {
 				return err
 			}
+			e, err := fetchOneChangelogEntry(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+pathID(args[0])), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/changelog/"+pathID(e.ID)), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
-				return A.emitMutationResult("deleted", args[0])
+				return A.emitMutationResult("deleted", e.ID)
 			}
-			A.out.Printf("✓ Deleted changelog entry %s", args[0])
+			A.out.Printf("✓ Deleted changelog entry %s", e.ID)
 			return nil
 		},
 	}
@@ -428,12 +506,16 @@ func newChangelogPublishCmd() *cobra.Command {
 		Short: "Publish a changelog entry now",
 		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := fetchOneChangelogEntry(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
 			}
 			var resp api.ChangelogEntry
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(args[0])+"/publish"), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(e.ID)+"/publish"), nil, nil, &resp); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -451,17 +533,21 @@ func newChangelogUnpublishCmd() *cobra.Command {
 		Short: "Revert a changelog entry to draft",
 		Args:  exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			e, err := fetchOneChangelogEntry(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(args[0])+"/unpublish"), nil, nil, nil); err != nil {
+			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/changelog/"+pathID(e.ID)+"/unpublish"), nil, nil, nil); err != nil {
 				return err
 			}
 			if A.structured() {
-				return A.emitMutationResult("unpublished", args[0])
+				return A.emitMutationResult("unpublished", e.ID)
 			}
-			A.out.Printf("✓ Unpublished %s", args[0])
+			A.out.Printf("✓ Unpublished %s", e.ID)
 			return nil
 		},
 	}

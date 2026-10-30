@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -104,6 +105,60 @@ func notFoundErr(kind, id, ws string) error {
 	return fmt.Errorf("%s %q not found in workspace %s", kind, id, ws)
 }
 
+// commentModerationNotFoundHint appends the issue #413 self-diagnosis to the
+// moderation 404: the tables print 12-character comment ids the endpoint can
+// never match, so the not-found reads as its remedy (the full id from --json,
+// or --thread prefix resolution) instead of a bare missing comment.
+const commentModerationNotFoundHint = " — moderation takes the full comment id (table listings truncate to 12 characters; copy it from 'comments moderation list --json'), or pass --thread <feature-request-ref> to resolve a prefix within one request's thread"
+
+// resolveCommentInThread resolves a comment reference — the exact id or a
+// unique prefix of one — against one feature request's thread (issue #413):
+// the moderation table prints 12-character comment ids, and the workspace has
+// no comment listing a bare prefix could be walked against, so the thread is
+// the one scope resolution can be honest about. Matching, ambiguity, and the
+// page cap live in the shared resolveIDRef; the paging is the thread's
+// cursor walk (PROD-31), fed to the helper page by page.
+func resolveCommentInThread(ctx context.Context, ws, frID, ref string) (*api.FeatureRequestComment, error) {
+	cursor := ""
+	return resolveIDRef(ref, idRefNouns{what: "comment", plural: "comments", listHint: "cupthread comments moderation list"}, maxCommentPages,
+		func(page int) ([]api.FeatureRequestComment, bool, error) {
+			var q url.Values
+			if cursor != "" {
+				q = url.Values{"cursor": {cursor}}
+			}
+			var pg api.ListCommentsResponse
+			if err := A.client.Do(ctx, "GET", wsPath(ws, "/feature-requests/"+frID+"/comments"), q, nil, &pg); err != nil {
+				if apiNotFound(err) {
+					return nil, false, notFoundErr("feature request", frID, ws)
+				}
+				return nil, false, err
+			}
+			if pg.NextCursor != nil {
+				cursor = *pg.NextCursor
+			}
+			return pg.Comments, pg.NextCursor == nil, nil
+		},
+		func(ref string, scanned int, exhausted bool) error {
+			if !exhausted {
+				return fmt.Errorf("comment %q not found in the first %d comments of request %s (the thread walk caps at %d pages)", ref, scanned, frID, maxCommentPages)
+			}
+			return fmt.Errorf("comment %q not found among the %d comments of request %s", ref, scanned, frID)
+		},
+		func(c *api.FeatureRequestComment) string { return c.ID },
+	)
+}
+
+// commentThreadRef resolves the --thread flag's feature-request reference
+// (full id or unique prefix, the features contract) so the whole
+// list-then-moderate chain accepts the truncated forms its tables print.
+func commentThreadRef(ctx context.Context, ref string) (string, error) {
+	fr, err := fetchOneFeatureRequest(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	return fr.ID, nil
+}
+
 // apiNotFound reports whether err is (or wraps) an API 404. errors.As is the
 // required idiom — not a direct err.(*api.APIError) assertion, as the sibling
 // command files use — because the client wraps selected statuses (402 tier
@@ -163,7 +218,8 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 	if !hidden {
 		use, short = "unhide", "Make a hidden comment visible again"
 	}
-	return &cobra.Command{
+	var thread string
+	cmd := &cobra.Command{
 		Use:   use + " <comment-id>",
 		Short: short,
 		Args:  exactNonBlankArg("comment id"),
@@ -172,11 +228,26 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			commentID := args[0]
+			if thread != "" {
+				frID, err := commentThreadRef(cmd.Context(), thread)
+				if err != nil {
+					return err
+				}
+				c, err := resolveCommentInThread(cmd.Context(), ws, frID, commentID)
+				if err != nil {
+					return err
+				}
+				commentID = c.ID
+			}
 			var resp api.SuccessResponse
 			body := api.HideCommentInput{IsHidden: hidden}
-			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+pathID(args[0])+"/hide"), nil, body, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/comments/"+pathID(commentID)+"/hide"), nil, body, &resp); err != nil {
 				if apiNotFound(err) {
-					return notFoundErr("comment", args[0], ws)
+					if thread != "" {
+						return notFoundErr("comment", commentID, ws)
+					}
+					return fmt.Errorf("%w%s", notFoundErr("comment", args[0], ws), commentModerationNotFoundHint)
 				}
 				return err
 			}
@@ -184,16 +255,19 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 				return A.out.Structured(resp)
 			}
 			if hidden {
-				A.out.Printf("✓ Comment %s hidden", args[0])
+				A.out.Printf("✓ Comment %s hidden", commentID)
 			} else {
-				A.out.Printf("✓ Comment %s unhidden", args[0])
+				A.out.Printf("✓ Comment %s unhidden", commentID)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&thread, "thread", "", "Resolve <comment-id> (full id or unique prefix) within this feature request's thread (full id or prefix)")
+	return cmd
 }
 
 func newCommentsModerationDeleteCmd() *cobra.Command {
+	var thread string
 	cmd := &cobra.Command{
 		Use:   "delete <comment-id>",
 		Short: "Permanently delete a comment",
@@ -211,21 +285,37 @@ before anything is sent; non-interactive callers must pass --yes.`,
 			if err != nil {
 				return err
 			}
+			commentID := args[0]
+			if thread != "" {
+				frID, err := commentThreadRef(cmd.Context(), thread)
+				if err != nil {
+					return err
+				}
+				c, err := resolveCommentInThread(cmd.Context(), ws, frID, commentID)
+				if err != nil {
+					return err
+				}
+				commentID = c.ID
+			}
 			var resp api.SuccessResponse
-			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+pathID(args[0])), nil, nil, &resp); err != nil {
+			if err := A.client.Do(cmd.Context(), "DELETE", wsPath(ws, "/comments/"+pathID(commentID)), nil, nil, &resp); err != nil {
 				if apiNotFound(err) {
-					return notFoundErr("comment", args[0], ws)
+					if thread != "" {
+						return notFoundErr("comment", commentID, ws)
+					}
+					return fmt.Errorf("%w%s", notFoundErr("comment", args[0], ws), commentModerationNotFoundHint)
 				}
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Comment %s deleted", args[0])
+			A.out.Printf("✓ Comment %s deleted", commentID)
 			return nil
 		},
 	}
 	cmd.Flags().BoolP("yes", "y", false, "Skip the confirmation prompt (required when stdin is not a terminal)")
+	cmd.Flags().StringVar(&thread, "thread", "", "Resolve <comment-id> (full id or unique prefix) within this feature request's thread (full id or prefix)")
 	return cmd
 }
 
@@ -330,7 +420,7 @@ SEC-50) and the route reads neither header.`,
 		},
 	}
 	create.Flags().StringVar(&body, "body", "", "Comment text (kept for a future credential that can sign in)")
-	create.Flags().StringVar(&parentID, "parent-id", "", "Parent comment ID for threading (must be a visible comment on the same feature request; anything else is rejected with 400 invalid_parent)")
+	create.Flags().StringVar(&parentID, "parent-id", "", "Parent comment ID for threading (must be the full comment id — table listings truncate to 12 characters, so copy it from a --json listing — for a visible comment on the same feature request; anything else is rejected with 400 invalid_parent)")
 	create.Flags().StringVar(&replyToAuthorName, "reply-to-author-name", "", "Display name of the author being replied to (ignored by the API; it is resolved from the parent comment)")
 	return create
 }
