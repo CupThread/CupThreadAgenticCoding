@@ -799,6 +799,18 @@ func readSkill(t *testing.T, name string) string {
 	return sb.String()
 }
 
+// readSkillFile reads one file of a skill (e.g. "SKILL.md" or a
+// "reference/…" topic) so a test can assert on that file alone instead of the
+// concatenation readSkill returns.
+func readSkillFile(t *testing.T, skill, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "skills", skill, rel))
+	if err != nil {
+		t.Fatalf("read skill file %s/%s: %v", skill, rel, err)
+	}
+	return string(data)
+}
+
 // TestAPISkillVoteInsertOnlySemantics pins the PROD-36 insert-only vote
 // contract in the API skill (issue #133): POST .../vote casts a vote and is
 // idempotent — a repeat (or a retry after a network error) can no longer
@@ -2862,6 +2874,67 @@ func TestSkillDocsIssue382PublicIntakeBodySplit(t *testing.T) {
 	} {
 		if !strings.Contains(doc, marker) {
 			t.Errorf("cupthread-api docs are missing required issue-#382 CLI-bounded-input marker %q", marker)
+		}
+	}
+}
+
+// TestAPISkillIssue251ImagesPreParseAuth pins the issue #251 sync of the
+// optional pre-parse authorization headers on POST /api/v1/uploads/images
+// (SaaS #1164 / SaaS#1174): presenting `X-App-Key` plus a session-token
+// header (`X-Upload-Session-Token` preferred over `Authorization: Bearer`)
+// runs the full app + session authorization chain before any body byte is
+// buffered — unknown app 404, disabled app 403, missing identity 401
+// authentication_required, missing/invalid/expired session 401
+// (upload_session_required / session_invalid), already-finalized session 409
+// session_not_pending — with the appKey/sessionToken/sessionId form fields
+// ignored in that mode and the parse bound tightened from the ~30 MB
+// anonymous platform envelope to the app's own attachment cap, while
+// form-field callers keep the unchanged parse-then-validate order and both
+// modes return identical response bodies.
+func TestAPISkillIssue251ImagesPreParseAuth(t *testing.T) {
+	doc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// The header pair and the precedence rule, in the endpoint row.
+		"**`X-App-Key`** header plus a session-token header — **`X-Upload-Session-Token`** (preferred over `Authorization: Bearer`, so a signed-in caller can keep the Clerk JWT in `Authorization`)",
+		// Pre-parse framing in the endpoint row.
+		"runs the full app + session authorization chain **before any body byte is buffered**",
+		// The dedicated reference section.
+		"## Optional Pre-Parse Authorization on `POST /api/v1/uploads/images` (header credentials)",
+		// The pre-parse claim is scoped to server-side reading (PR review):
+		// the docs never promise the client avoided transferring the bytes.
+		"every one of these answers before the server reads a single body byte",
+		// Per-failure wire bodies in the reference section.
+		"404 {\"error\": \"App not found\"}",
+		"403 {\"error\": \"Public feedback is disabled for this app\"}",
+		"401 {\"error\": \"Sign in is required to upload feedback attachments\", \"code\": \"authentication_required\"}",
+		"(`401 upload_session_required`), an invalid or expired one (`401 session_invalid`), or a session already finalized into a submission (`409 session_not_pending`)",
+		// Form-field precedence in header mode.
+		"The `appKey`, `sessionToken`, and `sessionId` form fields are not read when `X-App-Key` plus a session-token header are presented",
+		// Body-cap tightening and the legacy fallback.
+		"an authorized header-mode upload parses against the app's own attachment bound instead",
+		"Sending neither header preserves the legacy behavior exactly",
+		// The compatibility claim stays accurate (PR review): same schemas and
+		// status codes for corresponding outcomes, but the tighter header-mode
+		// bound means the two modes can reject different oversized bodies —
+		// coded pre-check 413 vs the legacy post-parse uncoded 413.
+		"the modes can reject **different request bodies**",
+		"while legacy mode parses the same file against the ~30 MB envelope first and rejects it only at the post-parse per-file check with the uncoded `413 {\"error\": \"Attachment exceeds the configured size limit\"}` body",
+		// Opt-in client guidance.
+		"SDK image-upload helpers can opt in by setting `X-App-Key` and `X-Upload-Session-Token` (or `Authorization`) and dropping the credential form fields",
+	} {
+		if !strings.Contains(doc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#251 pre-parse-auth marker %q", marker)
+		}
+	}
+	skillDoc := readSkillFile(t, "cupthread-api", "SKILL.md")
+	for _, marker := range []string{
+		// SKILL.md keeps a compact pointer on the endpoint row…
+		"Optional `X-App-Key` + `X-Upload-Session-Token` headers authorize before the body is read (SaaS #1174).",
+		// …and names the opt-in on the cross-cutting images bullet.
+		"Optionally present `X-App-Key` + `X-Upload-Session-Token` (or `Authorization: Bearer`) headers to get app/session authorization **before the server reads the body**, and drop the credential form fields (SaaS #1174).",
+	} {
+		if !strings.Contains(skillDoc, marker) {
+			t.Errorf("cupthread-api/SKILL.md is missing required issue-#251 pre-parse-auth marker %q", marker)
 		}
 	}
 }
