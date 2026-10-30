@@ -173,7 +173,7 @@ func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureR
 		return nil, err
 	}
 	appID := A.optionalAppID()
-	return resolveIDRef(ref, idRefNouns{what: "feature request", plural: "requests", listHint: "cupthread features list"}, maxFeatureRequestPages,
+	return resolveIDRef(ref, idRefNouns{what: "feature request", plural: "requests", listHint: "cupthread features list"}, maxFeatureRequestPages, true,
 		func(page int) ([]api.AdminFeatureRequest, bool, error) {
 			offset := page * featureRequestPageSize
 			resp, err := listFeatureRequests(ctx, ws, appID, featureRequestPageSize, offset, "", false)
@@ -190,8 +190,8 @@ func fetchOneFeatureRequest(ctx context.Context, ref string) (*api.AdminFeatureR
 // featureRequestNotFound keeps the #187 error contract for scans that find
 // nothing: under a resolved app it names the app the scan actually covered
 // and the --app escape hatch instead of mislabeling the scan workspace-wide.
-func featureRequestNotFound(ws, appID string) func(ref string, scanned int, exhausted bool) error {
-	return func(ref string, scanned int, exhausted bool) error {
+func featureRequestNotFound(ws, appID string) func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+	return func(ref string, scanned int, exhausted bool, prefixMatches int) error {
 		if appID != "" {
 			if !exhausted {
 				return fmt.Errorf("feature request %q not found in the first %d requests of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxFeatureRequestPages)

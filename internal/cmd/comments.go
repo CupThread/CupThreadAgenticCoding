@@ -109,7 +109,7 @@ func notFoundErr(kind, id, ws string) error {
 // moderation 404: the tables print 12-character comment ids the endpoint can
 // never match, so the not-found reads as its remedy (the full id from --json,
 // or --thread prefix resolution) instead of a bare missing comment.
-const commentModerationNotFoundHint = " — moderation takes the full comment id (table listings truncate to 12 characters; copy it from 'comments moderation list --json'), or pass --thread <feature-request-ref> to resolve a prefix within one request's thread"
+const commentModerationNotFoundHint = " — moderation takes the full comment id (table listings truncate to 12 characters; copy it from 'comments moderation list <feature-request-id> --json'), or pass --thread <feature-request-ref> to resolve a prefix within one request's thread"
 
 // resolveCommentInThread resolves a comment reference — the exact id or a
 // unique prefix of one — against one feature request's thread (issue #413):
@@ -118,9 +118,18 @@ const commentModerationNotFoundHint = " — moderation takes the full comment id
 // the one scope resolution can be honest about. Matching, ambiguity, and the
 // page cap live in the shared resolveIDRef; the paging is the thread's
 // cursor walk (PROD-31), fed to the helper page by page.
+//
+// Unlike the offset-capped listings, the cursor walk has no server-side end:
+// maxCommentPages is a pure hang-guard, so a prefix unique within the
+// scanned pages could gain a second match on a page the guard never
+// fetched. The walk therefore passes acceptPrefixUnderCap=false — a
+// cap-stopped scan refuses a prefix match and asks for the full id, so a
+// hide/delete can never act on an unverifiable choice (PR #414 review).
+// Exact ids still short-circuit: an exact match is verifiable on the page
+// that holds it.
 func resolveCommentInThread(ctx context.Context, ws, frID, ref string) (*api.FeatureRequestComment, error) {
 	cursor := ""
-	return resolveIDRef(ref, idRefNouns{what: "comment", plural: "comments", listHint: "cupthread comments moderation list"}, maxCommentPages,
+	return resolveIDRef(ref, idRefNouns{what: "comment", plural: "comments", listHint: "cupthread comments moderation list"}, maxCommentPages, false,
 		func(page int) ([]api.FeatureRequestComment, bool, error) {
 			var q url.Values
 			if cursor != "" {
@@ -138,7 +147,10 @@ func resolveCommentInThread(ctx context.Context, ws, frID, ref string) (*api.Fea
 			}
 			return pg.Comments, pg.NextCursor == nil, nil
 		},
-		func(ref string, scanned int, exhausted bool) error {
+		func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+			if !exhausted && prefixMatches > 0 {
+				return fmt.Errorf("comment %q matches within the first %d comments of request %s, but the thread walk stops at %d pages and a later page could hold a second match — pass the full comment id", ref, scanned, frID, maxCommentPages)
+			}
 			if !exhausted {
 				return fmt.Errorf("comment %q not found in the first %d comments of request %s (the thread walk caps at %d pages)", ref, scanned, frID, maxCommentPages)
 			}
@@ -255,9 +267,9 @@ func newCommentsModerationHideCmd(hidden bool) *cobra.Command {
 				return A.out.Structured(resp)
 			}
 			if hidden {
-				A.out.Printf("✓ Comment %s hidden", commentID)
+				A.out.PrintfSafe("✓ Comment %s hidden", commentID)
 			} else {
-				A.out.Printf("✓ Comment %s unhidden", commentID)
+				A.out.PrintfSafe("✓ Comment %s unhidden", commentID)
 			}
 			return nil
 		},
@@ -310,7 +322,7 @@ before anything is sent; non-interactive callers must pass --yes.`,
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Comment %s deleted", commentID)
+			A.out.PrintfSafe("✓ Comment %s deleted", commentID)
 			return nil
 		},
 	}

@@ -385,7 +385,7 @@ func fetchOneImportJob(ctx context.Context, ref string) (*api.ImportJob, error) 
 	} else if !apiNotFound(err) {
 		return nil, err
 	}
-	return resolveIDRef(ref, idRefNouns{what: "import job", plural: "jobs", listHint: "cupthread imports history"}, 1,
+	return resolveIDRef(ref, idRefNouns{what: "import job", plural: "jobs", listHint: "cupthread imports history"}, 1, true,
 		func(page int) ([]api.ImportJob, bool, error) {
 			var history api.ListImportJobsResponse
 			if err := A.client.Do(ctx, "GET", wsPath(ws, "/imports"), nil, nil, &history); err != nil {
@@ -403,8 +403,8 @@ func fetchOneImportJob(ctx context.Context, ref string) (*api.ImportJob, error) 
 // actually covered, naming the cap so a job older than the newest 100 reads
 // as unreachable (the full id from 'imports history --json' still works —
 // the exact GET takes any full id regardless of age).
-func importJobNotFound(ws string) func(ref string, scanned int, exhausted bool) error {
-	return func(ref string, scanned int, exhausted bool) error {
+func importJobNotFound(ws string) func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+	return func(ref string, scanned int, exhausted bool, prefixMatches int) error {
 		return fmt.Errorf("import job %q not found (scanned %d jobs in the workspace history window of workspace %s; the server serves only the newest %d — older jobs are unreachable by prefix but still take the full id)", ref, scanned, ws, importsWorkspacePageSize)
 	}
 }
@@ -472,7 +472,7 @@ sent; non-interactive callers must pass --yes.`,
 			if A.structured() {
 				return A.emitMutationResult("canceled", j.ID)
 			}
-			A.out.Printf("✓ Canceled import %s", j.ID)
+			A.out.PrintfSafe("✓ Canceled import %s", j.ID)
 			return nil
 		},
 	}

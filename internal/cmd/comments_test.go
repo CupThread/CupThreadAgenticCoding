@@ -1245,11 +1245,75 @@ func TestCommentsModerationTruncatedRefDirect404NamesRemedy(t *testing.T) {
 	for _, want := range []string{
 		`comment "cmt_visible_1" not found in workspace ws_1`,
 		"full comment id",
-		"comments moderation list --json",
+		"comments moderation list <feature-request-id> --json",
 		"--thread",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("404 hint missing %q:\n%v", want, err)
 		}
+	}
+}
+
+// TestCommentsModerationPrefixRefusedWhenThreadWalkCaps pins the PR #414
+// review hardening: the cursor walk has no server-side end, so when the
+// maxCommentPages guard stops the scan early a prefix that matches within
+// the scanned pages must still be refused — a later page could hold a
+// second match, and a hide/delete must never act on an unverifiable choice.
+// Exact ids keep their early return, so a full id past the cap still works.
+func TestCommentsModerationPrefixRefusedWhenThreadWalkCaps(t *testing.T) {
+	filler := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		filler = append(filler, fmt.Sprintf(`{"id":"cmt_other_%04d_extra","featureRequestId":"fr_full_1","authorName":"A","body":"b","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"}`, i))
+	}
+	oneMatch := append([]string{`{"id":"cmt_prefix_match_0042_extra","featureRequestId":"fr_full_1","authorName":"A","body":"b","isHidden":false,"createdAt":"2026-09-18T01:02:03Z"}`}, filler[1:]...)
+	fullPage := func(comments []string) string {
+		// Every page is full and carries a nextCursor: the walk always
+		// stops at the guard, never at exhaustion.
+		return `{"comments":[` + strings.Join(comments, ",") + `],"total":100000,"nextCursor":"cursor-never-dies"}`
+	}
+
+	var mutations []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests"):
+			_, _ = w.Write([]byte(`{"requests":[{"id":"fr_full_1","appId":"app_a","title":"Thread request","status":"open","voteCount":0,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}],"total":1}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			// The matching comment lives on page 1 only; every later page
+			// (cursor set) is filler, so the scan ends holding exactly one
+			// prefix match it can never prove unique.
+			if r.URL.Query().Get("cursor") == "" {
+				_, _ = w.Write([]byte(fullPage(oneMatch)))
+				return
+			}
+			_, _ = w.Write([]byte(fullPage(filler)))
+		default:
+			mutations = append(mutations, r.Method+" "+r.URL.Path)
+			_, _ = w.Write([]byte(`{"success":true}`))
+		}
+	}))
+	defer server.Close()
+
+	if _, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_prefix_match_0042", "--thread", "fr_full_1", "--workspace", "ws_1"); err == nil || !strings.Contains(err.Error(), "matches within the first 10000 comments of request fr_full_1") || !strings.Contains(err.Error(), "pass the full comment id") {
+		t.Fatalf("error = %v, want the cap-stopped prefix refusal", err)
+	}
+	if len(mutations) != 0 {
+		t.Errorf("mutations = %v, want none on a cap-stopped prefix scan", mutations)
+	}
+	mutations = nil
+
+	// An exact id is verifiable on the page that holds it: it returns on
+	// page 1 without needing the walk to finish, so it still hides.
+	out, err := runModerationRoot(t, server.URL,
+		"comments", "moderation", "hide", "cmt_prefix_match_0042_extra", "--thread", "fr_full_1", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation hide with exact id: %v", err)
+	}
+	if !strings.Contains(out, "✓ Comment cmt_prefix_match_0042_extra hidden") {
+		t.Errorf("exact id must hide on the page that holds it without walking on:\n%s", out)
+	}
+	if want := []string{"PATCH /api/v1/console/workspaces/ws_1/comments/cmt_prefix_match_0042_extra/hide"}; !reflect.DeepEqual(mutations, want) {
+		t.Errorf("mutations = %v, want exactly %v", mutations, want)
 	}
 }

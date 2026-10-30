@@ -154,7 +154,7 @@ func fetchOneChangelogEntry(ctx context.Context, ref string) (*api.ChangelogEntr
 		return nil, err
 	}
 	appID := A.optionalAppID()
-	return resolveIDRef(ref, idRefNouns{what: "changelog entry", plural: "entries", listHint: "cupthread changelog list"}, maxChangelogResolvePages,
+	return resolveIDRef(ref, idRefNouns{what: "changelog entry", plural: "entries", listHint: "cupthread changelog list"}, maxChangelogResolvePages, true,
 		func(page int) ([]api.ChangelogEntry, bool, error) {
 			offset := page * changelogPageSize
 			q := query(map[string]string{
@@ -179,8 +179,8 @@ func fetchOneChangelogEntry(ctx context.Context, ref string) (*api.ChangelogEntr
 // the scope the scan actually covered — the resolved app, or the workspace —
 // and the --app escape hatch, so an ID copied from the wrong scope is
 // diagnosable instead of reading as a missing entry.
-func changelogEntryNotFound(ws, appID string) func(ref string, scanned int, exhausted bool) error {
-	return func(ref string, scanned int, exhausted bool) error {
+func changelogEntryNotFound(ws, appID string) func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+	return func(ref string, scanned int, exhausted bool, prefixMatches int) error {
 		if appID != "" {
 			if !exhausted {
 				return fmt.Errorf("changelog entry %q not found in the first %d entries of app %s (resolution scans at most %d pages); pass --app <id> to search another app", ref, scanned, appID, maxChangelogResolvePages)
@@ -492,7 +492,7 @@ confirm before anything is sent; non-interactive callers must pass --yes.`,
 			if A.structured() {
 				return A.emitMutationResult("deleted", e.ID)
 			}
-			A.out.Printf("✓ Deleted changelog entry %s", e.ID)
+			A.out.PrintfSafe("✓ Deleted changelog entry %s", e.ID)
 			return nil
 		},
 	}
@@ -547,7 +547,7 @@ func newChangelogUnpublishCmd() *cobra.Command {
 			if A.structured() {
 				return A.emitMutationResult("unpublished", e.ID)
 			}
-			A.out.Printf("✓ Unpublished %s", e.ID)
+			A.out.PrintfSafe("✓ Unpublished %s", e.ID)
 			return nil
 		},
 	}

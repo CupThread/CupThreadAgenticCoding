@@ -367,14 +367,25 @@ type idRefNouns struct {
 // first page still errors once a later page adds a second match. One unique
 // match resolves; several produce the shared ambiguous-prefix error; none
 // produce notFound, which each family tailors (scope wording, --app hints)
-// from the reference, the scanned count, and the exhaustion flag.
+// from the reference, the scanned count, the exhaustion flag, and the
+// prefix-match count (nonzero only in the refused under-cap case).
+//
+// acceptPrefixUnderCap marks whether a maxPages-stopped scan is still the
+// whole reachable universe, so a prefix unique within it is genuinely
+// unique. The offset-capped listings are: the server clamps offset at the
+// same window resolution pages to, so rows past the cap cannot be served —
+// and are passed true. A cursor-walked family with no server cap passes
+// false: there maxPages is a pure hang-guard, a unique match within the
+// scanned pages could gain a second match on an unscanned page, and the
+// prefix is refused so a mutation cannot act on an unverifiable choice
+// (PR #414 review).
 //
 // An empty (or whitespace-only) reference is rejected before any lookup:
 // strings.HasPrefix(id, "") is true for every id, so with a single item in
 // scope an empty ref — the canonical unset-shell-variable accident — would
 // silently resolve to it and the mutation commands would act on a resource
 // the caller never named (issue #289).
-func resolveIDRef[T any](ref string, nouns idRefNouns, maxPages int, fetchPage func(page int) (items []T, done bool, err error), notFound func(ref string, scanned int, exhausted bool) error, idOf func(*T) string) (*T, error) {
+func resolveIDRef[T any](ref string, nouns idRefNouns, maxPages int, acceptPrefixUnderCap bool, fetchPage func(page int) (items []T, done bool, err error), notFound func(ref string, scanned int, exhausted bool, prefixMatches int) error, idOf func(*T) string) (*T, error) {
 	if strings.TrimSpace(ref) == "" {
 		return nil, fmt.Errorf("%s reference is empty — pass an id or non-empty id prefix (see '%s')", nouns.what, nouns.listHint)
 	}
@@ -398,13 +409,13 @@ func resolveIDRef[T any](ref string, nouns idRefNouns, maxPages int, fetchPage f
 		scanned += len(items)
 		exhausted = done
 	}
-	if len(matches) == 1 {
+	if len(matches) == 1 && (exhausted || acceptPrefixUnderCap) {
 		return &matches[0], nil
 	}
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("ambiguous %s prefix %q matches %d %s; use a longer prefix", nouns.what, ref, len(matches), nouns.plural)
 	}
-	return nil, notFound(ref, scanned, exhausted)
+	return nil, notFound(ref, scanned, exhausted, len(matches))
 }
 
 // decodeStrictRawJSON validates that data holds exactly one JSON value and
