@@ -623,21 +623,25 @@ func TestFeatureRequestResolvePagesCoverTheOffsetCap(t *testing.T) {
 func TestFeatureRequestPrefixScanCoversTheOffsetCapPage(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 
-	// 10,000 requests fill pages 0..49 (offsets 0..9,800) and the target
-	// sits alone on the offset-10,000 clamp page, so the authoritative total
-	// is 10,001: only the clamp page exhausts the listing.
-	const totalRequests = featureRequestPageSize*(maxFeatureRequestPages-1) + 1
+	// 10,000 requests fill the window pages (offsets 0..9,800) and the
+	// target sits alone on the offset-10,000 clamp page, so the
+	// authoritative total is 10,001: only the clamp page exhausts the
+	// listing. The page layout anchors to the offset cap, not to the
+	// resolution constant, so a walk sized consoleListMaxOffset/200 fails
+	// here exactly the way the pre-fix one did.
+	windowPages := consoleListMaxOffset / featureRequestPageSize
+	totalRequests := featureRequestPageSize*windowPages + 1
 	fillers := pagedRequests(featureRequestPageSize)
 	target := pagedRequests(1)[0]
 	target.ID = "fr_target000123ffffffffffff"
 	target.Title = "Cap page request"
 
-	pages := make([][]api.AdminFeatureRequest, maxFeatureRequestPages)
-	for p := range pages {
+	pages := make([][]api.AdminFeatureRequest, windowPages+1)
+	for p := 0; p < windowPages; p++ {
 		pages[p] = fillers
 	}
-	pages[maxFeatureRequestPages-1] = []api.AdminFeatureRequest{target}
-	capOffset := strconv.Itoa((maxFeatureRequestPages - 1) * featureRequestPageSize)
+	pages[windowPages] = []api.AdminFeatureRequest{target}
+	capOffset := strconv.Itoa(windowPages * featureRequestPageSize)
 
 	var offsets []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -661,8 +665,8 @@ func TestFeatureRequestPrefixScanCoversTheOffsetCapPage(t *testing.T) {
 	if got := offsets[len(offsets)-1]; got != capOffset {
 		t.Errorf("last listing offset = %q, want the offset-cap page %s scanned", got, capOffset)
 	}
-	if len(offsets) != maxFeatureRequestPages {
-		t.Errorf("scanned %d pages, want %d (every page through the offset cap)", len(offsets), maxFeatureRequestPages)
+	if len(offsets) != windowPages+1 {
+		t.Errorf("scanned %d pages, want %d (every page through the offset cap)", len(offsets), windowPages+1)
 	}
 	if !strings.Contains(out, "Cap page request") || !strings.Contains(out, target.ID) {
 		t.Errorf("output must carry the resolved cap-page request:\n%s", out)
@@ -678,19 +682,29 @@ func TestFeatureRequestPrefixScanCoversTheOffsetCapPage(t *testing.T) {
 func TestFeaturesPrefixUniqueInWindowButAmbiguousOnCapPage(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
 
-	const totalRequests = featureRequestPageSize*(maxFeatureRequestPages-1) + 1
-	fillers := pagedRequests(featureRequestPageSize)
-	fillers[3].ID = "fr_dup0000aaaaaaaaaaaaaaaaa"
-	fillers[3].Title = "In-window duplicate"
+	// The layout anchors to the offset cap (50 window pages + the clamp
+	// page), not to the resolution constant, so a walk sized
+	// consoleListMaxOffset/200 stops one page short of the cap-page match.
+	// The pages stay distinct with the in-window duplicate on page 0 only:
+	// sharing one fillers slice across every window page would repeat that
+	// match 50 times and mask the missing cap page behind an ambiguity that
+	// fires either way.
+	windowPages := consoleListMaxOffset / featureRequestPageSize
+	totalRequests := featureRequestPageSize*windowPages + 1
+	inWindow := pagedRequests(featureRequestPageSize)
+	inWindow[3].ID = "fr_dup0000aaaaaaaaaaaaaaaaa"
+	inWindow[3].Title = "In-window duplicate"
+	plain := pagedRequests(featureRequestPageSize)
 	capPage := pagedRequests(1)
 	capPage[0].ID = "fr_dup0000bbbbbbbbbbbbbbbbb"
 	capPage[0].Title = "Cap page duplicate"
 
-	pages := make([][]api.AdminFeatureRequest, maxFeatureRequestPages)
-	for p := range pages {
-		pages[p] = fillers
+	pages := make([][]api.AdminFeatureRequest, windowPages+1)
+	pages[0] = inWindow
+	for p := 1; p < windowPages; p++ {
+		pages[p] = plain
 	}
-	pages[maxFeatureRequestPages-1] = capPage
+	pages[windowPages] = capPage
 
 	var mutations []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
