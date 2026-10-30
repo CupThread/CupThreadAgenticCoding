@@ -1,16 +1,20 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
 	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
 
 // Issue #88: display names are not unique server-side (only ids and slugs
@@ -286,5 +290,118 @@ func TestLookupWorkspaceUniqueRefsStillResolve(t *testing.T) {
 	}
 	if cfg.DefaultWorkspace != "ws_first" {
 		t.Errorf("config defaultWorkspace = %q, want ws_first", cfg.DefaultWorkspace)
+	}
+}
+
+// serveScopedTraffic records every request's X-Workspace-Id header and path
+// as "<header> <path>", serving the given apps payload for any
+// workspace-scoped /apps path and an empty /console/me (issue #379's
+// observations).
+func serveScopedTraffic(t *testing.T, appsJSON string) (*httptest.Server, *[]string) {
+	t.Helper()
+	seen := &[]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*seen = append(*seen, r.Header.Get("X-Workspace-Id")+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/console/workspaces/"):
+			_, _ = w.Write([]byte(appsJSON))
+		case r.URL.Path == "/api/v1/console/me":
+			_, _ = w.Write([]byte("{}"))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, seen
+}
+
+// TestLookupAppDoesNotRescopeSharedClient pins the issue #379 invariant at
+// the command level: lookupApp scopes its own request, not the process-wide
+// client. The run resolves the workspace from the saved default (no
+// --workspace flag), so buildClient seeds A.client.WorkspaceID as "" — the
+// lookup must carry ws_1 only on its own request, never by writing the
+// shared client in place. Before the fix the lookup aliased the pointer and
+// A.client.WorkspaceID became ws_1 for the rest of the process.
+func TestLookupAppDoesNotRescopeSharedClient(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+	server, seen := serveScopedTraffic(t, distinctAppsFixture)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(cfgPath, []byte("{\"defaultWorkspace\":\"ws_1\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := runRootWithConfig(t, server.URL, cfgPath, "apps", "get", "Acme iOS")
+	if err != nil {
+		t.Fatalf("apps get: %v", err)
+	}
+	if !strings.Contains(out, "Acme iOS") {
+		t.Errorf("output missing resolved app:\n%s", out)
+	}
+	// The lookup request went out scoped to the resolved workspace: the
+	// wsPath segment is the scope, so no X-Workspace-Id header rides along.
+	if len(*seen) != 1 || (*seen)[0] != " /api/v1/console/workspaces/ws_1/apps" {
+		t.Errorf("wire requests = %v, want one ws_1-scoped /apps GET", *seen)
+	}
+	// The shared client kept the scope buildClient gave it (the flag was
+	// empty, so "" — not the lookup's ws_1).
+	if A.client.WorkspaceID != "" {
+		t.Errorf("shared client WorkspaceID = %q after lookupApp, want \"\" (buildClient's flag-derived scope)", A.client.WorkspaceID)
+	}
+}
+
+// TestLookupAppScopesPerCall exercises the per-call copy directly (issue
+// #379): two lookups resolving different workspaces must each target their
+// own workspace-scoped path, and a later request through the shared client
+// must carry no workspace scope at all — before the fix it silently rode the
+// last lookup's leaked ws_second.
+func TestLookupAppScopesPerCall(t *testing.T) {
+	oldA := A
+	defer func() { A = oldA }()
+	oldWS := flagWorkspace
+	flagWorkspace = ""
+	defer func() { flagWorkspace = oldWS }()
+
+	server, seen := serveScopedTraffic(t, distinctAppsFixture)
+	A = &app{
+		out: output.New(io.Discard, output.FormatTable),
+		cfg: &config.Config{DefaultWorkspace: "ws_first"},
+	}
+	A.client = api.New(server.URL)
+	A.client.Token = func(context.Context) (string, error) { return "cpt_test", nil }
+
+	for _, tc := range []struct {
+		ws, ref string
+	}{
+		{"ws_first", "app_1"},
+		{"ws_second", "app_2"},
+	} {
+		A.cfg.DefaultWorkspace = tc.ws
+		appRec, err := A.lookupApp(context.Background(), tc.ref)
+		if err != nil {
+			t.Fatalf("lookupApp %q in %s: %v", tc.ref, tc.ws, err)
+		}
+		if appRec.AppID != tc.ref {
+			t.Errorf("lookupApp %q returned %q", tc.ref, appRec.AppID)
+		}
+	}
+	// A request through the shared client afterwards: /console/me is not
+	// workspace-scoped, so it exposes whatever scope the shared client
+	// carries — which must still be buildClient's "".
+	var me api.MeResponse
+	if err := A.client.Do(context.Background(), "GET", "/api/v1/console/me", nil, nil, &me); err != nil {
+		t.Fatalf("shared-client /console/me: %v", err)
+	}
+	want := []string{
+		" /api/v1/console/workspaces/ws_first/apps",
+		" /api/v1/console/workspaces/ws_second/apps",
+		" /api/v1/console/me",
+	}
+	if !reflect.DeepEqual(*seen, want) {
+		t.Errorf("wire requests = %v\n     want = %v (no X-Workspace-Id on any request)", *seen, want)
+	}
+	if A.client.WorkspaceID != "" {
+		t.Errorf("shared client WorkspaceID = %q after two lookups, want \"\"", A.client.WorkspaceID)
 	}
 }

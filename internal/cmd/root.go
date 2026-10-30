@@ -874,8 +874,12 @@ func (a *app) lookupApp(ctx context.Context, ref string) (*api.AppRecord, error)
 	if err != nil {
 		return nil, err
 	}
-	client := a.client
-	client.WorkspaceID = ws
+	// Value-copy the shared client and scope the copy (issue #379): the
+	// previous `client := a.client` aliased the pointer, so this assignment
+	// re-targeted every later request of the process.
+	c := *a.client
+	c.WorkspaceID = ws
+	client := &c
 	var resp api.ListAppsResponse
 	// wsPath, not a raw concatenation: --workspace accepts arbitrary strings,
 	// and this was the one remaining unescaped workspace interpolation in the
