@@ -808,8 +808,15 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
+// fileName reduces an --icon path to the basename for the multipart
+// Content-Disposition. Both separators cut: `\` is Windows' native
+// separator, and a mixed-separator path must reduce the same way from
+// either platform (the previous /-only split sent the whole C:\... path
+// as the part filename — issue #384). This is deliberately not
+// filepath.Base: on a POSIX build it does not split `\`, so the behavior
+// would silently depend on the build platform, and the CLI cross-compiles.
 func fileName(path string) string {
-	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+	if i := strings.LastIndexAny(path, `/\`); i >= 0 {
 		return path[i+1:]
 	}
 	return path
