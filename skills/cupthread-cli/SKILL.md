@@ -290,9 +290,11 @@ self-diagnosing error before anything is sent.
 **200** (`--limit` is clamped into 1–200 locally, with a `⚠` notice when a
 value is rewritten) and, unlike `changelog list`, prints no next-page hint —
 instead the `(N shown, N total)` trailer (same shape as `features list`)
-discloses truncation: whenever `total` exceeds `shown`, more pages exist, so
-walk it by the served page size (`--offset 0, 200, 400, …`), not by a larger
-requested limit. Like the other console listings it caps `--offset` at the
+discloses truncation: more pages remain while the effective `--offset` (the
+value actually served, after any clamp) plus `shown` is still below `total`,
+and the walk is done once that sum reaches `total`, so step the offset by
+the served page size (`--offset 0, 200, 400, …`), not by a larger requested
+limit. Like the other console listings it caps `--offset` at the
 server's shared **10,000** (above it the route clamps and still returns 200;
 the CLI rewrites the value with a `⚠` notice), so a walk reaching the cap
 repeats the final page — stop there.
