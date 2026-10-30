@@ -185,6 +185,55 @@ func TestAPISignUserAttrsHumanOutput(t *testing.T) {
 	}
 }
 
+// TestAPISignUserAttrsHumanOutputSanitized pins issue #396: the human-mode
+// echo of the --app-key flag and the canonical string goes through
+// PrintfSafe, so a plan value carrying terminal control characters renders
+// inert. The plan below passes every schema check (28 runes, no reserved
+// sentinel, correct type) yet carries an OSC title sequence, BEL, and a
+// CR-forged line — on the raw Printf path each would reach the terminal
+// untouched.
+func TestAPISignUserAttrsHumanOutputSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	hostilePlan := "\x1b]0;pwned\x07pro\r✓ FORGED SUCCESS"
+	body, err := json.Marshal(map[string]any{"isPaying": true, "plan": hostilePlan, "currency": "USD"})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	out, err := runRoot(t, "http://127.0.0.1:1",
+		"api", "sign-user-attrs",
+		"--app-key", signTestAppKey,
+		"--secret", signTestSecret,
+		"--timestamp", "1758000000",
+		"--user-token", signTestToken,
+		"--input", writeSignBody(t, string(body)))
+	if err != nil {
+		t.Fatalf("sign-user-attrs: %v", err)
+	}
+	// No line may carry a control rune: ESC/OSC/BEL/CR must be stripped and
+	// the canonical string's own newlines must not forge layout either.
+	for _, line := range strings.Split(out, "\n") {
+		for _, r := range line {
+			if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				t.Errorf("human output line %q contains control rune %U", line, r)
+			}
+		}
+	}
+	// The hostile plan must have made it into the signed payload (proving
+	// the test exercises the real echo path) while rendering as inert text:
+	// its fragments stay on the canonical line, no forged extra line.
+	stripped := "]0;pwned" + "pro" + "✓ FORGED SUCCESS"
+	if !strings.Contains(out, stripped) {
+		t.Errorf("output %q missing inert plan rendering %q", out, stripped)
+	}
+	// The canonical string's own newlines are field structure: they render
+	// as the visible cell glyph so the signed layout stays readable without
+	// granting the newlines terminal power (CodeRabbit review of #398).
+	if !strings.Contains(out, "cpt-user-attrs-v1⏎"+signTestAppKey+"⏎"+signTestToken+"⏎true⏎") {
+		t.Errorf("output %q missing ⏎-joined canonical rendering", out)
+	}
+}
+
 // TestAPISignUserAttrsErrors covers the argument validation and the
 // contract-level rejections surfaced from the canonicalizer.
 func TestAPISignUserAttrsErrors(t *testing.T) {

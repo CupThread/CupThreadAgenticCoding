@@ -357,3 +357,18 @@ func TestPrintfSafe(t *testing.T) {
 		t.Errorf("clean input = %q, want %q", buf.String(), "plain value\n")
 	}
 }
+
+// TestVisibleControls pins the exported form of the cell sanitizer's
+// predicate: tab and newline render as the visible cell glyphs (structure
+// stays readable), every other control rune — C0, DEL, and the C1 range — is
+// dropped, and printable text round-trips byte-identically.
+func TestVisibleControls(t *testing.T) {
+	got := VisibleControls("a\x1b]0;osc\x07b\rc\x08d\x7fe\u009bf\tg\nh validity")
+	want := "a]0;oscbcdef" + string(cellTabGlyph) + "g" + string(cellNewlineGlyph) + "h validity"
+	if got != want {
+		t.Errorf("VisibleControls = %q, want %q", got, want)
+	}
+	if s := VisibleControls("plain text 123 !@#"); s != "plain text 123 !@#" {
+		t.Errorf("printable input = %q, want byte-identical", s)
+	}
+}

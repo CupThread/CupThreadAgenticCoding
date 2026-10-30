@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/api"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -388,13 +389,22 @@ to the body without changing the signed values.`,
 			if A.structured() {
 				return A.out.Structured(out)
 			}
-			A.out.Printf("✓ signed payment attributes for %s (userToken %s)", appKey, token)
-			A.out.Printf("canonical:")
-			A.out.Printf("%s", canonical)
-			A.out.Printf("signature: %s", signature)
-			A.out.Printf("timestamp: %d", stamp)
+			// Issue #396: appKey (raw flag) and canonical (embeds the body's
+			// plan value, which passes schema validation with control
+			// characters intact) carry attacker-shaped bytes, so every human
+			// line on this surface goes through PrintfSafe. The structured
+			// output above stays byte-faithful for signature replay.
+			A.out.PrintfSafe("✓ signed payment attributes for %s (userToken %s)", appKey, token)
+			A.out.PrintfSafe("canonical:")
+			// The canonical string's newlines are its field structure, not an
+			// attack: render them as the visible cell glyph so the signed
+			// layout stays eyeballable, and let PrintfSafe strip every other
+			// control (CodeRabbit review of #398).
+			A.out.PrintfSafe("%s", output.VisibleControls(canonical))
+			A.out.PrintfSafe("signature: %s", signature)
+			A.out.PrintfSafe("timestamp: %d", stamp)
 			if out.Note != "" {
-				A.out.Printf("note: %s", out.Note)
+				A.out.PrintfSafe("note: %s", out.Note)
 			}
 			return nil
 		},
