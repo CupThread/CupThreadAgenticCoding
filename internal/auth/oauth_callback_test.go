@@ -350,6 +350,15 @@ func TestCallbackMismatchNoticePrintedOnce(t *testing.T) {
 		t.Fatalf("stderr pipe: %v", err)
 	}
 	os.Stderr = errW
+	// Restore the real stderr (and close the pipe) on every exit path: a
+	// t.Fatalf after the swap must not leave later tests writing into this
+	// pipe (CodeRabbit review of #403). The in-body restore below stays for
+	// the happy path, where the drain needs the write end closed first.
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		_ = errW.Close()
+		_ = errR.Close()
+	})
 
 	server, _, _ := newTestCallbackServer(t, state)
 	// Two foreign requests in a row: only the first may produce a notice.
