@@ -445,6 +445,11 @@ cupthread comments list <featureRequestId> # List comments on a feature request 
 `comments list` needs no credential: it reads the public thread GET through a
 credential-free client and never sends the console bearer, so a clean machine
 (or a logged-out CI script) can read public board threads (issue #182).
+`<featureRequestId>` must be the **full** request id: this credential-free
+path has no console resolution, and the public board table prints the
+truncated 12-character form, so a copy from that table 404s — the error names
+the ID shape as a likely cause (copy the full id with
+`apps public-feature-requests <app-key> --json`).
 
 `comments create` cannot succeed with any CLI credential and fails locally
 before sending anything: the comment POST requires a signed-in end-user
@@ -482,13 +487,20 @@ comment posted a moment ago can be missing.
 
 ### Comment Moderation (workspace)
 ```sh
-cupthread comments moderation list <featureRequestId>  # All comments incl. hidden ones (404 if not in workspace)
+cupthread comments moderation list <featureRequestId>  # All comments incl. hidden ones (accepts the truncated id form, like 'features get')
 cupthread comments moderation hide <commentId>         # Hide a comment from public portals
 cupthread comments moderation unhide <commentId>       # Restore a hidden comment
 cupthread comments moderation delete <commentId>       # Permanently delete a comment (404 if not in workspace)
 ```
 The moderation group is `[token-safe]` (content.manage) and works from any
 workspace role whose capabilities include it.
+
+`comments moderation list` resolves `<featureRequestId>` through the features
+contract — the exact id **or a unique prefix** of one, exactly like
+`features get` — so the 12-character id `features list` prints works as-is
+(issue #417); ambiguity errors locally, and absence names the scope the scan
+actually covered — the selected (or default) app, else the workspace — with
+`--app` as the escape hatch.
 
 The moderation table prints comment ids truncated to **12 characters**.
 `hide`/`unhide`/`delete` take the **full** comment id — copy it from

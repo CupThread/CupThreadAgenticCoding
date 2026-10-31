@@ -192,7 +192,20 @@ func newCommentsModerationListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path := wsPath(ws, "/feature-requests/"+pathID(args[0])+"/comments")
+			// Resolve the reference through the features contract (exact id
+			// or unique prefix, issue #417) instead of forwarding it
+			// verbatim: the features table prints 12-character ids, so the
+			// copy-from-table entry this command is the next step of used to
+			// dead-end in a guaranteed 404. --thread on hide/unhide/delete
+			// already resolves through the same helper, so the family stops
+			// splitting its own arguments into prefix-capable and verbatim.
+			// An exact id short-circuits on the page that holds it; absence
+			// and ambiguity keep the #187 scoped not-found/ambiguous errors.
+			frID, err := commentThreadRef(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			path := wsPath(ws, "/feature-requests/"+pathID(frID)+"/comments")
 			resp, err := fetchCommentThread(func(cursor string) (*api.ListCommentsResponse, error) {
 				// Page 1 keeps the historic nil query; later pages echo
 				// the server's nextCursor back as the cursor parameter.
@@ -203,7 +216,10 @@ func newCommentsModerationListCmd() *cobra.Command {
 				var page api.ListCommentsResponse
 				if err := A.client.Do(cmd.Context(), "GET", path, q, nil, &page); err != nil {
 					if apiNotFound(err) {
-						return nil, notFoundErr("feature request", args[0], ws)
+						// Only reachable on a request deleted between the
+						// resolution and the walk; name the resolved id — the
+						// resource the caller actually addressed.
+						return nil, notFoundErr("feature request", frID, ws)
 					}
 					return nil, err
 				}
@@ -373,9 +389,14 @@ disabled answer 401.`,
 					// PRIV-12: the public thread endpoint answers 404 both for a
 					// missing id and for an unapproved request (existence
 					// hiding), so the message must not imply the request never
-					// existed.
+					// existed. No console resolution is available on this
+					// credential-free path and the public board listing cannot
+					// be prefix-matched client-side without paging the whole
+					// feed, so the verbatim id stays — but the 404 names the ID
+					// shape as a likely cause, since the public board table
+					// prints the truncated form (issue #417).
 					if apiNotFound(err) {
-						return nil, fmt.Errorf("comments for feature request %q are not available: the request may not exist, may be private, or may not be approved yet (unapproved requests are hidden from the public board)", args[0])
+						return nil, fmt.Errorf("comments for feature request %q are not available: the request may not exist, may be private, or may not be approved yet (unapproved requests are hidden from the public board); note the ID must be the full form — table listings truncate to 12 characters (copy it with --json)", args[0])
 					}
 					return nil, err
 				}
