@@ -95,6 +95,25 @@ func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 		{false, []string{"features", "approve", "@ID@"}},
 		{true, []string{"features", "delete", "@ID@"}},
 		{false, []string{"features", "forward", "@ID@", "--target", "issue"}},
+		// The id-or-slug / app-key references resolved by list-and-match
+		// (lookupWorkspace/lookupApp) plus the unauthenticated public
+		// app-key commands (issue #430): the blank value used to reach
+		// lookupWorkspace/lookupApp as a wasted authenticated round trip
+		// that misreported the unset variable as "not found", and the
+		// public commands built // paths, a trailing-slash collection
+		// path, and an empty appKey= query before failing. The guard
+		// fires in the Args layer, before the lookup or any request.
+		{false, []string{"workspaces", "use", "@ID@"}},
+		{false, []string{"apps", "get", "@ID@"}},
+		{false, []string{"apps", "use", "@ID@"}},
+		{false, []string{"apps", "update", "@ID@"}},
+		{false, []string{"apps", "settings", "show", "@ID@"}},
+		{false, []string{"apps", "settings", "set", "@ID@"}},
+		{false, []string{"integrations", "github", "config", "@ID@"}},
+		{false, []string{"integrations", "github", "sync", "@ID@"}},
+		{false, []string{"apps", "public-changelog", "@ID@"}},
+		{false, []string{"apps", "public-feature-requests", "@ID@"}},
+		{false, []string{"apps", "public-config", "@ID@"}},
 	}
 
 	blanks := []string{"", "   "}
@@ -176,6 +195,13 @@ func TestBlankArgGuardKeepsNonBlankIDsWorking(t *testing.T) {
 	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "assign", "sub_1"); err != nil {
 		t.Fatalf("inbox assign sub_1 (unassign): %v", err)
 	}
+	// Same presence discipline for the #430 optional positionals: bare
+	// 'apps settings show' (the whole-workspace listing) keeps working —
+	// the new nonBlankArg(0, …) fires only when the optional app
+	// id-or-slug is actually supplied.
+	if _, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "apps", "settings", "show"); err != nil {
+		t.Fatalf("apps settings show (workspace listing): %v", err)
+	}
 
 	// A blank optional assignee is refused locally too (CodeRabbit review of
 	// #296): RunE would otherwise send assignedTo: "" as a real assignment.
@@ -198,8 +224,8 @@ func TestBlankArgGuardKeepsNonBlankIDsWorking(t *testing.T) {
 		t.Errorf("comments moderation hide cmt_missing error = %v, want the not-found error", err)
 	}
 
-	if hits != 7 {
-		t.Errorf("server saw %d request(s), want 7", hits)
+	if hits != 8 {
+		t.Errorf("server saw %d request(s), want 8", hits)
 	}
 }
 

@@ -142,7 +142,7 @@ func newWorkspacesUseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <workspace-id-or-slug>",
 		Short: "Set your default workspace",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("workspace id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := A.lookupWorkspace(cmd.Context(), args[0])
 			if err != nil {
