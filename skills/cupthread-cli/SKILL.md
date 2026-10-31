@@ -269,6 +269,17 @@ answers 200, and the CLI rewrites an out-of-range `--offset` locally with a
 `⚠` notice, so an offset walk past the cap re-reads the final page instead
 of advancing — there is nothing deeper to page to.
 
+The inbox tables print submission ids truncated to **12 characters** (same
+convention as every other listing). The submission-taking commands accept
+that form: `inbox get/priority/triage/assign/retry` resolve a unique id
+**prefix** through the workspace listing (unfiltered, offset walk) and then
+act on the **full** id — a full id keeps the one-request exact path, and the
+✓ line carries the resolved full id. `inbox bulk-triage` resolves every
+positional id up front, because its endpoint skips unknown ids instead of
+failing, so a truncated id must never reach it verbatim. A prefix matching
+several submissions fails with `ambiguous submission prefix …; use a longer
+prefix`, and one matching nothing names the scanned workspace window.
+
 ### Notifications
 ```sh
 cupthread notifications list               # List notifications, newest first (footers: shown/total, then unread count)
@@ -298,6 +309,14 @@ limit. Like the other console listings it caps `--offset` at the
 server's shared **10,000** (above it the route clamps and still returns 200;
 the CLI rewrites the value with a `⚠` notice), so a walk reaching the cap
 repeats the final page — stop there.
+
+The listing prints ids truncated to **12 characters**, and `notifications
+read` accepts that form: it resolves a unique id **prefix** through the
+listing (a full id keeps the one-request exact path) and marks the **full**
+id read — the ✓ line and the `--json` mutation record carry the resolved
+full id. A prefix matching several notifications fails with `ambiguous
+notification prefix …; use a longer prefix`; one matching nothing names the
+scanned workspace window.
 
 ### Feature Requests & Roadmap
 ```sh

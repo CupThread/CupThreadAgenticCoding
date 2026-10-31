@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,6 +141,100 @@ open/in_progress/resolved/archived.`,
 // parseListPagination maxLimit); the list command clamps --limit to it.
 const inboxPageSize = 200
 
+// maxInboxResolvePages caps submission ID-resolution paging the way
+// maxChangelogResolvePages does: 51 pages of the listing's 200-entry page cap
+// covers offsets 0 through 10,000 — the whole reachable universe, since the
+// server clamps offset at the shared 10,000-entry cap and still answers 200
+// with the final page (issue #178). The +1 matters for correctness, not
+// thrift (PR #414 review): without it the offset-10,000 page is never
+// scanned, and a prefix matching both a submission in the scanned window and
+// one on that final page would wrongly resolve to the scanned one — a
+// triage/assign acting on the wrong row.
+const maxInboxResolvePages = consoleListMaxOffset/inboxPageSize + 1
+
+// resolveSubmissionRecord resolves a submission reference — the exact id or a
+// unique prefix of one — against the workspace listing (issue #418): the
+// inbox list and deliveries tables print 12-character ids, and the
+// submission-taking commands used to forward the truncated form verbatim,
+// which the server can only answer with a guaranteed 404. The walk is
+// unfiltered (the whole workspace — resolution never applies the list
+// command's filters), and matching, ambiguity, and the page-cap guard live in
+// the shared resolveIDRef.
+func resolveSubmissionRecord(ctx context.Context, ws, ref string) (*api.SubmissionRecord, error) {
+	return resolveIDRef(ref, idRefNouns{what: "submission", plural: "submissions", listHint: "cupthread inbox list"}, maxInboxResolvePages, true,
+		func(page int) ([]api.SubmissionRecord, bool, error) {
+			offset := page * inboxPageSize
+			q := url.Values{"limit": {strconv.Itoa(inboxPageSize)}, "offset": {strconv.Itoa(offset)}}
+			var resp api.ListSubmissionsResponse
+			if err := A.client.Do(ctx, "GET", wsPath(ws, "/submissions"), q, nil, &resp); err != nil {
+				return nil, false, err
+			}
+			return resp.Submissions, len(resp.Submissions) < inboxPageSize || offset+len(resp.Submissions) >= resp.Total, nil
+		},
+		submissionNotFound(ws),
+		func(s *api.SubmissionRecord) string { return s.SubmissionID },
+	)
+}
+
+// submissionNotFound mirrors the changelog not-found contract: it names the
+// scope the scan actually covered — the workspace, since resolution walks the
+// unfiltered listing — and the listing the table ids come from.
+func submissionNotFound(ws string) func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+	return func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+		if !exhausted {
+			return fmt.Errorf("submission %q not found in the first %d submissions (resolution scans at most %d pages)", ref, scanned, maxInboxResolvePages)
+		}
+		return fmt.Errorf("submission %q not found (scanned %d submissions in workspace %s)", ref, scanned, ws)
+	}
+}
+
+// fireSubmissionRef fires one submission-scoped request at ref verbatim —
+// the one-request exact path every full-id caller keeps — and only when that
+// answers 404, the truncated reference's guaranteed answer, resolves the
+// reference against the workspace listing and fires again at the resolved
+// full id. It returns the id the successful request used, so every echo line
+// carries the resolved-full-id contract the other families follow. The probe
+// is safe to fire first: the server matches exact ids only, so a truncated
+// reference 404s without touching any row, and the API client never retries a
+// 404. A non-404 failure (5xx, auth, tier limit) propagates without
+// resolution, so the server's own diagnosis is never masked.
+func fireSubmissionRef(ctx context.Context, ws, ref string, fire func(id string) error) (string, error) {
+	if err := fire(ref); err == nil {
+		return ref, nil
+	} else if !apiNotFound(err) {
+		return "", err
+	}
+	rec, err := resolveSubmissionRecord(ctx, ws, ref)
+	if err != nil {
+		return "", err
+	}
+	if err := fire(rec.SubmissionID); err != nil {
+		return "", err
+	}
+	return rec.SubmissionID, nil
+}
+
+// fetchOneSubmission resolves a submission reference for the one caller that
+// must hold the full id before it fires: bulk-triage's body lists every id,
+// and its endpoint skips unknown ids instead of 404ing, so a truncated
+// reference would be silently skipped rather than probe-and-refired like the
+// single-submission commands. The exact id keeps its one-request fast path
+// against the detail route; only its 404 falls back to the workspace listing
+// walk (the fetchOneImportJob pattern).
+func fetchOneSubmission(ctx context.Context, ref string) (*api.SubmissionRecord, error) {
+	ws, err := workspaceClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var detail api.SubmissionDetail
+	if err := A.client.Do(ctx, "GET", wsPath(ws, "/submissions/"+pathID(ref)), nil, nil, &detail); err == nil {
+		return &detail.Submission, nil
+	} else if !apiNotFound(err) {
+		return nil, err
+	}
+	return resolveSubmissionRecord(ctx, ws, ref)
+}
+
 // newInboxGetCmd shows the full triage detail of one submission, including the
 // workspace-scoped activity log.
 func newInboxGetCmd() *cobra.Command {
@@ -153,7 +248,9 @@ func newInboxGetCmd() *cobra.Command {
 				return err
 			}
 			var resp api.SubmissionDetail
-			if err := A.client.Do(cmd.Context(), "GET", wsPath(ws, "/submissions/"+pathID(args[0])), nil, nil, &resp); err != nil {
+			if _, err := fireSubmissionRef(cmd.Context(), ws, args[0], func(id string) error {
+				return A.client.Do(cmd.Context(), "GET", wsPath(ws, "/submissions/"+pathID(id)), nil, nil, &resp)
+			}); err != nil {
 				return err
 			}
 			if A.structured() {
@@ -246,13 +343,16 @@ func newInboxPriorityCmd() *cobra.Command {
 			}
 			body := map[string]string{"priority": p}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(args[0])+"/priority"), nil, body, &resp); err != nil {
+			id, err := fireSubmissionRef(cmd.Context(), ws, args[0], func(id string) error {
+				return A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(id)+"/priority"), nil, body, &resp)
+			})
+			if err != nil {
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Priority of %s set to %s", args[0], p)
+			A.out.Printf("✓ Priority of %s set to %s", id, p)
 			return nil
 		},
 	}
@@ -283,13 +383,16 @@ platform and only changeable via 'cupthread inbox retry'.`,
 			}
 			body := map[string]string{"triageStatus": status}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/submissions/"+pathID(id)+"/triage"), nil, body, &resp); err != nil {
+			resolved, err := fireSubmissionRef(cmd.Context(), ws, id, func(id string) error {
+				return A.client.Do(cmd.Context(), "PATCH", wsPath(ws, "/submissions/"+pathID(id)+"/triage"), nil, body, &resp)
+			})
+			if err != nil {
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Triage status of %s set to %s", id, status)
+			A.out.Printf("✓ Triage status of %s set to %s", resolved, status)
 			return nil
 		},
 	}
@@ -320,16 +423,19 @@ also moves it to in_progress. Omitting the user ID unassigns it.`,
 				return err
 			}
 			var resp api.SubmissionRecord
-			if err := A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(id)+"/assign"), nil, body, &resp); err != nil {
+			resolved, err := fireSubmissionRef(cmd.Context(), ws, id, func(id string) error {
+				return A.client.Do(cmd.Context(), "PUT", wsPath(ws, "/submissions/"+pathID(id)+"/assign"), nil, body, &resp)
+			})
+			if err != nil {
 				return err
 			}
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
 			if body.AssignedTo == nil {
-				A.out.Printf("✓ Submission %s unassigned", id)
+				A.out.Printf("✓ Submission %s unassigned", resolved)
 			} else {
-				A.out.Printf("✓ Submission %s assigned to %s", id, *body.AssignedTo)
+				A.out.Printf("✓ Submission %s assigned to %s", resolved, *body.AssignedTo)
 			}
 			return nil
 		},
@@ -366,7 +472,22 @@ outside the workspace are skipped; the command reports which IDs were updated.`,
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"submissionIds": args}
+			// Every positional reference resolves before the body is built
+			// (issue #418): the bulk endpoint skips ids outside the workspace
+			// instead of 404ing, so a truncated reference must never reach it
+			// verbatim — it would be silently skipped, and UpdatedCount would
+			// under-report with exit code 0. The single-submission commands'
+			// probe-and-refire cannot exist here, so each reference takes the
+			// detail-GET fast path and its 404 the listing walk.
+			ids := make([]string, 0, len(args))
+			for i, ref := range args {
+				rec, err := fetchOneSubmission(cmd.Context(), ref)
+				if err != nil {
+					return fmt.Errorf("argument %d: %w", i+1, err)
+				}
+				ids = append(ids, rec.SubmissionID)
+			}
+			body := map[string]any{"submissionIds": ids}
 			if status != "" {
 				body["triageStatus"] = status
 			}
@@ -412,8 +533,10 @@ func newInboxRetryCmd() *cobra.Command {
 				return err
 			}
 			var resp api.RetrySubmissionResponse
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/submissions/"+pathID(args[0])+"/retry"), nil, nil, &resp); err != nil {
+			if _, err := fireSubmissionRef(cmd.Context(), ws, args[0], func(id string) error {
 				// 502 carries a structured partial-failure payload; surface it.
+				return A.client.Do(cmd.Context(), "POST", wsPath(ws, "/submissions/"+pathID(id)+"/retry"), nil, nil, &resp)
+			}); err != nil {
 				return err
 			}
 			if A.structured() {

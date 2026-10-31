@@ -735,6 +735,11 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 		{
 			name: "inbox bulk-triage updated ids",
 			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				// The up-front ID resolution (issue #418) GETs the detail first.
+				if r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/submissions/sub_1" {
+					reply(t, w, `{"submission":{"submissionId":"sub_1"}}`)
+					return
+				}
 				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/submissions/bulk-triage" {
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
@@ -746,6 +751,11 @@ func TestResidualServerTextSanitizedInHumanLines(t *testing.T) {
 		{
 			name: "inbox retry discussion url",
 			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				// The 404-fallback resolution (issue #418) GETs the detail first.
+				if r.Method == http.MethodGet && r.URL.Path == "/api/v1/console/workspaces/ws_1/submissions/sub_1" {
+					reply(t, w, `{"submission":{"submissionId":"sub_1"}}`)
+					return
+				}
 				if r.Method != http.MethodPost || r.URL.Path != "/api/v1/console/workspaces/ws_1/submissions/sub_1/retry" {
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}

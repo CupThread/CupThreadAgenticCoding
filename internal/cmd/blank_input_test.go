@@ -179,19 +179,22 @@ func TestBlankArgGuardKeepsNonBlankIDsWorking(t *testing.T) {
 		t.Errorf("inbox assign sub_1 \"\" error = %v, want the blank-assignee refusal", err)
 	}
 
-	// An unknown non-blank id keeps its server not-found error — the guard
-	// must not swallow resolution failures behind a local message.
+	// An unknown non-blank id still fails with a not-found error — the guard
+	// must not swallow resolution failures behind a local message. Since
+	// issue #418 the 404 also triggers the listing-walk fallback (one extra
+	// GET, served empty here), and the scoped not-found wording names the
+	// scanned window.
 	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "inbox", "get", "sub_missing")
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "not found") {
-		t.Errorf("inbox get sub_missing error = %v, want the server not-found error", err)
+		t.Errorf("inbox get sub_missing error = %v, want the not-found error", err)
 	}
 	_, err = runRootWithSeededConfig(t, server.URL, defaultAppConfig, "comments", "moderation", "hide", "cmt_missing")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("comments moderation hide cmt_missing error = %v, want the not-found error", err)
 	}
 
-	if hits != 6 {
-		t.Errorf("server saw %d request(s), want 6", hits)
+	if hits != 7 {
+		t.Errorf("server saw %d request(s), want 7", hits)
 	}
 }
 

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -103,6 +104,75 @@ func newNotificationsListCmd() *cobra.Command {
 // route's parseListPagination maxLimit); the list command clamps --limit to it.
 const notificationPageSize = 200
 
+// maxNotificationResolvePages caps notifications read's ID-resolution paging
+// the way maxChangelogResolvePages does: 51 pages of the listing's 200-entry
+// page cap covers offsets 0 through 10,000 — the whole reachable universe,
+// since the server clamps offset at the shared 10,000-entry cap and still
+// answers 200 with the final page (issue #178). The +1 matters for
+// correctness, not thrift (PR #414 review): without it the offset-10,000 page
+// is never scanned, and a prefix matching both a notification in the scanned
+// window and one on that final page would wrongly resolve to the scanned one.
+const maxNotificationResolvePages = consoleListMaxOffset/notificationPageSize + 1
+
+// markNotificationRead resolves a notification reference — the exact id or a
+// unique prefix of one — and marks it read (issue #418): the list table
+// prints 12-character ids via shortID, and `notifications read` used to
+// forward the truncated form verbatim, which the server can only answer with
+// a guaranteed 404.
+//
+// The exact id keeps its one-request fast path — today's single POST — and
+// only its 404, the truncated reference's guaranteed answer (and equally the
+// answer for a genuinely absent id), falls back to the workspace listing walk
+// and a second POST at the resolved id, the fetchOneImportJob pattern. The
+// probe POST is safe to fire first: the server matches exact ids only, so a
+// truncated reference 404s without touching any row, and the API client never
+// retries a 404. Matching, ambiguity, and the page-cap guard live in the
+// shared resolveIDRef. Returns the id the successful POST used, so the ✓ line
+// and the structured mutation record carry the resolved-full-id contract
+// every other family follows.
+func markNotificationRead(ctx context.Context, ws, ref string) (string, error) {
+	fire := func(id string) error {
+		return A.client.Do(ctx, "POST", wsPath(ws, "/notifications/"+pathID(id)+"/read"), nil, nil, nil)
+	}
+	if err := fire(ref); err == nil {
+		return ref, nil
+	} else if !apiNotFound(err) {
+		return "", err
+	}
+	n, err := resolveIDRef(ref, idRefNouns{what: "notification", plural: "notifications", listHint: "cupthread notifications list"}, maxNotificationResolvePages, true,
+		func(page int) ([]api.Notification, bool, error) {
+			offset := page * notificationPageSize
+			q := url.Values{"limit": {strconv.Itoa(notificationPageSize)}, "offset": {strconv.Itoa(offset)}}
+			var resp api.ListNotificationsResponse
+			if err := A.client.Do(ctx, "GET", wsPath(ws, "/notifications"), q, nil, &resp); err != nil {
+				return nil, false, err
+			}
+			return resp.Notifications, len(resp.Notifications) < notificationPageSize || offset+len(resp.Notifications) >= resp.Total, nil
+		},
+		notificationNotFound(ws),
+		func(n *api.Notification) string { return n.ID },
+	)
+	if err != nil {
+		return "", err
+	}
+	if err := fire(n.ID); err != nil {
+		return "", err
+	}
+	return n.ID, nil
+}
+
+// notificationNotFound mirrors the changelog not-found contract: it names the
+// scope the scan actually covered — the workspace, the notifications
+// listing's only scope — and the listing the table ids come from.
+func notificationNotFound(ws string) func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+	return func(ref string, scanned int, exhausted bool, prefixMatches int) error {
+		if !exhausted {
+			return fmt.Errorf("notification %q not found in the first %d notifications (resolution scans at most %d pages)", ref, scanned, maxNotificationResolvePages)
+		}
+		return fmt.Errorf("notification %q not found (scanned %d notifications in workspace %s)", ref, scanned, ws)
+	}
+}
+
 func newNotificationsReadCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "read <notification-id>",
@@ -113,13 +183,14 @@ func newNotificationsReadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := A.client.Do(cmd.Context(), "POST", wsPath(ws, "/notifications/"+pathID(args[0])+"/read"), nil, nil, nil); err != nil {
+			id, err := markNotificationRead(cmd.Context(), ws, args[0])
+			if err != nil {
 				return err
 			}
 			if A.structured() {
-				return A.emitMutationResult("read", args[0])
+				return A.emitMutationResult("read", id)
 			}
-			A.out.Printf("✓ Marked %s as read", args[0])
+			A.out.Printf("✓ Marked %s as read", id)
 			return nil
 		},
 	}
