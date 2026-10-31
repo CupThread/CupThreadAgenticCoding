@@ -17,6 +17,7 @@ import (
 
 	"github.com/CupThread/CupThreadAgenticCoding/internal/auth"
 	"github.com/CupThread/CupThreadAgenticCoding/internal/config"
+	"github.com/CupThread/CupThreadAgenticCoding/internal/output"
 )
 
 // hostileOSC8URL is the issue #183 attack payload: a protocol-legal JSON
@@ -1403,6 +1404,157 @@ func TestAuthLoginSessionCheckFailureClearedContextSanitized(t *testing.T) {
 	assertNoControlBytesStrict(t, stderr)
 	if !strings.Contains(stderr, "Cleared saved default workspace "+hostileWorkspaceIDVisible) {
 		t.Errorf("structured stderr lost the visible cleared-context remnant:\n%q", stderr)
+	}
+}
+
+// hostileRecordIDTail is the issue #424 attack payload riding a resolved
+// record id: an OSC 8 hyperlink to evil.example, red SGR text, and a
+// CR-forged output line — the #183 payload family, served in the bytes the
+// server adds *beyond* the caller's truncated prefix.
+const hostileRecordIDTail = "\x1b]8;;https://evil.example/x\x1b\\CLICK\x1b]8;;\x1b\\\x1b[31mRED\x1b[0m\rforged-line"
+
+// hostileSubmissionID / hostileNotificationID are the poisoned record ids the
+// resolution listings serve: the caller's truncated reference (`sub_1`,
+// `ntf_1`) is a proper prefix, so the exact-match probe 404s and the server
+// controls every byte the resolution path appends — the copy-from-table
+// workflow the #418 resolution paths enabled.
+var (
+	hostileSubmissionID   = "sub_1" + hostileRecordIDTail
+	hostileNotificationID = "ntf_1" + hostileRecordIDTail
+)
+
+// TestResolvedRecordIDSuccessLinesSanitized pins the issue #424 contract: the
+// ✓ success lines of `notifications read` and the inbox single-submission
+// triage commands interpolate the *resolved* record id, which is
+// server-derived whenever the probe 404s and the listing walk resolves the
+// caller's truncated prefix — so each line renders through PrintfSafe. One
+// table-driven case per call site: the stub serves a listing whose record id
+// carries the hostile payload after the caller's prefix, 404s the exact probe
+// so resolution runs, and answers the resolved refire. Human stdout must
+// carry zero control bytes (the CR-forged line included) while --json keeps
+// the resolved id byte-faithful for programmatic consumers.
+func TestResolvedRecordIDSuccessLinesSanitized(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	submissionRecord := func(id string) string {
+		return `{"submissionId":` + mustQuoteJSON(t, id) + `,"title":"Crash on launch","platform":"ios","priority":"!!!","status":"received","triageStatus":"open"}`
+	}
+	cases := []struct {
+		name        string
+		probeMethod string
+		probePath   string
+		listingPath string
+		listingBody string
+		fireBody    string
+		resolvedID  string
+		cmd         []string
+		dig         []any
+	}{
+		{
+			name:        "notifications read",
+			probeMethod: http.MethodPost,
+			probePath:   "/api/v1/console/workspaces/ws_1/notifications/ntf_1/read",
+			listingPath: "/api/v1/console/workspaces/ws_1/notifications",
+			listingBody: `{"notifications":[{"id":` + mustQuoteJSON(t, hostileNotificationID) + `,"workspaceId":"ws_1","type":"system","title":"T","createdAt":"2026-01-01T00:00:00Z"}],"total":1,"unreadCount":1}`,
+			fireBody:    `{}`,
+			resolvedID:  hostileNotificationID,
+			cmd:         []string{"notifications", "read", "ntf_1", "--workspace", "ws_1"},
+			dig:         []any{"id"},
+		},
+		{
+			name:        "inbox priority",
+			probeMethod: http.MethodPut,
+			probePath:   "/api/v1/console/workspaces/ws_1/submissions/sub_1/priority",
+			listingPath: "/api/v1/console/workspaces/ws_1/submissions",
+			listingBody: `{"submissions":[` + submissionRecord(hostileSubmissionID) + `],"total":1}`,
+			fireBody:    submissionRecord(hostileSubmissionID),
+			resolvedID:  hostileSubmissionID,
+			cmd:         []string{"inbox", "priority", "sub_1", "!!!", "--workspace", "ws_1"},
+			dig:         []any{"submissionId"},
+		},
+		{
+			name:        "inbox triage",
+			probeMethod: http.MethodPatch,
+			probePath:   "/api/v1/console/workspaces/ws_1/submissions/sub_1/triage",
+			listingPath: "/api/v1/console/workspaces/ws_1/submissions",
+			listingBody: `{"submissions":[` + submissionRecord(hostileSubmissionID) + `],"total":1}`,
+			fireBody:    submissionRecord(hostileSubmissionID),
+			resolvedID:  hostileSubmissionID,
+			cmd:         []string{"inbox", "triage", "sub_1", "resolved", "--workspace", "ws_1"},
+			dig:         []any{"submissionId"},
+		},
+		{
+			name:        "inbox assign",
+			probeMethod: http.MethodPut,
+			probePath:   "/api/v1/console/workspaces/ws_1/submissions/sub_1/assign",
+			listingPath: "/api/v1/console/workspaces/ws_1/submissions",
+			listingBody: `{"submissions":[` + submissionRecord(hostileSubmissionID) + `],"total":1}`,
+			fireBody:    submissionRecord(hostileSubmissionID),
+			resolvedID:  hostileSubmissionID,
+			cmd:         []string{"inbox", "assign", "sub_1", "user_1", "--workspace", "ws_1"},
+			dig:         []any{"submissionId"},
+		},
+		{
+			name:        "inbox unassign",
+			probeMethod: http.MethodPut,
+			probePath:   "/api/v1/console/workspaces/ws_1/submissions/sub_1/assign",
+			listingPath: "/api/v1/console/workspaces/ws_1/submissions",
+			listingBody: `{"submissions":[` + submissionRecord(hostileSubmissionID) + `],"total":1}`,
+			fireBody:    submissionRecord(hostileSubmissionID),
+			resolvedID:  hostileSubmissionID,
+			cmd:         []string{"inbox", "assign", "sub_1", "--workspace", "ws_1"},
+			dig:         []any{"submissionId"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == tc.probeMethod && r.URL.Path == tc.probePath:
+					// The server matches exact ids only: the caller's
+					// truncated reference 404s without touching a row, and
+					// the listing-walk resolution begins.
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"error":"not found"}`))
+				case r.Method == http.MethodGet && r.URL.Path == tc.listingPath:
+					_, _ = w.Write([]byte(tc.listingBody))
+				default:
+					// The resolved refire: the hostile id's escaped bytes in
+					// the path are what distinguish it from the probe, so a
+					// fixture mistake fails loudly instead of passing.
+					if !strings.Contains(r.URL.Path, "\x1b") {
+						t.Errorf("unexpected request %s %s — want the resolved refire carrying the hostile id", r.Method, r.URL.Path)
+					}
+					_, _ = w.Write([]byte(tc.fireBody))
+				}
+			}))
+			defer server.Close()
+
+			out, err := runRoot(t, server.URL, tc.cmd...)
+			if err != nil {
+				t.Fatalf("%v: %v", tc.cmd, err)
+			}
+			assertNoControlBytesStrict(t, out)
+			if visible := output.StripTerminalControls(tc.resolvedID); !strings.Contains(out, visible) {
+				t.Errorf("human output lost the visible resolved-id remnant:\n%q", out)
+			}
+
+			// Structured mode stays byte-faithful: the hostile resolved id
+			// survives the round-trip exactly (encoding/json escapes the
+			// controls) — sanitization is scoped to human lines.
+			structured, err := runRoot(t, server.URL, append(append([]string{}, tc.cmd...), "--json")...)
+			if err != nil {
+				t.Fatalf("%v --json: %v", tc.cmd, err)
+			}
+			var payload any
+			if err := json.Unmarshal([]byte(strings.TrimSpace(structured)), &payload); err != nil {
+				t.Fatalf("decode --json output %q: %v", structured, err)
+			}
+			if got, _ := digJSONPath(t, payload, tc.dig...).(string); got != tc.resolvedID {
+				t.Errorf("--json at %v = %q, want the resolved id byte-faithful", tc.dig, got)
+			}
+		})
 	}
 }
 
