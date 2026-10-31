@@ -10,9 +10,11 @@ import (
 // escapeServer records the exact wire form of every request: EscapedPath (not
 // the decoded r.URL.Path) is what upstream routing sees, and RawQuery proves
 // no '?' in an id was promoted to a query string. It answers the changelog
-// listing (the ID-resolution walk's first hop, issue #413) with one entry and
-// 404s the imports single-job GET, so an unresolvable reference stops at the
-// listing walk instead of firing a mutation.
+// listing (the ID-resolution walk's first hop, issue #413) and the
+// feature-request listing (comments moderation list's resolution hop, issue
+// #417) with one entry each, and 404s the imports single-job GET, so an
+// unresolvable reference stops at the listing walk instead of firing a
+// mutation.
 func escapeServer(t *testing.T, methods *[]string, paths *[]string, queries *[]string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,6 +24,10 @@ func escapeServer(t *testing.T, methods *[]string, paths *[]string, queries *[]s
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/changelog") {
 			_, _ = w.Write([]byte(changelogListingJSON("entry_1")))
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/feature-requests") {
+			_, _ = w.Write([]byte(featureListingJSON("req_abc")))
 			return
 		}
 		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/imports/") {
@@ -133,6 +139,21 @@ func TestHostileIDsStayOnePathSegment(t *testing.T) {
 					}
 					if methods[0] != http.MethodGet || !strings.HasSuffix(paths[0], "/changelog") {
 						t.Errorf("wire = %s %s, want the changelog listing GET only (hostile id must never reach a mutation path)", methods[0], paths[0])
+					}
+					if queries[0] == "" {
+						t.Errorf("wire query = %q, want the listing's paging query (the reference must stay local)", queries[0])
+					}
+				case tc.name == "comments moderation list":
+					// The #417 resolution walks the features listing before
+					// any thread GET, matching the reference locally — a
+					// hostile id never becomes a path segment here either:
+					// the walk costs exactly one listing GET and the hostile
+					// reference dies in the scoped not-found error.
+					if len(paths) != 1 {
+						t.Fatalf("issued %d request(s), want exactly 1 listing GET (paths %q)", len(paths), paths)
+					}
+					if methods[0] != http.MethodGet || !strings.HasSuffix(paths[0], "/feature-requests") {
+						t.Errorf("wire = %s %s, want the feature-request listing GET only (hostile id must never reach a thread path)", methods[0], paths[0])
 					}
 					if queries[0] == "" {
 						t.Errorf("wire query = %q, want the listing's paging query (the reference must stay local)", queries[0])

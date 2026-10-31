@@ -52,25 +52,30 @@ func runModerationRoot(t *testing.T, serverURL string, args ...string) (string, 
 }
 
 // TestCommentsModerationList covers the workspace-scoped moderation list
-// endpoint and asserts the path id is authoritative (no X-Workspace-Id).
+// endpoint end to end: the reference resolves through the features listing
+// first (issue #417), then the thread walk hits the resolved id, the path id
+// stays authoritative (no X-Workspace-Id), and the output shape is
+// unchanged from the pre-resolution command.
 func TestCommentsModerationList(t *testing.T) {
-	var gotMethod, gotPath, gotWorkspace string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath, gotWorkspace = r.Method, r.URL.Path, r.Header.Get("X-Workspace-Id")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(moderationCommentsFixture))
-	}))
+	server, seen := serveModerationResolution(t, featureListingJSON("fr_1"), []string{moderationCommentsFixture})
 	defer server.Close()
 
 	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_1", "--workspace", "ws_1")
 	if err != nil {
 		t.Fatalf("moderation list: %v", err)
 	}
-	if gotMethod != http.MethodGet || gotPath != "/api/v1/console/workspaces/ws_1/feature-requests/fr_1/comments" {
-		t.Errorf("request = %s %s", gotMethod, gotPath)
+	if len(*seen) != 2 {
+		t.Fatalf("requests = %d, want 2 (resolution listing + thread page)", len(*seen))
 	}
-	if gotWorkspace != "" {
-		t.Errorf("X-Workspace-Id = %q, want no header (path id is authoritative)", gotWorkspace)
+	resolution, thread := (*seen)[0], (*seen)[1]
+	if resolution.method != http.MethodGet || resolution.path != "/api/v1/console/workspaces/ws_1/feature-requests" {
+		t.Errorf("resolution request = %s %s", resolution.method, resolution.path)
+	}
+	if thread.method != http.MethodGet || thread.path != "/api/v1/console/workspaces/ws_1/feature-requests/fr_1/comments" {
+		t.Errorf("thread request = %s %s", thread.method, thread.path)
+	}
+	if resolution.wsHeader != "" || thread.wsHeader != "" {
+		t.Errorf("X-Workspace-Id = %q/%q, want no header (path id is authoritative)", resolution.wsHeader, thread.wsHeader)
 	}
 	for _, want := range []string{"Ada", "Please add dark mode", "Bob", "spam", "yes", "(2 comments)"} {
 		if !strings.Contains(out, want) {
@@ -79,18 +84,71 @@ func TestCommentsModerationList(t *testing.T) {
 	}
 }
 
-// TestCommentsModerationListNotFound verifies the 404 response (feature
-// request missing from the workspace) becomes an explicit error.
+// TestCommentsModerationListNotFound pins the resolution contract for a
+// reference that matches nothing (issue #417): a full id or a truncated
+// prefix absent from the workspace listing errors locally with the #187
+// scoped message naming the scanned workspace, instead of forwarding a
+// guaranteed 404 — and each failed invocation costs exactly one listing GET,
+// with no thread walk.
 func TestCommentsModerationListNotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"Feature request not found in this workspace"}`))
-	}))
+	server, seen := serveModerationResolution(t, featureListingJSON("fr_other_1", "fr_other_2"), []string{moderationCommentsFixture})
 	defer server.Close()
 
-	_, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_missing", "--workspace", "ws_1")
-	if err == nil || !strings.Contains(err.Error(), `feature request "fr_missing" not found in workspace ws_1`) {
-		t.Fatalf("error = %v, want a not-found message naming the workspace", err)
+	for _, ref := range []string{"fr_missing", "fr_miss_123456"} {
+		_, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", ref, "--workspace", "ws_1")
+		if err == nil || !strings.Contains(err.Error(), `feature request "`+ref+`" not found (scanned 2 requests in workspace ws_1)`) {
+			t.Fatalf("error = %v, want the scoped not-found message naming the workspace", err)
+		}
+	}
+	if n := len(*seen); n != 2 {
+		t.Fatalf("requests = %d, want one listing GET per failed resolution and no thread walk", n)
+	}
+}
+
+// TestCommentsModerationListResolvesTruncatedID covers the issue #417 copy
+// workflow end to end: `features list` prints the request's first 12
+// characters, and `comments moderation list` now accepts that truncated form
+// through the same features-listing walk `--thread` uses — the thread GET
+// carries the full resolved id and the human output is unchanged.
+func TestCommentsModerationListResolvesTruncatedID(t *testing.T) {
+	const fullID = "frtrunc_1234_abcdef"
+	server, seen := serveModerationResolution(t, featureListingJSON(fullID), []string{moderationCommentsFixture})
+	defer server.Close()
+
+	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", fullID[:12], "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("moderation list with 12-character prefix: %v", err)
+	}
+	if len(*seen) != 2 {
+		t.Fatalf("requests = %d, want resolution listing + thread page", len(*seen))
+	}
+	if q := (*seen)[0].query; !strings.Contains(q, "limit=200") || !strings.Contains(q, "offset=0") {
+		t.Errorf("resolution query = %q, want the listing paging parameters", q)
+	}
+	if (*seen)[1].path != "/api/v1/console/workspaces/ws_1/feature-requests/"+fullID+"/comments" {
+		t.Errorf("thread path = %s, want the full resolved id in the path", (*seen)[1].path)
+	}
+	for _, want := range []string{"Ada", "Please add dark mode", "Bob", "spam", "(2 comments)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestCommentsModerationListAmbiguousPrefixErrors pins the ambiguity
+// decision at the family's entry point (issue #417): a prefix matching two
+// feature requests errors locally naming the match count, and no thread GET
+// is ever sent.
+func TestCommentsModerationListAmbiguousPrefixErrors(t *testing.T) {
+	server, seen := serveModerationResolution(t, featureListingJSON("fr_twinaaaa1111", "fr_twinbbbb2222"), []string{moderationCommentsFixture})
+	defer server.Close()
+
+	_, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_twin", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous feature request prefix "fr_twin" matches 2 requests; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if len(*seen) != 1 {
+		t.Fatalf("requests = %d, want only the resolution listing, no thread walk", len(*seen))
 	}
 }
 
@@ -219,40 +277,78 @@ func TestCommentsModerationDeleteRefusesWithoutYes(t *testing.T) {
 // fmt.Errorf("moderation: %w", …404…) here, exactly the shape a future client
 // wrap would produce. Against the former direct err.(*api.APIError)
 // assertions every case fails with the wrapped raw error instead.
+//
+// The list command's 404 conversion now sits behind the #417 resolution, so
+// its seam lets the resolution listing succeed through a real server (an
+// exact match on fr_full_1) and fails only the second authenticated request —
+// the thread GET — with the wrapped 404; the expected message names the
+// resolved full id, not the verbatim argument.
 func TestCommentsModerationNotFoundSurvivesWrappedError(t *testing.T) {
 	wrapped404 := fmt.Errorf("moderation: %w", &api.APIError{
 		Status:  http.StatusNotFound,
 		Message: "Feature request not found in this workspace",
 	})
+	// failingTokenSeam fails every authenticated request with the wrapped
+	// 404 — the hide/unhide/delete seam, whose first request is the mutation.
+	failingTokenSeam := func(t *testing.T, a *app) {
+		t.Helper()
+		a.client = api.New("http://moderation.invalid")
+		a.client.Token = func(context.Context) (string, error) { return "", wrapped404 }
+	}
+	// resolveThenFailSeam lets the first authenticated request (the #417
+	// resolution listing, served by a real server) succeed and fails every
+	// later one — the thread walk — with the wrapped 404.
+	resolveThenFailSeam := func(t *testing.T, a *app) {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(featureListingJSON("fr_full_1")))
+		}))
+		t.Cleanup(server.Close)
+		a.client = api.New(server.URL)
+		calls := 0
+		a.client.Token = func(context.Context) (string, error) {
+			calls++
+			if calls == 1 {
+				return "cpt_test", nil
+			}
+			return "", wrapped404
+		}
+	}
 	cases := []struct {
 		name    string
 		cmd     func() *cobra.Command
 		args    []string
 		wantErr string
+		wire    func(t *testing.T, a *app)
 	}{
 		{
 			name:    "moderation list",
 			cmd:     newCommentsModerationListCmd,
-			args:    []string{"fr_missing"},
-			wantErr: `feature request "fr_missing" not found in workspace ws_1`,
+			args:    []string{"fr_full_1"},
+			wantErr: notFoundErr("feature request", "fr_full_1", "ws_1").Error(),
+			wire:    resolveThenFailSeam,
 		},
 		{
 			name:    "moderation hide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(true) },
 			args:    []string{"cmt_gone"},
 			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
+			wire:    failingTokenSeam,
 		},
 		{
 			name:    "moderation unhide",
 			cmd:     func() *cobra.Command { return newCommentsModerationHideCmd(false) },
 			args:    []string{"cmt_gone"},
 			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
+			wire:    failingTokenSeam,
 		},
 		{
 			name:    "moderation delete",
 			cmd:     newCommentsModerationDeleteCmd,
 			args:    []string{"cmt_gone"},
 			wantErr: notFoundErr("comment", "cmt_gone", "ws_1").Error() + commentModerationNotFoundHint,
+			wire:    failingTokenSeam,
 		},
 	}
 	for _, tc := range cases {
@@ -268,10 +364,13 @@ func TestCommentsModerationNotFoundSurvivesWrappedError(t *testing.T) {
 				cfg:     &config.Config{},
 				cfgPath: filepath.Join(t.TempDir(), "config.json"),
 			}
-			A.client = api.New("http://moderation.invalid")
-			A.client.Token = func(context.Context) (string, error) { return "", wrapped404 }
+			tc.wire(t, A)
 
 			cmd := tc.cmd()
+			// The list case's resolution listing is a real wire request, so
+			// the bare command needs the Context RunE would normally receive
+			// from cobra; the pre-wire Token failures never needed one.
+			cmd.SetContext(context.Background())
 			if cmd.Name() == "delete" {
 				if err := cmd.Flags().Set("yes", "true"); err != nil {
 					t.Fatalf("set --yes: %v", err)
@@ -413,9 +512,7 @@ func TestCommentsModerationDeleteJSONRefusalKeepsStdoutClean(t *testing.T) {
 // TestCommentsModerationListJSON keeps machine-readable output on the raw API
 // contract field names.
 func TestCommentsModerationListJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(moderationCommentsFixture))
-	}))
+	server, _ := serveModerationResolution(t, featureListingJSON("fr_1"), []string{moderationCommentsFixture})
 	defer server.Close()
 
 	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_1", "--workspace", "ws_1", "--json")
@@ -508,7 +605,7 @@ func TestCommentsListJSONKeepsNestedServedKeys(t *testing.T) {
 	})
 
 	t.Run("moderation listing", func(t *testing.T) {
-		server, _ := serveCommentPages(t, []string{page})
+		server, _ := serveModerationResolution(t, featureListingJSON("fr_1"), []string{page})
 		defer server.Close()
 
 		out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_1", "--workspace", "ws_1", "--json")
@@ -557,7 +654,17 @@ func TestCommentsListNotFoundCoversUnapproved(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a not-available error for the 404 response")
 	}
-	for _, want := range []string{"not available", "may not exist", "may not be approved yet"} {
+	for _, want := range []string{
+		"not available",
+		"may not exist",
+		"may not be approved yet",
+		// Issue #417: the public board table prints the truncated form, and
+		// this credential-free path cannot resolve prefixes client-side, so
+		// the 404 must name the ID shape as a likely cause.
+		"must be the full form",
+		"truncate to 12 characters",
+		"--json",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err, want)
 		}
@@ -609,6 +716,7 @@ func TestCommentsListNotFoundSurvivesWrappedError(t *testing.T) {
 		`comments for feature request "fr_pending" are not available`,
 		"may not exist",
 		"may not be approved yet",
+		"must be the full form",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err, want)
@@ -680,10 +788,7 @@ func TestCommentsModerationListSanitizesAuthorControlChars(t *testing.T) {
 			}
 		]
 	}`
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(poisonedFixture))
-	}))
+	server, _ := serveModerationResolution(t, featureListingJSON("fr_1"), []string{poisonedFixture})
 	defer server.Close()
 
 	out, err := runModerationRoot(t, server.URL, "comments", "moderation", "list", "fr_1", "--workspace", "ws_1")
@@ -768,12 +873,13 @@ func TestCommentsListTableCellsCannotForgeRows(t *testing.T) {
 
 // recordedCommentRequest captures one request a comment-thread command made.
 type recordedCommentRequest struct {
-	method  string
-	path    string
-	query   string
-	auth    string
-	appKey  string
-	userTok string
+	method   string
+	path     string
+	query    string
+	auth     string
+	appKey   string
+	userTok  string
+	wsHeader string
 }
 
 // serveCommentPages serves the given JSON bodies one per request in order
@@ -783,12 +889,13 @@ func serveCommentPages(t *testing.T, pages []string) (*httptest.Server, *[]recor
 	var seen []recordedCommentRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, recordedCommentRequest{
-			method:  r.Method,
-			path:    r.URL.Path,
-			query:   r.URL.RawQuery,
-			auth:    r.Header.Get("Authorization"),
-			appKey:  r.Header.Get("X-App-Key"),
-			userTok: r.Header.Get("X-User-Token"),
+			method:   r.Method,
+			path:     r.URL.Path,
+			query:    r.URL.RawQuery,
+			auth:     r.Header.Get("Authorization"),
+			appKey:   r.Header.Get("X-App-Key"),
+			userTok:  r.Header.Get("X-User-Token"),
+			wsHeader: r.Header.Get("X-Workspace-Id"),
 		})
 		body := pages[len(pages)-1]
 		if n := len(seen); n <= len(pages) {
@@ -797,6 +904,52 @@ func serveCommentPages(t *testing.T, pages []string) (*httptest.Server, *[]recor
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	}))
+	return server, &seen
+}
+
+// featureListingJSON builds one feature-request listing page for ID
+// resolution — the GET .../feature-requests walk fetchOneFeatureRequest (and
+// commentThreadRef on top of it) pages through — carrying exactly the given
+// ids, which are also the full universe a single small page ends.
+func featureListingJSON(ids ...string) string {
+	reqs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		reqs = append(reqs, fmt.Sprintf(`{"id":%q,"appId":"app_a","title":"Request %s","status":"open","voteCount":0,"createdAt":"2026-09-01T12:00:00.000Z","updatedAt":"2026-09-01T12:00:00.000Z"}`, id, id))
+	}
+	return fmt.Sprintf(`{"requests":[%s],"total":%d}`, strings.Join(reqs, ","), len(reqs))
+}
+
+// serveModerationResolution serves the two hops `comments moderation list`
+// now walks (issue #417): the feature-request listing that resolves the
+// reference first, then the thread pages the command always walked.
+// listingJSON answers every listing GET; pages are served to the thread walk
+// one per request in order, the last repeating. Every request is recorded,
+// listing first, so tests can pin the exact wire sequence.
+func serveModerationResolution(t *testing.T, listingJSON string, pages []string) (*httptest.Server, *[]recordedCommentRequest) {
+	t.Helper()
+	var seen []recordedCommentRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, recordedCommentRequest{
+			method:   r.Method,
+			path:     r.URL.Path,
+			query:    r.URL.RawQuery,
+			auth:     r.Header.Get("Authorization"),
+			appKey:   r.Header.Get("X-App-Key"),
+			userTok:  r.Header.Get("X-User-Token"),
+			wsHeader: r.Header.Get("X-Workspace-Id"),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/feature-requests") {
+			_, _ = w.Write([]byte(listingJSON))
+			return
+		}
+		idx := len(seen) - 2 // thread request 1 = seen[1] → pages[0]
+		if idx >= len(pages) {
+			idx = len(pages) - 1
+		}
+		_, _ = w.Write([]byte(pages[idx]))
+	}))
+	t.Cleanup(server.Close)
 	return server, &seen
 }
 
@@ -997,10 +1150,10 @@ func TestCommentsListJSONAggregatesPages(t *testing.T) {
 
 // TestCommentsModerationListWalksPages covers the Console moderation listing
 // walking the same keyset pagination, with a hidden comment on the second
-// page still rendered.
+// page still rendered and the resolution listing riding ahead of the walk.
 func TestCommentsModerationListWalksPages(t *testing.T) {
 	hidden := `{"id": "cmt_hidden_9", "featureRequestId": "fr_1", "authorName": "Eve", "body": "spam message", "isHidden": true, "createdAt": "2026-09-18T09:09:09Z"}`
-	server, seen := serveCommentPages(t, []string{
+	server, seen := serveModerationResolution(t, featureListingJSON("fr_1"), []string{
 		commentPage(testComment("cmt_a1", "visible one"), 3, "cur_2"),
 		commentPage(testComment("cmt_b2", "visible two")+","+hidden, 3, ""),
 	})
@@ -1010,16 +1163,16 @@ func TestCommentsModerationListWalksPages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("moderation list: %v", err)
 	}
-	if len(*seen) != 2 {
-		t.Fatalf("requests = %d, want 2 pages", len(*seen))
+	if len(*seen) != 3 {
+		t.Fatalf("requests = %d, want resolution listing + 2 thread pages", len(*seen))
 	}
-	for i, req := range *seen {
+	for i, req := range (*seen)[1:] {
 		if req.path != "/api/v1/console/workspaces/ws_1/feature-requests/fr_1/comments" {
-			t.Errorf("page %d path = %s", i+1, req.path)
+			t.Errorf("thread page %d path = %s", i+1, req.path)
 		}
 	}
-	if !strings.Contains((*seen)[1].query, "cursor=cur_2") {
-		t.Errorf("page 2 query = %q, want the echoed cursor", (*seen)[1].query)
+	if !strings.Contains((*seen)[2].query, "cursor=cur_2") {
+		t.Errorf("page 2 query = %q, want the echoed cursor", (*seen)[2].query)
 	}
 	for _, want := range []string{"visible one", "visible two", "spam message", "yes", "(3 comments)"} {
 		if !strings.Contains(out, want) {
