@@ -431,3 +431,275 @@ func filePermOrZero(t *testing.T, path string) os.FileMode {
 	}
 	return fi.Mode().Perm()
 }
+
+// saveTempPayload approximates what a crash inside Config.Save strands beside
+// the config: the document the save was about to write, Auth section
+// included. The sweep under test never parses the orphan — an orphan may
+// equally hold the pre-write credential state — but a credential-bearing
+// fixture keeps the exposure scenario honest.
+const saveTempPayload = credentialedConfig
+
+// saveTempOrphanName seeds and names the orphan a killed process leaves
+// behind: the os.CreateTemp pattern of config.Save
+// (`<config basename>.tmp-<random digits>`).
+func saveTempOrphanName(t *testing.T, cfgPath string, payload []byte, mode os.FileMode) string {
+	t.Helper()
+	orphan := cfgPath + ".tmp-3847182394"
+	writeFileMode(t, orphan, payload, mode)
+	return orphan
+}
+
+// TestSaveTempOrphanGroupWorldAccessibleWarnsAndRepairs pins the issue #432
+// acceptance contract: an orphaned Save temp (`config.json.tmp-<n>`, the file
+// a SIGKILL/power-loss between CreateTemp and the rename strands beside the
+// config) that is readable or writable by group/other makes
+// PersistentPreRunE emit exactly one warning on stderr in table and --json
+// modes (stdout stays parse-clean) and tighten the file back to 0600,
+// mirroring the config and recovery-file behavior — the orphan holds a copy
+// of the config document, credentials included. The config itself is seeded
+// clean so the warning count isolates the new sweep.
+func TestSaveTempOrphanGroupWorldAccessibleWarnsAndRepairs(t *testing.T) {
+	loosened := []os.FileMode{0o644, 0o640, 0o620, 0o602}
+	for _, loosen := range loosened {
+		for _, mode := range []string{"table", "json"} {
+			t.Run(fmt.Sprintf("%04o/%s", loosen, mode), func(t *testing.T) {
+				cfgPath := filepath.Join(t.TempDir(), "config.json")
+				writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+				orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), loosen)
+				var args []string
+				if mode == "json" {
+					args = []string{"--json"}
+				}
+				stdout, stderr, cfgPerm := runPermissionCheckRun(t, cfgPath, args...)
+
+				if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+					t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+				}
+				for _, want := range []string{"config save temp file", orphan} {
+					if !strings.Contains(stderr, want) {
+						t.Errorf("stderr warning does not mention %q:\n%s", want, stderr)
+					}
+				}
+				if strings.Contains(stdout, "group/world-accessible") {
+					t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+				}
+				if orphanPerm := filePermOrZero(t, orphan); orphanPerm != 0o600 {
+					t.Errorf("orphan temp perms after run = %04o, want repaired 600", orphanPerm)
+				}
+				if cfgPerm != 0o600 {
+					t.Errorf("config perms after run = %04o, want unchanged 600", cfgPerm)
+				}
+				if mode == "json" {
+					unmarshalOneJSON(t, stdout) // structured stdout stays a single document
+				}
+			})
+		}
+	}
+}
+
+// TestSaveTempOrphanFlaggedEvenWhenConfigStoresNoCredentials pins the
+// orphan sweep's gating: it does not consult the config's own
+// StoresCredentials — an orphan beside a since-logged-out (or credential-
+// free) config still holds whatever credentials the last completed save
+// wrote, so it sweeps unconditionally like the recovery files.
+func TestSaveTempOrphanFlaggedEvenWhenConfigStoresNoCredentials(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	writeFileMode(t, cfgPath, []byte(`{"defaultWorkspace":"ws_1"}`), 0o600)
+	orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), 0o644)
+
+	stdout, stderr, cfgPerm := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, "config save temp file") {
+		t.Errorf("stderr warning does not name the save temp file:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "config file") {
+		t.Errorf("stderr warns about the credential-free config:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	if orphanPerm := filePermOrZero(t, orphan); orphanPerm != 0o600 {
+		t.Errorf("orphan temp perms after run = %04o, want repaired 600", orphanPerm)
+	}
+	if cfgPerm != 0o600 {
+		t.Errorf("config perms after run = %04o, want unchanged 600", cfgPerm)
+	}
+}
+
+// TestSaveTempSweepLeavesUnrelatedSiblingsUntouched keeps the new prefix from
+// overreaching: only names extending the config basename with `.tmp-` are
+// swept — a recovery file is handled by its own sweep as today, and a
+// loosened `other.json.tmp-1` or `config.json.bak` is nobody's credential
+// file and must stay unflagged and untouched.
+func TestSaveTempSweepLeavesUnrelatedSiblingsUntouched(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	recovery := cfgPath + ".recovery-1729000000000000000"
+	writeFileMode(t, recovery, []byte(oauthRecoveryPair), 0o600)
+	otherTemp := filepath.Join(dir, "other.json.tmp-1")
+	writeFileMode(t, otherTemp, []byte("unrelated"), 0o644)
+	backup := filepath.Join(dir, "config.json.bak")
+	writeFileMode(t, backup, []byte("unrelated"), 0o644)
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if strings.Contains(stderr, "group/world-accessible") || strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("unrelated siblings produced warnings:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	for _, path := range []string{otherTemp, backup} {
+		if perm := filePermOrZero(t, path); perm != 0o644 {
+			t.Errorf("%s perms after run = %04o, want untouched 644", path, perm)
+		}
+	}
+	if perm := filePermOrZero(t, recovery); perm != 0o600 {
+		t.Errorf("recovery file perms after run = %04o, want unchanged 600", perm)
+	}
+}
+
+// TestLoosenedConfigRecoveryAndSaveTempAreAllFlaggedAndRepaired covers the
+// dotfiles-sync scenario all three fixtures come from: when the same
+// loosening hit the config, the recovery file and an orphaned Save temp, the
+// one sweep run flags and repairs each of them — three exposures closed.
+func TestLoosenedConfigRecoveryAndSaveTempAreAllFlaggedAndRepaired(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o644)
+	recovery := cfgPath + ".recovery-1729000000000000000"
+	writeFileMode(t, recovery, []byte(oauthRecoveryPair), 0o662)
+	orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), 0o644)
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 3 {
+		t.Fatalf("stderr carries %d warnings, want exactly 3:\n%s", n, stderr)
+	}
+	for _, want := range []string{"config file", "OAuth recovery file", "config save temp file", cfgPath, recovery, orphan} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr warnings do not mention %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	for _, path := range []string{cfgPath, recovery, orphan} {
+		if perm := filePermOrZero(t, path); perm != 0o600 {
+			t.Errorf("%s perms after run = %04o, want repaired 600", path, perm)
+		}
+	}
+}
+
+// TestDirectoryNamedLikeSaveTempIsTolerated pins the orphan sweep's directory
+// tolerance: an entry wearing the `.tmp-` prefix but carrying a directory
+// inode must not crash the sweep — it is treated like the loosened
+// recovery-named directory the recovery sweep already tolerates, one warning
+// and one repair, and the command proceeds.
+func TestDirectoryNamedLikeSaveTempIsTolerated(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	orphanDir := cfgPath + ".tmp-3847182394"
+	if err := os.Mkdir(orphanDir, 0o755); err != nil {
+		t.Fatalf("mkdir orphan dir: %v", err)
+	}
+	if err := os.Chmod(orphanDir, 0o755); err != nil { // survive the process umask
+		t.Fatalf("seed mode on orphan dir: %v", err)
+	}
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, orphanDir) {
+		t.Errorf("stderr warning does not name the orphan directory:\n%s", stderr)
+	}
+	if perm := filePermOrZero(t, orphanDir); perm != 0o600 {
+		t.Errorf("orphan dir perms after run = %04o, want repaired 600", perm)
+	}
+}
+
+// TestSaveTempOrphanRepairFailureDegradesToWarning covers the chmod-failure
+// path of the orphan sweep: a repair that cannot go through (read-only
+// directory, foreign ownership) degrades to the warning-only path — the
+// warning names the manual chmod, the command still succeeds, and the orphan
+// is left exactly as it was.
+func TestSaveTempOrphanRepairFailureDegradesToWarning(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), 0o644)
+	orig := repairConfigPermissions
+	repairConfigPermissions = func(string) error { return errors.New("permission denied") }
+	defer func() { repairConfigPermissions = orig }()
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+	}
+	for _, want := range []string{"config save temp file", "chmod 600", "repair failed"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr warning does not mention %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	if orphanPerm := filePermOrZero(t, orphan); orphanPerm != 0o644 {
+		t.Errorf("orphan temp perms after failed repair = %04o, want unchanged 644", orphanPerm)
+	}
+}
+
+// TestVanishedSaveTempBeforeRepairIsSilent pins the race tolerance of the
+// orphan sweep: a temp removed between the enumeration and the chmod (the
+// crashed process's own deferred cleanup racing this sweep, or a parallel
+// command's successful save) must not surface as a repair failure.
+func TestVanishedSaveTempBeforeRepairIsSilent(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), 0o644)
+	orig := repairConfigPermissions
+	repairConfigPermissions = func(string) error {
+		return fmt.Errorf("chmod: %w", fs.ErrNotExist)
+	}
+	defer func() { repairConfigPermissions = orig }()
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+	if strings.Contains(stderr, "group/world-accessible") || strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("vanished orphan temp produced a warning:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+	}
+	if perm := filePermOrZero(t, orphan); perm != 0o644 {
+		t.Errorf("orphan temp perms after run = %04o, want unchanged 644", perm)
+	}
+}
+
+// TestSaveTempSweepMatchesLiteralMetacharacterConfigPath pins the literal
+// matching of the orphan sweep (the same regression the recovery sweep fixed
+// in the CodeRabbit review of #402): a --config value carrying glob
+// metacharacters must not be reinterpreted as a pattern — 'config[prod].json'
+// under filepath.Glob would treat [prod] as a character class and never match
+// the orphan Save temp a crashed save literally created beside it.
+func TestSaveTempSweepMatchesLiteralMetacharacterConfigPath(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config[prod].json")
+	writeFileMode(t, cfgPath, []byte(credentialedConfig), 0o600)
+	orphan := saveTempOrphanName(t, cfgPath, []byte(saveTempPayload), 0o644)
+
+	stdout, stderr, _ := runPermissionCheckRun(t, cfgPath)
+
+	if n := strings.Count(stderr, "group/world-accessible"); n != 1 {
+		t.Fatalf("stderr carries %d warnings, want exactly 1:\n%s", n, stderr)
+	}
+	if !strings.Contains(stderr, orphan) {
+		t.Errorf("stderr warning does not name the literal orphan path:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "group/world-accessible") {
+		t.Errorf("stdout carries the warning, want it on stderr only:\n%s", stdout)
+	}
+	if orphanPerm := filePermOrZero(t, orphan); orphanPerm != 0o600 {
+		t.Errorf("orphan temp perms after run = %04o, want repaired 600", orphanPerm)
+	}
+}
