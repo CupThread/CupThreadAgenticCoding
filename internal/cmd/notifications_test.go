@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -538,5 +539,255 @@ func TestNotificationsListDisclosesTotal(t *testing.T) {
 	}
 	if len(doc.Notifications) != 2 || doc.Total != 450 || doc.UnreadCount != 1 {
 		t.Errorf("json document = %d notifications, total %d, unread %d; want 2/450/1 exactly as served", len(doc.Notifications), doc.Total, doc.UnreadCount)
+	}
+}
+
+// ─── notifications read ID resolution (issue #418) ───────────────────────────
+
+// truncatedNotificationFullID mirrors the issue #418 table shape: the
+// notifications listing prints the first 12 characters of this id, and that
+// truncated form is what an agent copies into `notifications read`.
+const (
+	truncatedNotificationFullID = "nt_1abcdef1234fffffffffffffffff"
+	truncatedNotificationPrefix = "nt_1abcdef1234"
+)
+
+// notificationJSON is one full-shaped notification with the given id.
+func notificationJSON(id string) string {
+	return `{"id":"` + id + `","workspaceId":"ws_1","type":"system","title":"N","readAt":null,"createdAt":"2026-10-01T00:00:00Z"}`
+}
+
+// notificationResolutionServer serves the listing walk (pageJSON per offset)
+// and records every request as "METHOD path" so tests can pin both what fired
+// and what must not have. A read POST answers 200 only for a full id in
+// validIDs — the server matches exact ids only, so a truncated probe 404s
+// without touching a row.
+func notificationResolutionServer(t *testing.T, pages map[string]string, validIDs []string, requests *[]string) *httptest.Server {
+	t.Helper()
+	known := make(map[string]bool, len(validIDs))
+	for _, id := range validIDs {
+		known[id] = true
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		*requests = append(*requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		if r.Method == http.MethodPost {
+			trimmed := strings.TrimSuffix(r.URL.Path, "/read")
+			seg := trimmed[strings.LastIndex(trimmed, "/")+1:]
+			if !known[seg] {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"notification not found"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		if page, ok := pages[r.URL.Query().Get("offset")]; ok {
+			_, _ = w.Write([]byte(page))
+			return
+		}
+		_, _ = w.Write([]byte(`{"notifications":[],"total":0,"unreadCount":0}`))
+	}))
+}
+
+// readRequests splits the recorded requests into the read POSTs so tests can
+// assert the probe/refire sequence without the listing GETs.
+func readPOSTs(requests []string) []string {
+	var posts []string
+	for _, r := range requests {
+		if strings.HasPrefix(r, "POST ") {
+			posts = append(posts, r)
+		}
+	}
+	return posts
+}
+
+// TestNotificationsReadResolvesTruncatedID covers the core #418 case:
+// `notifications list` prints nt_1abcdef1234, read takes that truncated form,
+// the probe POST 404s, resolution walks the listing, and the refire POST hits
+// the full resolved id while the ✓ line carries it too.
+func TestNotificationsReadResolvesTruncatedID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := notificationResolutionServer(t, map[string]string{
+		"0": `{"notifications":[` + notificationJSON(truncatedNotificationFullID) + `],"total":1,"unreadCount":1}`,
+	}, []string{truncatedNotificationFullID}, &requests)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "notifications", "read", truncatedNotificationPrefix, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("notifications read %s: %v", truncatedNotificationPrefix, err)
+	}
+	posts := readPOSTs(requests)
+	want := []string{
+		"POST /api/v1/console/workspaces/ws_1/notifications/" + truncatedNotificationPrefix + "/read?",
+		"POST /api/v1/console/workspaces/ws_1/notifications/" + truncatedNotificationFullID + "/read?",
+	}
+	if !reflect.DeepEqual(posts, want) {
+		t.Errorf("read POSTs = %v, want %v", posts, want)
+	}
+	if !strings.Contains(out, "✓ Marked "+truncatedNotificationFullID+" as read") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+}
+
+// TestNotificationsReadJSONEmitsResolvedID pins the structured contract: the
+// mutation record's id is the resolved FULL id, never the prefix.
+func TestNotificationsReadJSONEmitsResolvedID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := notificationResolutionServer(t, map[string]string{
+		"0": `{"notifications":[` + notificationJSON(truncatedNotificationFullID) + `],"total":1,"unreadCount":1}`,
+	}, []string{truncatedNotificationFullID}, &requests)
+	defer server.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.json")
+	stdout, _, err := runRootCapture(t, cfgPath, server.URL,
+		"notifications", "read", truncatedNotificationPrefix, "--workspace", "ws_1", "--json")
+	if err != nil {
+		t.Fatalf("notifications read --json: %v", err)
+	}
+	doc := unmarshalOneJSON(t, stdout)
+	if doc["id"] != truncatedNotificationFullID || doc["action"] != "read" || doc["success"] != true {
+		t.Errorf("mutation record = %v, want id %s/action read/success true", doc, truncatedNotificationFullID)
+	}
+}
+
+// TestNotificationsReadFullIDKeepsSingleRequest pins the fast path: a full id
+// is today's one POST, no listing walk.
+func TestNotificationsReadFullIDKeepsSingleRequest(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := notificationResolutionServer(t, nil, []string{truncatedNotificationFullID}, &requests)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "notifications", "read", truncatedNotificationFullID, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("notifications read <full id>: %v", err)
+	}
+	if len(requests) != 1 || requests[0] != "POST /api/v1/console/workspaces/ws_1/notifications/"+truncatedNotificationFullID+"/read?" {
+		t.Errorf("requests = %v, want exactly the one read POST", requests)
+	}
+	if !strings.Contains(out, "✓ Marked "+truncatedNotificationFullID+" as read") {
+		t.Errorf("success line must carry the full id:\n%s", out)
+	}
+}
+
+// TestNotificationsReadAmbiguousPrefixFailsWithoutMutation pins the ambiguity
+// decision: two notifications sharing the table's truncated form fail locally
+// with the shared wording, and no read POST ever succeeds (only the safe
+// probe, which 404s without touching a row).
+func TestNotificationsReadAmbiguousPrefixFailsWithoutMutation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	twins := `{"notifications":[` +
+		notificationJSON("nt_1abcdef1234twin_a00000000000") + "," +
+		notificationJSON("nt_1abcdef1234twin_b00000000000") +
+		`],"total":2,"unreadCount":2}`
+	var requests []string
+	server := notificationResolutionServer(t, map[string]string{"0": twins}, nil, &requests)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "notifications", "read", truncatedNotificationPrefix, "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous notification prefix "`+truncatedNotificationPrefix+`" matches 2 notifications; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	for _, r := range readPOSTs(requests) {
+		if strings.Contains(r, truncatedNotificationFullID) || (!strings.Contains(r, truncatedNotificationPrefix) && !strings.Contains(r, "twin")) {
+			t.Errorf("unexpected non-probe read POST on an ambiguous prefix: %s", r)
+		}
+	}
+}
+
+// TestNotificationsReadAbsentPrefixNamesScope pins the not-found shape: a
+// prefix nothing matches errors naming the reference and the workspace the
+// scan covered.
+func TestNotificationsReadAbsentPrefixNamesScope(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := notificationResolutionServer(t, map[string]string{
+		"0": `{"notifications":[` + notificationJSON(truncatedNotificationFullID) + `],"total":1,"unreadCount":1}`,
+	}, []string{truncatedNotificationFullID}, &requests)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "notifications", "read", "nt_1zzzzzz9999", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("absent prefix must fail")
+	}
+	if !strings.Contains(err.Error(), `notification "nt_1zzzzzz9999" not found (scanned 1 notifications in workspace ws_1)`) {
+		t.Errorf("not-found error missing the scoped wording:\n%v", err)
+	}
+}
+
+// TestNotificationsPrefixScanCoversTheOffsetCapPage pins the +1 page math for
+// the notifications walk, mirroring TestChangelogPrefixScanCoversTheOffsetCapPage:
+// the server still serves the page at offset 10,000 (the clamp's boundary), so
+// resolution must page one past the naive 50-page window — a notification
+// living only on that final page resolves instead of a same-prefix
+// notification inside the scanned window silently winning.
+func TestNotificationsPrefixScanCoversTheOffsetCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	// 10,000 notifications fill offsets 0..9,900 and the target sits alone on
+	// the offset-10,000 page, so the authoritative total is 10,001: pages
+	// 0..49 report more, and only the cap page exhausts the listing.
+	const totalEntries = notificationPageSize*50 + 1
+	fullPage := func() string {
+		entries := make([]string, 0, notificationPageSize)
+		for i := 0; i < notificationPageSize; i++ {
+			entries = append(entries, notificationJSON(fmt.Sprintf("nt_page%04dffffffffffffffffffff", i)))
+		}
+		return `{"notifications":[` + strings.Join(entries, ",") + `],"total":` + fmt.Sprint(totalEntries) + `,"unreadCount":0}`
+	}
+	capPage := `{"notifications":[` + notificationJSON("nt_target000123ffffffffffffff") + `],"total":` + fmt.Sprint(totalEntries) + `,"unreadCount":0}`
+
+	var offsets []string
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if r.Method == http.MethodPost {
+			// The server matches exact ids only: the truncated probe 404s
+			// without touching a row; the resolved refire succeeds.
+			if !strings.HasSuffix(r.URL.Path, "/nt_target000123ffffffffffffff/read") {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"notification not found"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		offsets = append(offsets, r.URL.Query().Get("offset"))
+		if r.URL.Query().Get("offset") == "10000" {
+			_, _ = w.Write([]byte(capPage))
+			return
+		}
+		_, _ = w.Write([]byte(fullPage()))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "notifications", "read", "nt_target000123", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("notifications read on the offset-cap page: %v", err)
+	}
+	if got := offsets[len(offsets)-1]; got != "10000" {
+		t.Errorf("last scanned offset = %q, want the 10000 clamp page", got)
+	}
+	if len(offsets) != maxNotificationResolvePages {
+		t.Errorf("scanned %d pages, want %d (the +1 window)", len(offsets), maxNotificationResolvePages)
+	}
+	posts := readPOSTs(requests)
+	if len(posts) != 2 {
+		t.Fatalf("read POSTs = %v, want probe + refire", posts)
+	}
+	if !strings.HasSuffix(posts[1], "/notifications/nt_target000123ffffffffffffff/read") {
+		t.Errorf("refire = %s, want the full resolved id", posts[1])
+	}
+	if !strings.Contains(out, "✓ Marked nt_target000123ffffffffffffff as read") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
 	}
 }

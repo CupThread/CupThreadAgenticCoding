@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -368,13 +369,30 @@ func TestInboxAssignAndUnassign(t *testing.T) {
 
 // TestInboxBulkTriage covers POST .../bulk-triage: body shape, response
 // rendering, and the client-side validations (1-50 IDs, at least one of
-// triageStatus/assignedTo, assignee vs unassign).
+// triageStatus/assignedTo, assignee vs unassign). The server answers the
+// detail GETs of the up-front ID resolution (issue #418) by echoing the
+// requested id back, so the resolved body is assertable.
 func TestInboxBulkTriage(t *testing.T) {
 	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
 
 	var captured capturedRequest
-	server := inboxServer(t, http.StatusOK,
-		`{"updatedCount": 1, "updatedIds": ["sub_1"]}`, &captured)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		captured.Method = r.Method
+		captured.Path = r.URL.Path
+		captured.Query = r.URL.Query()
+		captured.Body = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			seg := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			_, _ = w.Write([]byte(`{"submission": {"submissionId": "` + seg + `", "title": "T"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"updatedCount": 1, "updatedIds": ["sub_1"]}`))
+	}))
 	defer server.Close()
 
 	out, err := runRoot(t, server.URL, "inbox", "bulk-triage", "sub_1", "sub_2",
@@ -693,5 +711,333 @@ func TestInboxDeliveriesTotalFooterAndNotice(t *testing.T) {
 	}
 	if strings.Contains(out, "⚠") {
 		t.Errorf("complete queue produced a truncation notice:\n%s", out)
+	}
+}
+
+// ─── inbox ID resolution (issue #418) ────────────────────────────────────────
+
+// truncatedSubmissionFullID mirrors the issue #418 table shape: the inbox
+// list and deliveries tables print the first 12 characters of this id, and
+// that truncated form is what an agent copies into the triage commands.
+const (
+	truncatedSubmissionFullID = "sub_1abcdef1234fffffffffffffffff"
+	truncatedSubmissionPrefix = "sub_1abcdef1234"
+)
+
+// submissionJSON is one full-shaped record with the given id.
+func submissionJSON(id string) string {
+	return `{"submissionId":"` + id + `","title":"Crash on launch","platform":"ios","priority":"!!","status":"received","triageStatus":"open","createdAt":"2026-10-01T00:00:00Z","updatedAt":"2026-10-01T00:00:00Z"}`
+}
+
+// inboxResolutionServer routes the resolution protocol (issue #418): a detail
+// GET answers a SubmissionDetail envelope only for a known full id and 404s
+// otherwise (the server matches exact ids only), the listing walk serves
+// pages keyed by offset, and every other request — the mutations — answers
+// 200 with a submission record while being recorded in *requests as
+// "METHOD path?query".
+func inboxResolutionServer(t *testing.T, pages map[string]string, knownIDs []string, requests *[]string, bodies *[]string) *httptest.Server {
+	t.Helper()
+	known := make(map[string]bool, len(knownIDs))
+	for _, id := range knownIDs {
+		known[id] = true
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		*requests = append(*requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		if bodies != nil && r.Method != http.MethodGet {
+			body, _ := io.ReadAll(r.Body)
+			*bodies = append(*bodies, string(body))
+		}
+		if r.Method == http.MethodGet {
+			ref := strings.TrimPrefix(r.URL.Path, "/api/v1/console/workspaces/ws_1/submissions/")
+			if ref == "" || strings.Contains(ref, "/") {
+				// The listing walk.
+				if page, ok := pages[r.URL.Query().Get("offset")]; ok {
+					_, _ = w.Write([]byte(page))
+					return
+				}
+				_, _ = w.Write([]byte(`{"submissions":[],"total":0}`))
+				return
+			}
+			// The detail fast path.
+			if !known[ref] {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"Submission not found in this workspace"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"submission":` + submissionJSON(ref) + `}`))
+			return
+		}
+		// The server matches exact ids only: a mutation at a truncated
+		// reference 404s without touching a row. The bulk route takes an id
+		// list, not one id, and always answers.
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/console/workspaces/ws_1/submissions/"), "/")
+		if parts[0] != "bulk-triage" && !known[parts[0]] {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Submission not found in this workspace"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"submissionId":"resolved","title":"Crash on launch","platform":"ios","priority":"!!","status":"received","triageStatus":"open"}`))
+	}))
+}
+
+// requestsWithMethod filters the recorded requests by method.
+func requestsWithMethod(requests []string, method string) []string {
+	var out []string
+	for _, r := range requests {
+		if strings.HasPrefix(r, method+" ") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// TestInboxTriageResolvesTruncatedSubmissionID covers the core #418 case:
+// `inbox list` prints sub_1abcdef1234, triage takes that truncated form, the
+// probe PATCH 404s, resolution walks the listing at the served page size, and
+// the refire PATCH hits the full resolved id while the ✓ line carries it too.
+func TestInboxTriageResolvesTruncatedSubmissionID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := inboxResolutionServer(t, map[string]string{
+		"0": `{"submissions":[` + submissionJSON(truncatedSubmissionFullID) + `],"total":1}`,
+	}, []string{truncatedSubmissionFullID}, &requests, nil)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "inbox", "triage", truncatedSubmissionPrefix, "in_progress", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox triage %s: %v", truncatedSubmissionPrefix, err)
+	}
+	patches := requestsWithMethod(requests, "PATCH")
+	want := []string{
+		"PATCH /api/v1/console/workspaces/ws_1/submissions/" + truncatedSubmissionPrefix + "/triage?",
+		"PATCH /api/v1/console/workspaces/ws_1/submissions/" + truncatedSubmissionFullID + "/triage?",
+	}
+	if !reflect.DeepEqual(patches, want) {
+		t.Errorf("triage PATCHes = %v, want %v", patches, want)
+	}
+	if !strings.Contains(out, "✓ Triage status of "+truncatedSubmissionFullID+" set to in_progress") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
+	}
+	var walkPage bool
+	for _, r := range requestsWithMethod(requests, "GET") {
+		if strings.HasSuffix(r, "/submissions?limit=200&offset=0") {
+			walkPage = true
+		}
+	}
+	if !walkPage {
+		t.Errorf("resolution must walk the listing at the served page size: %v", requestsWithMethod(requests, "GET"))
+	}
+}
+
+// TestInboxGetResolvesTruncatedSubmissionID covers the read path: a truncated
+// reference renders the full detail of the resolved submission.
+func TestInboxGetResolvesTruncatedSubmissionID(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := inboxResolutionServer(t, map[string]string{
+		"0": `{"submissions":[` + submissionJSON(truncatedSubmissionFullID) + `],"total":1}`,
+	}, []string{truncatedSubmissionFullID}, &requests, nil)
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "inbox", "get", truncatedSubmissionPrefix, "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox get %s: %v", truncatedSubmissionPrefix, err)
+	}
+	gets := requestsWithMethod(requests, "GET")
+	want := []string{
+		"GET /api/v1/console/workspaces/ws_1/submissions/" + truncatedSubmissionPrefix + "?",
+		"GET /api/v1/console/workspaces/ws_1/submissions?limit=200&offset=0",
+		"GET /api/v1/console/workspaces/ws_1/submissions/" + truncatedSubmissionFullID + "?",
+	}
+	if !reflect.DeepEqual(gets, want) {
+		t.Errorf("gets = %v, want %v", gets, want)
+	}
+	if !strings.Contains(out, "Crash on launch") || !strings.Contains(out, truncatedSubmissionFullID) {
+		t.Errorf("detail render must describe the resolved submission:\n%s", out)
+	}
+}
+
+// TestInboxAbsentFullIDWalksThenNamesScope pins the truly-absent case: a full
+// id that 404s falls back to the listing walk, and the not-found error names
+// the reference and the workspace the scan covered — with zero mutations.
+func TestInboxAbsentFullIDWalksThenNamesScope(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var requests []string
+	server := inboxResolutionServer(t, map[string]string{
+		"0": `{"submissions":[` + submissionJSON(truncatedSubmissionFullID) + `],"total":1}`,
+	}, []string{truncatedSubmissionFullID}, &requests, nil)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "inbox", "retry", "sub_missing000000000000000", "--workspace", "ws_1")
+	if err == nil {
+		t.Fatal("absent id must fail")
+	}
+	if !strings.Contains(err.Error(), `submission "sub_missing000000000000000" not found (scanned 1 submissions in workspace ws_1)`) {
+		t.Errorf("not-found error missing the scoped wording:\n%v", err)
+	}
+	if len(requestsWithMethod(requests, "POST")) != 1 {
+		t.Errorf("only the 404 probe retry may fire: %v", requestsWithMethod(requests, "POST"))
+	}
+}
+
+// TestInboxAmbiguousPrefixFailsWithoutMutation pins the ambiguity decision:
+// two submissions sharing the table's truncated form fail locally with the
+// shared wording and no mutation succeeds.
+func TestInboxAmbiguousPrefixFailsWithoutMutation(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	twins := `{"submissions":[` +
+		submissionJSON("sub_1abcdef1234twin_a00000000000") + "," +
+		submissionJSON("sub_1abcdef1234twin_b00000000000") +
+		`],"total":2}`
+	var requests []string
+	server := inboxResolutionServer(t, map[string]string{"0": twins}, nil, &requests, nil)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "inbox", "assign", truncatedSubmissionPrefix, "user_1", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), `ambiguous submission prefix "`+truncatedSubmissionPrefix+`" matches 2 submissions; use a longer prefix`) {
+		t.Fatalf("error = %v, want the ambiguity error", err)
+	}
+	if len(requestsWithMethod(requests, "PUT")) != 1 {
+		t.Errorf("only the 404 probe assign may fire: %v", requestsWithMethod(requests, "PUT"))
+	}
+}
+
+// TestInboxBulkTriageResolvesTruncatedIDs pins the up-front resolution
+// contract: the bulk endpoint skips unknown ids instead of 404ing, so every
+// positional reference resolves before the body is built and the wire body
+// carries only full ids.
+func TestInboxBulkTriageResolvesTruncatedIDs(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	full := "sub_9abcdef1234fffffffffffffffff"
+	var requests, bodies []string
+	server := inboxResolutionServer(t, map[string]string{
+		"0": `{"submissions":[` + submissionJSON(full) + `],"total":1}`,
+	}, []string{full}, &requests, &bodies)
+	defer server.Close()
+
+	if _, err := runRoot(t, server.URL, "inbox", "bulk-triage", "sub_9abcdef1234", "--triage-status", "resolved", "--workspace", "ws_1"); err != nil {
+		t.Fatalf("bulk-triage with a prefix: %v", err)
+	}
+	// The wire body carries the resolved FULL id — a truncated reference must
+	// never reach the bulk endpoint verbatim, where it would be silently
+	// skipped instead of 404ing.
+	wantBody := `{"submissionIds":["` + full + `"],"triageStatus":"resolved"}`
+	if len(bodies) != 1 || bodies[0] != wantBody {
+		t.Errorf("bulk body = %q, want %q", bodies, wantBody)
+	}
+}
+
+// TestInboxBulkTriageAmbiguousPrefixNamesArgument pins the positional
+// diagnosis: when the second reference is ambiguous the error names argument
+// 2 and no bulk POST fires.
+func TestInboxBulkTriageAmbiguousPrefixNamesArgument(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	full := "sub_9abcdef1234fffffffffffffffff"
+	// Page 0 is a full 200-entry page of non-matches (otherwise the walk
+	// stops there: 1 < the 200-entry page cap reads as exhausted), so the
+	// twins live on the offset-200 page and the ambiguity decision spans
+	// both.
+	entries := make([]string, 0, inboxPageSize)
+	for i := 0; i < inboxPageSize-1; i++ {
+		entries = append(entries, submissionJSON(fmt.Sprintf("sub_page%04dffffffffffffffffffff", i)))
+	}
+	// Argument 1's prefix resolves against this page: `full` rides on it.
+	entries = append(entries, submissionJSON(full))
+	twins := `{"submissions":[` +
+		submissionJSON("sub_1abcdef1234twin_a00000000000") + "," +
+		submissionJSON("sub_1abcdef1234twin_b00000000000") +
+		`],"total":202}`
+	pages := map[string]string{
+		"0":   `{"submissions":[` + strings.Join(entries, ",") + `],"total":202}`,
+		"200": twins,
+	}
+	var requests []string
+	server := inboxResolutionServer(t, pages, []string{full}, &requests, nil)
+	defer server.Close()
+
+	_, err := runRoot(t, server.URL, "inbox", "bulk-triage", "sub_9abcdef1234", truncatedSubmissionPrefix,
+		"--triage-status", "resolved", "--workspace", "ws_1")
+	if err == nil || !strings.Contains(err.Error(), "argument 2:") ||
+		!strings.Contains(err.Error(), `ambiguous submission prefix "sub_1abcdef1234" matches 2 submissions`) {
+		t.Fatalf("error = %v, want argument 2 naming the ambiguity error", err)
+	}
+	if len(requestsWithMethod(requests, "POST")) != 0 {
+		t.Errorf("bulk POST must not fire when a reference is ambiguous: %v", requestsWithMethod(requests, "POST"))
+	}
+}
+
+// TestInboxPrefixScanCoversTheOffsetCapPage pins the +1 page math for the
+// submissions walk, mirroring TestChangelogPrefixScanCoversTheOffsetCapPage:
+// the server still serves the page at offset 10,000 (the clamp's boundary),
+// so resolution must page one past the naive 50-page window — a submission
+// living only on that final page resolves instead of a same-prefix submission
+// inside the scanned window silently winning.
+func TestInboxPrefixScanCoversTheOffsetCapPage(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	// 10,000 submissions fill offsets 0..9,900 and the target sits alone on
+	// the offset-10,000 page, so the authoritative total is 10,001: pages
+	// 0..49 report more, and only the cap page exhausts the listing.
+	const totalEntries = inboxPageSize*50 + 1
+	fullPage := func() string {
+		entries := make([]string, 0, inboxPageSize)
+		for i := 0; i < inboxPageSize; i++ {
+			entries = append(entries, submissionJSON(fmt.Sprintf("sub_page%04dffffffffffffffffffff", i)))
+		}
+		return `{"submissions":[` + strings.Join(entries, ",") + `],"total":` + fmt.Sprint(totalEntries) + `}`
+	}
+	capPage := `{"submissions":[` + submissionJSON("sub_target000123ffffffffffffff") + `],"total":` + fmt.Sprint(totalEntries) + `}`
+
+	var offsets []string
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requests = append(requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		if r.Method == http.MethodGet {
+			offsets = append(offsets, r.URL.Query().Get("offset"))
+			if r.URL.Query().Get("offset") == "10000" {
+				_, _ = w.Write([]byte(capPage))
+				return
+			}
+			_, _ = w.Write([]byte(fullPage()))
+			return
+		}
+		// The server matches exact ids only: the truncated probe 404s
+		// without touching a row; the resolved refire succeeds.
+		if !strings.HasSuffix(r.URL.Path, "/sub_target000123ffffffffffffff/priority") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"Submission not found in this workspace"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	out, err := runRoot(t, server.URL, "inbox", "priority", "sub_target000123", "!!!", "--workspace", "ws_1")
+	if err != nil {
+		t.Fatalf("inbox priority on the offset-cap page: %v", err)
+	}
+	if got := offsets[len(offsets)-1]; got != "10000" {
+		t.Errorf("last scanned offset = %q, want the 10000 clamp page", got)
+	}
+	if len(offsets) != maxInboxResolvePages {
+		t.Errorf("scanned %d pages, want %d (the +1 window)", len(offsets), maxInboxResolvePages)
+	}
+	PUTs := requestsWithMethod(requests, "PUT")
+	if len(PUTs) != 2 {
+		t.Fatalf("priority PUTs = %v, want probe + refire", PUTs)
+	}
+	if !strings.HasPrefix(PUTs[1], "PUT /api/v1/console/workspaces/ws_1/submissions/sub_target000123ffffffffffffff/priority") {
+		t.Errorf("refire = %s, want the full resolved id", PUTs[1])
+	}
+	if !strings.Contains(out, "✓ Priority of sub_target000123ffffffffffffff set to !!!") {
+		t.Errorf("success line must carry the resolved full id:\n%s", out)
 	}
 }
