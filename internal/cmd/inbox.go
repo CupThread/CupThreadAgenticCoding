@@ -352,7 +352,7 @@ func newInboxPriorityCmd() *cobra.Command {
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Priority of %s set to %s", id, p)
+			A.out.PrintfSafe("✓ Priority of %s set to %s", id, p)
 			return nil
 		},
 	}
@@ -392,7 +392,7 @@ platform and only changeable via 'cupthread inbox retry'.`,
 			if A.structured() {
 				return A.out.Structured(resp)
 			}
-			A.out.Printf("✓ Triage status of %s set to %s", resolved, status)
+			A.out.PrintfSafe("✓ Triage status of %s set to %s", resolved, status)
 			return nil
 		},
 	}
@@ -433,9 +433,9 @@ also moves it to in_progress. Omitting the user ID unassigns it.`,
 				return A.out.Structured(resp)
 			}
 			if body.AssignedTo == nil {
-				A.out.Printf("✓ Submission %s unassigned", resolved)
+				A.out.PrintfSafe("✓ Submission %s unassigned", resolved)
 			} else {
-				A.out.Printf("✓ Submission %s assigned to %s", resolved, *body.AssignedTo)
+				A.out.PrintfSafe("✓ Submission %s assigned to %s", resolved, *body.AssignedTo)
 			}
 			return nil
 		},

@@ -190,7 +190,7 @@ func newNotificationsReadCmd() *cobra.Command {
 			if A.structured() {
 				return A.emitMutationResult("read", id)
 			}
-			A.out.Printf("✓ Marked %s as read", id)
+			A.out.PrintfSafe("✓ Marked %s as read", id)
 			return nil
 		},
 	}
