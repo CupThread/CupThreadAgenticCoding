@@ -57,7 +57,7 @@ page until the response reports hasMore=false:
   cupthread apps public-changelog <app-key>
   cupthread apps public-changelog <app-key> --limit 50
   cupthread apps public-changelog <app-key> --cursor <nextCursor>`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("app key"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The public changelog feed clamps ?limit= to 1-100 server-side
 			// (silently degrading 0 to the default 100); clamp locally too so
@@ -118,7 +118,7 @@ above 10000 is clamped to 10000 and still returns 200. Plain listings (no
 
 Boards that require sign-in (anonymous roadmap view disabled) reject the
 unauthenticated feed with 401.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("app key"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The public board feed clamps ?limit= to 1-200 and ?offset= at
 			// the shared 10,000 cap server-side (silently degrading 0 to the
@@ -188,7 +188,7 @@ Private apps fail closed: both routes return 404 {"error": "App not found"},
 identical to an unknown app key. Only public apps return a 200 body.
 Both routes are rate limited per client IP (60/minute) before lookup; an
 over-budget caller gets 429.`,
-		Args: cobra.MaximumNArgs(1),
+		Args: cobra.MatchAll(cobra.MaximumNArgs(1), nonBlankArg(0, "app key")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var path string
 			switch {
@@ -371,7 +371,7 @@ func newAppsGetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <app-id-or-slug>",
 		Short: "Show one app",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			appRec, err := A.lookupApp(cmd.Context(), args[0])
 			if err != nil {
@@ -415,7 +415,7 @@ func newAppsUseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <app-id-or-slug>",
 		Short: "Set the default app for the current workspace",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -481,7 +481,7 @@ fails, the command reports "partially applied" — in --json/--yaml mode the
 error payload carries "applied" and "failed" lists so scripts can tell what
 went live.
 Clear a URL or the icon by passing an empty value (e.g. --icon "").`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Issue #91: mirror the server's field rules locally so bad
 			// flag values fail before any request — the app lookup
@@ -832,7 +832,7 @@ func newAppSettingsCmd() *cobra.Command {
 	show := &cobra.Command{
 		Use:   "show [app-id-or-slug]",
 		Short: "Show app settings",
-		Args:  cobra.MaximumNArgs(1),
+		Args:  cobra.MatchAll(cobra.MaximumNArgs(1), nonBlankArg(0, "app id or slug")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
@@ -888,7 +888,7 @@ func newAppSettingsCmd() *cobra.Command {
 The --input body (a file path, "@path", or "-" / "@" for stdin) is capped
 locally at the console route's 1 MB request-body limit; larger input fails
 with input_too_large before any request is sent.`,
-		Args: cobra.ExactArgs(1),
+		Args: exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Read and validate --input before anything else: an oversized or
 			// malformed body must fail locally, before any HTTP request

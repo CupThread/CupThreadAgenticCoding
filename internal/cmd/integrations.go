@@ -365,7 +365,7 @@ func newGitHubConfigCmd() *cobra.Command {
 	config_ := &cobra.Command{
 		Use:   "config <app-id-or-slug>",
 		Short: "Set the per-app GitHub repository and sync options",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// UpdateAppGitHubConfigInputSchema bounds githubOwner/githubRepo
 			// at min(1).max(100).nullable().optional(): "" stays the null
@@ -459,7 +459,7 @@ func newGitHubSyncCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync <app-id-or-slug>",
 		Short: "Run a full bi-directional GitHub sync for an app",
-		Args:  cobra.ExactArgs(1),
+		Args:  exactNonBlankArg("app id or slug"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ws, err := workspaceClient(cmd.Context())
 			if err != nil {
