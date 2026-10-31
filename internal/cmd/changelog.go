@@ -42,7 +42,10 @@ existing schedule and needs plain content.manage (no admin role required).
 A schedule value must be the strict UTC datetime form the server's schema
 enforces, e.g. 2026-11-05T09:00:00Z (fractional seconds allowed): date-only
 strings, free text, and numeric offsets like +02:00 are rejected locally
-before any request.`,
+before any request.
+--body and --body-file are mutually exclusive: both carry the entry body,
+and passing both would silently send the file's content while dropping the
+--body value, so the CLI refuses the pair before any request.`,
 	}
 	cmd.AddCommand(
 		newChangelogListCmd(),
@@ -325,6 +328,21 @@ publish the entry immediately and notify subscribers while dropping the
 requested schedule, so the CLI refuses the pair before any request.`,
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --body and --body-file both write the entry body, and
+			// resolveBody silently resolved the contradictory pair in favor
+			// of --body-file (issue #426): the --body value was dropped with
+			// exit code 0, so with --publish-now the stale draft file was
+			// published — and subscribers notified — instead of the corrected
+			// inline text. Refuse the pair before any request and before the
+			// other flag validations, mirroring the #369 guard's ordering
+			// rationale: a caller fixing a bad --title or --schedule-at would
+			// otherwise hit this same refusal on the next run. Unlike that
+			// pair, neither body flag has an "empty means omitted" form — a
+			// passed flag always carries the intended body — so this checks
+			// cobra's Changed rather than the values.
+			if cmd.Flags().Changed("body") && cmd.Flags().Changed("body-file") {
+				return errors.New("--body and --body-file are mutually exclusive; pass one (previously --body-file silently won and --body was dropped)")
+			}
 			if title == "" {
 				return errors.New("--title is required")
 			}
@@ -396,8 +414,8 @@ requested schedule, so the CLI refuses the pair before any request.`,
 		},
 	}
 	create.Flags().StringVar(&title, "title", "", "Entry title (required)")
-	create.Flags().StringVar(&bodyText, "body", "", "Markdown body")
-	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
+	create.Flags().StringVar(&bodyText, "body", "", "Markdown body (mutually exclusive with --body-file)")
+	create.Flags().StringVar(&bodyFile, "body-file", "", "Read the markdown body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB; mutually exclusive with --body)")
 	create.Flags().StringVar(&versionLabel, "version-label", "", "Version label to show, e.g. 1.2.0")
 	create.Flags().StringVar(&versionID, "version-id", "", "Linked version ID")
 	create.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Comma-separated feature request IDs to close the loop (full IDs or unique prefixes, resolved like 'features get')")
@@ -406,7 +424,10 @@ requested schedule, so the CLI refuses the pair before any request.`,
 	return create
 }
 
-// resolveBody returns the markdown body from --body or --body-file. The file
+// resolveBody returns the markdown body from --body or --body-file. Callers
+// refuse the contradictory --body + --body-file pair before calling (issue
+// #426), so resolveBody only ever sees one of the two flags Changed; it used
+// to resolve that pair silently in favor of --body-file. The file
 // form is capped at the console route's 1 MB request-body limit, and both
 // forms are capped at the server's 20000-character intake bound
 // (changelogBodyLimit) — a bigger body can never be accepted and fails here
@@ -451,8 +472,23 @@ func newChangelogUpdateCmd() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <entry-id>",
 		Short: "Update a changelog entry",
-		Args:  exactNonBlankArg("changelog entry id"),
+		Long: `Update a changelog entry.
+
+--body and --body-file are mutually exclusive: both carry the new body, and
+passing both would silently save the file's content while dropping the
+--body value, so the CLI refuses the pair before the ID resolution and any
+request.`,
+		Args: exactNonBlankArg("changelog entry id"),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Same contradictory-pair refusal as create (issue #426):
+			// resolveBody silently favored --body-file, so an update passing
+			// both saved the file's — possibly older — text over the intended
+			// --body correction with exit code 0. Refuse before the flag
+			// validations and before the ID-resolution round trips (the
+			// validate-before-lookup discipline of #341).
+			if cmd.Flags().Changed("body") && cmd.Flags().Changed("body-file") {
+				return errors.New("--body and --body-file are mutually exclusive; pass one (previously --body-file silently won and --body was dropped)")
+			}
 			if err := validateChangelogWriteFlags(cmd, title, versionLabel, scheduleAt, linkIDs, false); err != nil {
 				return err
 			}
@@ -526,8 +562,8 @@ func newChangelogUpdateCmd() *cobra.Command {
 		},
 	}
 	update.Flags().StringVar(&title, "title", "", "New title")
-	update.Flags().StringVar(&bodyText, "body", "", "New markdown body")
-	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB)")
+	update.Flags().StringVar(&bodyText, "body", "", "New markdown body (mutually exclusive with --body-file)")
+	update.Flags().StringVar(&bodyFile, "body-file", "", "Read the new body from a file path, \"@path\", or \"-\"/\"@\" for stdin (max 1 MB; mutually exclusive with --body)")
 	update.Flags().StringVar(&versionLabel, "version-label", "", "Version label (\"\" clears it)")
 	update.Flags().StringVar(&versionID, "version-id", "", "Linked version ID (\"\" clears it)")
 	update.Flags().StringSliceVar(&linkIDs, "link-request-ids", nil, "Feature request IDs to link (full IDs or unique prefixes, resolved like 'features get')")

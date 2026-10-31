@@ -536,7 +536,10 @@ clearing a schedule with `--schedule-at ""` stays token-safe too).
 On `create`, `--publish-now` and `--schedule-at` are mutually exclusive — the
 server silently resolves the contradictory pair in favor of `--publish-now`
 (publish immediately and notify subscribers, dropping the schedule), so the
-CLI refuses the combination before any request.
+CLI refuses the combination before any request. `--body` and `--body-file`
+are mutually exclusive on `create`/`update` too: both carry the entry body,
+and the CLI refuses the pair before any request instead of silently sending
+the file's content.
 `changelog list` (console) is offset/limit-paginated and reports `total` +
 `hasMore`; the table view prints the next `--offset` when more pages remain.
 The page size caps at **100** (`--limit` is clamped into 1–100 locally, with
