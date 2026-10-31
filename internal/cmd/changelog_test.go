@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -518,6 +519,190 @@ func TestChangelogCreateSinglePublishFlagWireShapes(t *testing.T) {
 			}
 			if string(gotBody) != tc.want {
 				t.Errorf("request body = %s, want %s", gotBody, tc.want)
+			}
+		})
+	}
+}
+
+// TestChangelogBodyBodyFileMutuallyExclusive is the issue #426 guard:
+// --body and --body-file both write the entry body, and resolveBody silently
+// resolved the contradictory pair in favor of --body-file, so the --body
+// value was dropped with exit code 0 — on create --publish-now the stale
+// draft file's content went out to subscribers instead of the corrected
+// inline text, and on update the file's possibly older text overwrote the
+// intended correction. The pair is now refused before any request (and
+// before the ID-resolution round trips on update), in human and structured
+// mode alike, and the contradiction outranks the other flag validations so
+// a caller fixing a bad --title or --schedule-at sees the conflict first
+// (the #369 review ordering).
+func TestChangelogBodyBodyFileMutuallyExclusive(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	var hits int
+	refuseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"cl_entry_1"}`))
+	}))
+	t.Cleanup(refuseServer.Close)
+
+	bodyFile := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(bodyFile, []byte("stale draft"), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	t.Run("create refuses in human mode", func(t *testing.T) {
+		hits = 0
+		_, err := runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+			"--title", "v1.2.0", "--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the mutual-exclusion refusal", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+
+	t.Run("create refuses in structured mode", func(t *testing.T) {
+		hits = 0
+		_, err := runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1", "--json",
+			"--title", "v1.2.0", "--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the mutual-exclusion refusal in --json mode", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+
+	t.Run("create refusal outranks the title validation", func(t *testing.T) {
+		hits = 0
+		_, err := runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+			"--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the conflict before the --title is required check", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+
+	t.Run("create refusal outranks the schedule-at datetime validation", func(t *testing.T) {
+		hits = 0
+		_, err := runRoot(t, refuseServer.URL, "changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+			"--title", "v1.2.0", "--body", "Corrected release notes", "--body-file", bodyFile,
+			"--schedule-at", "2026-11-05")
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the conflict before the datetime check", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+
+	t.Run("update refuses before the ID resolution in human mode", func(t *testing.T) {
+		hits = 0
+		_, err := runRootWithSeededConfig(t, refuseServer.URL, defaultAppConfig, "changelog", "update", "cl_entry_1",
+			"--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the mutual-exclusion refusal", err)
+		}
+		if hits != 0 {
+			t.Errorf("refusal fired after %d request(s); the ID-resolution walk must never start", hits)
+		}
+	})
+
+	t.Run("update refuses in structured mode", func(t *testing.T) {
+		hits = 0
+		_, err := runRootWithSeededConfig(t, refuseServer.URL, defaultAppConfig, "changelog", "update", "cl_entry_1", "--json",
+			"--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the mutual-exclusion refusal in --json mode", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+
+	t.Run("update refusal outranks the title validation", func(t *testing.T) {
+		hits = 0
+		_, err := runRootWithSeededConfig(t, refuseServer.URL, defaultAppConfig, "changelog", "update", "cl_entry_1",
+			"--title", "ab", "--body", "Corrected release notes", "--body-file", bodyFile)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the conflict before the --title length check", err)
+		}
+		if hits != 0 {
+			t.Errorf("conflicting flags reached the API: %d request(s)", hits)
+		}
+	})
+}
+
+// TestChangelogCreateSingleBodyFlagWireShapes pins the single-flag create
+// bodies the issue #426 guard must not reshape: --body alone sends the
+// inline text, --body-file alone sends the file's content, and the stdin
+// form sends what stdin delivered — each exactly as before the guard
+// existed. (The update-side single-flag forms are pinned in
+// TestChangelogBlankBodyFileFailsLocally.)
+func TestChangelogCreateSingleBodyFlagWireShapes(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test")
+
+	bodyFile := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(bodyFile, []byte("file body"), 0o600); err != nil {
+		t.Fatalf("write body file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		stdin string
+		want  string
+	}{
+		{
+			name: "--body alone",
+			args: []string{"--body", "inline body"},
+			want: "inline body",
+		},
+		{
+			name: "--body-file path alone",
+			args: []string{"--body-file", bodyFile},
+			want: "file body",
+		},
+		{
+			name:  "--body-file stdin alone",
+			args:  []string{"--body-file", "-"},
+			stdin: "stdin body",
+			want:  "stdin body",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"cl_new_1"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			args := append([]string{"changelog", "create", "--workspace", "ws_1", "--app", "app_1",
+				"--title", "v1.2.0"}, tc.args...)
+			var (
+				out string
+				err error
+			)
+			if tc.stdin != "" {
+				out, err = runRootWithStdin(t, server.URL, tc.stdin, args...)
+			} else {
+				out, err = runRoot(t, server.URL, args...)
+			}
+			if err != nil {
+				t.Fatalf("changelog create %v: %v (out %q)", tc.args, err, out)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(gotBody, &sent); err != nil {
+				t.Fatalf("decode request body %s: %v", gotBody, err)
+			}
+			if sent["body"] != tc.want {
+				t.Errorf("wire body = %v, want %q", sent["body"], tc.want)
 			}
 		})
 	}

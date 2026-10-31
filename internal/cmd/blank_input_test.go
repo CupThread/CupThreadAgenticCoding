@@ -239,11 +239,14 @@ func TestChangelogBlankBodyFileFailsLocally(t *testing.T) {
 		}
 	})
 
-	t.Run("update --body-file empty refuses even with --body", func(t *testing.T) {
+	// With both body flags passed the #426 mutual-exclusion guard fires
+	// before resolveBody, so the pair is refused as contradictory rather
+	// than reaching the blank --body-file check.
+	t.Run("update --body-file empty with --body refuses as contradictory", func(t *testing.T) {
 		hits, bodies = 0, nil
 		_, err := runRootWithSeededConfig(t, server.URL, defaultAppConfig, "changelog", "update", "entry_1", "--body", "text", "--body-file", "")
-		if err == nil || !strings.Contains(err.Error(), "--body-file is empty") {
-			t.Fatalf("error = %v, want the blank --body-file refusal to win over --body", err)
+		if err == nil || !strings.Contains(err.Error(), "--body and --body-file are mutually exclusive") {
+			t.Fatalf("error = %v, want the mutual-exclusion refusal to outrank resolveBody", err)
 		}
 		if hits != 0 {
 			t.Errorf("issued %d request(s), want 0", hits)
