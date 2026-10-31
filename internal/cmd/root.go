@@ -236,17 +236,21 @@ func (a *app) warnOAuthIssuerDivergence() {
 var repairConfigPermissions = config.RepairPermissions
 
 // warnUnsafeConfigPermissions re-checks the credential files' hygiene at load
-// time (issues #186 and #390 for the config, #401 for the recovery files):
-// Save and writeRecoveryCredential always write 0600, but a backup restore, a
-// permissive-umask copy or a dotfiles sync can loosen the mode afterwards,
-// and nothing flagged the stored tokens sitting readable — or, just as
-// dangerously, writable (issue #390: a hostile baseUrl repoint makes the next
-// command leak the token) — by every local account. The sweep covers the
-// config itself and every OAuth recovery file next to it: a recovery file
-// holds the same full bearer+refresh pair (issue #299) and is auto-adopted as
-// a live credential on the next invalid_grant, so an exposure there is at
-// least as serious as one in the config. Each group/world-accessible file
-// that stores credentials gets exactly one warning on stderr in every output
+// time (issues #186 and #390 for the config, #401 for the recovery files,
+// #432 for the orphaned Save temps): Save and writeRecoveryCredential always
+// write 0600, but a backup restore, a permissive-umask copy or a dotfiles
+// sync can loosen the mode afterwards, and nothing flagged the stored tokens
+// sitting readable — or, just as dangerously, writable (issue #390: a hostile
+// baseUrl repoint makes the next command leak the token) — by every local
+// account. The sweep covers the config itself, every OAuth recovery file next
+// to it, and every orphaned Save temp file next to it: a recovery file holds
+// the same full bearer+refresh pair (issue #299) and is auto-adopted as a
+// live credential on the next invalid_grant, so an exposure there is at
+// least as serious as one in the config, and an orphaned Save temp — the
+// process died between CreateTemp and the rename — holds a copy of the same
+// document under the other naming pattern, which nothing else inspects. Each
+// group/world-accessible file that stores credentials gets exactly one
+// warning on stderr in every output
 // mode — direct like the sibling warnOAuthIssuerDivergence, because warnf
 // would print on stdout in table mode — and an immediate chmod 0600 repair,
 // so the exposure window closes without user action while the warning still
@@ -265,21 +269,29 @@ func (a *app) warnUnsafeConfigPermissions() {
 	for _, path := range recoveryFilePaths(a.cfgPath) {
 		a.warnUnsafeCredentialFile(path, "OAuth recovery file", "holds a full bearer+refresh credential pair", true)
 	}
+	// Orphaned Save temps sweep unconditionally like the recovery files: the
+	// hedged sensitivity only says credentials are included *when the config
+	// stores them*, but the copy beside a since-logged-out config still
+	// holds whatever credentials the last completed save wrote — a leaked
+	// credential regardless.
+	for _, path := range saveTempFilePaths(a.cfgPath) {
+		a.warnUnsafeCredentialFile(path, "config save temp file", "holds a copy of the config document, credentials included when the config stores them", true)
+	}
 }
 
-// recoveryFilePaths returns every directory entry beside cfgPath whose name
-// extends the config basename with the recovery prefix, matched literally:
-// writeRecoveryCredential names the files by concatenating cfgPath verbatim,
-// so a --config value carrying glob metacharacters ('config[prod].json')
-// must not be reinterpreted as a pattern — a filepath.Glob would treat
-// [prod] as a character class and silently miss every recovery file beside
-// such a config (CodeRabbit review of #402). The parent directory is
-// enumerated instead of globbed. Every entry matching the prefix is
-// returned, directories included, exactly as the glob saw them:
-// removeRecoveryFiles must still attempt (and report) the removal of a
-// non-directory entry wearing a recovery name, and every other reader skips
-// what it cannot use on its own.
-func recoveryFilePaths(cfgPath string) []string {
+// configSiblingPathsWithPrefixes returns every directory entry beside cfgPath
+// whose name extends the config basename with one of prefixes, matched
+// literally: writeRecoveryCredential names the recovery files and Save names
+// its temp files by concatenating cfgPath verbatim, so a --config value
+// carrying glob metacharacters ('config[prod].json') must not be
+// reinterpreted as a pattern — a filepath.Glob would treat [prod] as a
+// character class and silently miss every sibling file beside such a config
+// (CodeRabbit review of #402). The parent directory is enumerated instead of
+// globbed. Every entry matching a prefix is returned, directories included,
+// exactly as the glob saw them: removeRecoveryFiles must still attempt (and
+// report) the removal of a non-directory entry wearing a recovery name, and
+// every other reader skips what it cannot use on its own.
+func configSiblingPathsWithPrefixes(cfgPath string, prefixes ...string) []string {
 	dir, base := filepath.Split(cfgPath)
 	if dir == "" {
 		dir = "." // a bare --config name lives in the process working directory
@@ -288,14 +300,32 @@ func recoveryFilePaths(cfgPath string) []string {
 	if err != nil {
 		return nil
 	}
-	prefix := base + ".recovery-"
 	var matches []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), prefix) {
-			matches = append(matches, filepath.Join(dir, e.Name()))
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(e.Name(), base+prefix) {
+				matches = append(matches, filepath.Join(dir, e.Name()))
+				break
+			}
 		}
 	}
 	return matches
+}
+
+// recoveryFilePaths returns every OAuth recovery file beside cfgPath — the
+// entries wearing the `<config basename>.recovery-` prefix
+// writeRecoveryCredential writes.
+func recoveryFilePaths(cfgPath string) []string {
+	return configSiblingPathsWithPrefixes(cfgPath, ".recovery-")
+}
+
+// saveTempFilePaths returns every orphaned Save temp file beside cfgPath —
+// the entries wearing the `<config basename>.tmp-` prefix os.CreateTemp
+// stamps inside config.Save. Save's own `defer os.Remove` covers every
+// ordinary return, so only a process killed between CreateTemp and the
+// rename strands one on disk (issue #432).
+func saveTempFilePaths(cfgPath string) []string {
+	return configSiblingPathsWithPrefixes(cfgPath, ".tmp-")
 }
 
 // warnUnsafeCredentialFile applies the sweep's one-warning-one-repair
