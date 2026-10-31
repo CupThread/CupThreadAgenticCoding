@@ -85,6 +85,11 @@ func TestBlankPositionalIDsRejectedBeforeAnyRequest(t *testing.T) {
 		{false, []string{"inbox", "triage", "@ID@", "open"}},
 		{false, []string{"inbox", "assign", "@ID@"}},
 		{false, []string{"inbox", "retry", "@ID@"}},
+		// bulk-triage is the family's one multi-reference command: the blank
+		// guard is noBlankArgs (every positional), still in the Args layer
+		// (issue #427). The index-naming mixed-blank cases live in
+		// inbox_test.go, which the single-blank harness below cannot express.
+		{false, []string{"inbox", "bulk-triage", "@ID@"}},
 		{false, []string{"features", "get", "@ID@"}},
 		{false, []string{"features", "update", "@ID@", "--title", "t"}},
 		{false, []string{"features", "approve", "@ID@"}},

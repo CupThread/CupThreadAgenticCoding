@@ -453,8 +453,9 @@ func newInboxBulkTriageCmd() *cobra.Command {
 		Long: `Bulk-update the triage status and/or assignee of 1-50 submissions.
 
 Pass at least one of --triage-status, --assignee or --unassign. Submissions
-outside the workspace are skipped; the command reports which IDs were updated.`,
-		Args: cobra.MinimumNArgs(1),
+outside the workspace are skipped; the command reports which IDs were updated.
+Blank ids are refused at argument validation, before any request (issue #427).`,
+		Args: cobra.MatchAll(cobra.MinimumNArgs(1), noBlankArgs("submission id")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 50 {
 				return errors.New("too many submission IDs: bulk-triage accepts at most 50")
@@ -478,7 +479,10 @@ outside the workspace are skipped; the command reports which IDs were updated.`,
 			// verbatim — it would be silently skipped, and UpdatedCount would
 			// under-report with exit code 0. The single-submission commands'
 			// probe-and-refire cannot exist here, so each reference takes the
-			// detail-GET fast path and its 404 the listing walk.
+			// detail-GET fast path and its 404 the listing walk. Blank
+			// references never get this far: the Args-layer noBlankArgs guard
+			// refuses them before RunE (issue #427), so the loop can interpolate
+			// every ref into the detail path without a local empty check.
 			ids := make([]string, 0, len(args))
 			for i, ref := range args {
 				rec, err := fetchOneSubmission(cmd.Context(), ref)
