@@ -278,7 +278,10 @@ act on the **full** id — a full id keeps the one-request exact path, and the
 positional id up front, because its endpoint skips unknown ids instead of
 failing, so a truncated id must never reach it verbatim. A prefix matching
 several submissions fails with `ambiguous submission prefix …; use a longer
-prefix`, and one matching nothing names the scanned workspace window.
+prefix`, and one matching nothing names the scanned workspace window. Blank
+positional ids (the unset-shell-variable accident) are refused at argument
+validation — `argument N is empty — pass a non-blank submission id` — before
+any HTTP request is built, the same contract every single-id command follows.
 
 ### Notifications
 ```sh

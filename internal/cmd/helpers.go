@@ -41,6 +41,29 @@ func exactNonBlankArg(what string) cobra.PositionalArgs {
 	return cobra.MatchAll(cobra.ExactArgs(1), nonBlankArg(0, what))
 }
 
+// noBlankArgs extends the blank-argument discipline to every positional at
+// once, for the multi-reference commands single-ID guards cannot cover: it
+// rejects the first blank (empty or whitespace-only) argument naming its
+// 1-based position — argument %d is empty — so the caller can tell which of
+// the pasted references was the unset shell variable. Compose it after an
+// arity validator, e.g. cobra.MatchAll(cobra.MinimumNArgs(1),
+// noBlankArgs("submission id")) for inbox bulk-triage (issue #427): the
+// command's per-reference resolution interpolates each id into a request
+// path, so a blank ref would ride the wire as a trailing-slash detail-GET —
+// saved from a zero-value decode only by the server's strict routing, an
+// accident any slash-normalizing proxy strips away. Like nonBlankArg the
+// error fires in the Args layer, before RunE builds a single request.
+func noBlankArgs(what string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		for i, arg := range args {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("argument %d is empty — pass a non-blank %s (see '%s --help')", i+1, what, cmd.CommandPath())
+			}
+		}
+		return nil
+	}
+}
+
 // pathID percent-encodes a user-supplied resource reference for interpolation
 // as a single request-path segment. The API client hands the concatenated
 // path to http.NewRequest, which parses it as a full URL, so a raw id pasted

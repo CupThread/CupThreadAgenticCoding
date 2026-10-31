@@ -475,6 +475,63 @@ func TestInboxBulkTriage(t *testing.T) {
 	}
 }
 
+// TestInboxBulkTriageRejectsBlankRefsBeforeAnyRequest pins the multi-reference
+// extension of the #293 blank-argument contract (issue #427): bulk-triage is
+// the one command taking several positional ids, so a blank one — the unset-
+// shell-variable accident — must fail in the Args layer with an error naming
+// the blank argument's 1-based position, before RunE resolves anything. The
+// zero request count is the point: the resolution loop interpolates each ref
+// into the detail-GET path, so a blank ref would fire
+// GET .../submissions/ (a trailing-slash collection probe that only the
+// server's strict routing answers 404 — a slash-normalizing proxy would
+// decode it as a zero-value record and let the blank id into the bulk body).
+func TestInboxBulkTriageRejectsBlankRefsBeforeAnyRequest(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			seg := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			_, _ = w.Write([]byte(`{"submission": {"submissionId": "` + seg + `", "title": "T"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"updatedCount": 1, "updatedIds": ["sub_1"]}`))
+	}))
+	defer server.Close()
+
+	// --triage-status is passed so that a failed guard would run the real
+	// resolution path: only the Args-layer refusal can explain success-free,
+	// request-free outcomes.
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"blank only", []string{""}, "argument 1 is empty"},
+		{"whitespace only", []string{"   "}, "argument 1 is empty"},
+		{"blank first of three", []string{"", "sub_1", "sub_2"}, "argument 1 is empty"},
+		{"blank last of two", []string{"sub_1", ""}, "argument 2 is empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hits = 0
+			full := append([]string{"inbox", "bulk-triage", "--triage-status", "open", "--workspace", "ws_1"}, tc.args...)
+			_, err := runRoot(t, server.URL, full...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), "pass a non-blank submission id") {
+				t.Errorf("error = %v, want the self-diagnosing non-blank hint", err)
+			}
+			if hits != 0 {
+				t.Errorf("server saw %d request(s), want 0 (refused before any round trip)", hits)
+			}
+		})
+	}
+}
+
 // TestInboxListClampsLimit pins the local --limit clamp on the submissions
 // listing (issue #201): the server clamps a parsed page size to its
 // parseListPagination maxLimit (200) silently, so an offset walk stepped by a
