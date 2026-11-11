@@ -168,7 +168,7 @@ Console-configured app icons (developer-facing) are unaffected and may still use
 
 The deployment can temporarily protect optional managed images (app icons, avatars, console image assets under `GET /api/v1/files/…`) when storage is under usage protection:
 
-- **Poll the availability signal**: `GET /api/v1/public/resource-protection` answers `200 {"optionalImagesDisabled": boolean}` with `Cache-Control: no-store`. Poll about every 30 s while optional images are visible; do not poll faster (the server caches the state for 30 s) and treat a `429` as a back-off, not a state change.
+- **Poll the availability signal**: `GET /api/v1/public/resource-protection` answers `200 {"optionalImagesDisabled": boolean}` with `Cache-Control: no-store`. Poll about every 30 s while optional images are visible; do not poll faster (the server caches the state for 30 s). On a `429`, back off polling and keep showing placeholders — an unknown state is treated exactly like `true` — until a valid response arrives.
 - **Render a local accessible placeholder** for optional managed images while `optionalImagesDisabled` is `true` — do not request the image at all. Essential, non-image content is unaffected. An unreachable or invalid signal answer fails closed: keep showing placeholders until a valid `false` arrives, then restore normal loading.
 - **Handle the degraded image response**: an optional managed image can answer `503 {"error": …, "code": "resource_protection"}` with `Cache-Control: no-store` and `Retry-After`. That is temporary unavailability, **not** a missing or deleted resource: keep the asset URL, honor `Retry-After` before re-requesting, and never cache the 503 body.
 - The signal is informational and does not guarantee a spending cap.

@@ -343,6 +343,17 @@ func (e *APIError) ResourceProtected() bool {
 	return e.Status == http.StatusServiceUnavailable && e.Code == "resource_protection"
 }
 
+// retryAfterSuffix renders a parsed Retry-After hint as a human-readable
+// "try again in …" clause (issue #435): a plain-503 user running without
+// --json otherwise never sees the timing the server asked for. Empty when
+// the response carried no usable hint.
+func retryAfterSuffix(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (try again in %s)", d)
+}
+
 // tierLimitHints maps known 402 error codes to actionable remediation for
 // CLI users and agents: submission endpoints (POST /api/v1/feature-requests,
 // POST /api/v1/feedback) and workspace creation (POST /api/v1/console/
@@ -831,7 +842,7 @@ func decodeResponse(method, path, retryAfterHeader string, resp *http.Response, 
 			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
 		}
 		if apiErr.ResourceProtected() {
-			return fmt.Errorf("resource protected: %w — %s", apiErr, apiErr.Hint())
+			return fmt.Errorf("resource protected: %w — %s%s", apiErr, apiErr.Hint(), retryAfterSuffix(apiErr.RetryAfter))
 		}
 		if apiErr.Unauthorized() {
 			if hint := apiErr.Hint(); hint != "" {
@@ -1014,8 +1025,12 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+		apiErr.RetryAfter = parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
 			return fmt.Errorf("unsupported image type: %w", apiErr)
+		}
+		if apiErr.ResourceProtected() {
+			return fmt.Errorf("resource protected: %w — %s%s", apiErr, apiErr.Hint(), retryAfterSuffix(apiErr.RetryAfter))
 		}
 		if apiErr.Forbidden() {
 			if hint := apiErr.Hint(); hint != "" {

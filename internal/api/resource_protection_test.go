@@ -9,6 +9,7 @@ package api
 // callers to guess.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -199,6 +200,36 @@ func TestResourceProtection503LongHintCapsInternalRetryWaits(t *testing.T) {
 	}
 	if len(sleeps) != 2 {
 		t.Errorf("slept %d times, want 2 (one per retry)", len(sleeps))
+	}
+}
+
+// TestUploadAppIconResourceProtection503 pins the multipart path (S1): the
+// console icon upload is the second surface the protection 503 serves, so
+// the same classification, uncapped Retry-After surface, and recovery hint
+// must apply there — the upload is a mutation and stays single-shot.
+func TestUploadAppIconResourceProtection503(t *testing.T) {
+	server, hits := protectedImageServerWithHint(t, 1<<30, "300") // always degraded
+	client := New(server.URL)
+	client.Token = func(context.Context) (string, error) { return "cpt_test", nil }
+
+	_, err := client.UploadAppIcon(t.Context(), "ws_1", "app_1", "icon.png", []byte("png"))
+	if *hits != 1 {
+		t.Errorf("wire attempts = %d, want exactly 1 (mutations are single-shot)", *hits)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected *APIError, got %v", err)
+	}
+	if !apiErr.ResourceProtected() {
+		t.Fatalf("ResourceProtected() = false for %v", apiErr)
+	}
+	if apiErr.RetryAfter != 300*time.Second {
+		t.Errorf("RetryAfter = %v, want the uncapped 300s hint", apiErr.RetryAfter)
+	}
+	for _, want := range []string{"resource protected:", "temporarily unavailable, not deleted", "try again in 5m0s"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err, want)
+		}
 	}
 }
 
