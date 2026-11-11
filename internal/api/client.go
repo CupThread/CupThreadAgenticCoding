@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
@@ -195,6 +196,12 @@ type APIError struct {
 	// It is size-capped like every response body and nil for non-JSON
 	// bodies. Never print it raw: render only fields parsed out of it.
 	Body json.RawMessage
+	// RetryAfter is the parsed Retry-After hint of the failing response
+	// (issue #435), populated by decodeResponse for every non-2xx: 0 means
+	// "no usable hint". Only the resource_protection 503 documents the
+	// header today, but any response may carry it, so the field is
+	// unconditional. It is advisory — the caller applies its own pacing.
+	RetryAfter time.Duration
 }
 
 // Limits for rendering APIError.Details so a large schema error cannot flood
@@ -325,6 +332,28 @@ func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequi
 // sharing that same 60/minute bucket — GET /api/v1/users/{userId}/profile.
 func (e *APIError) RateLimited() bool { return e.Status == http.StatusTooManyRequests }
 
+// ResourceProtected returns true when the API answered 503 with code
+// "resource_protection" (issue #435): the deployment's optional-image
+// protection is active, so an optional managed image — a GET /api/v1/files/*
+// asset or a console icon upload — is temporarily unavailable, not missing
+// or deleted. The degraded response always carries Cache-Control: no-store
+// and Retry-After, and the availability signal lives at
+// GET /api/v1/public/resource-protection.
+func (e *APIError) ResourceProtected() bool {
+	return e.Status == http.StatusServiceUnavailable && e.Code == "resource_protection"
+}
+
+// retryAfterSuffix renders a parsed Retry-After hint as a human-readable
+// "try again in …" clause (issue #435): a plain-503 user running without
+// --json otherwise never sees the timing the server asked for. Empty when
+// the response carried no usable hint.
+func retryAfterSuffix(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (try again in %s)", d)
+}
+
 // tierLimitHints maps known 402 error codes to actionable remediation for
 // CLI users and agents: submission endpoints (POST /api/v1/feature-requests,
 // POST /api/v1/feedback) and workspace creation (POST /api/v1/console/
@@ -370,6 +399,9 @@ var unauthorizedHints = map[string]string{
 func (e *APIError) Hint() string {
 	if e.RateLimited() {
 		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
+	}
+	if e.ResourceProtected() {
+		return "optional image protection is active on this deployment: the asset is temporarily unavailable, not deleted — treat the URL as still valid rather than cleaning it up, honor the response's Retry-After before re-requesting, poll GET /api/v1/public/resource-protection for optionalImagesDisabled=false before resuming optional image loads, and never cache the degraded 503 response"
 	}
 	if e.Forbidden() {
 		return forbiddenHints[e.Code]
@@ -643,6 +675,30 @@ func (c *Client) parseRetryAfter(v string, now time.Time) (time.Duration, bool) 
 	return 0, false
 }
 
+// parseRetryAfterHeader parses a Retry-After header value in delay-seconds
+// or HTTP-date form for APIError.RetryAfter (issue #435): an absent,
+// negative, or unparseable value yields 0 ("no usable hint"). Unlike the
+// receiver's ceiling-capped parseRetryAfter, no cap is baked in here — the
+// surfaced hint is advisory, and the caller applies its own pacing policy.
+func parseRetryAfterHeader(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs < 0 || secs > math.MaxInt64/int64(time.Second) {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 // backoffDelay returns a uniform random wait in [0, cap] where cap is
 // min(RetryBaseDelay·2^attempt, RetryMaxDelay): full jitter over the
 // exponential window.
@@ -752,7 +808,9 @@ func (c *Client) readResponseBody(method, path string, resp *http.Response) ([]b
 
 // decodeResponse maps a finished attempt onto the caller's contract: 2xx
 // decodes into out, anything else becomes an *APIError stamped with the
-// number of wire attempts spent.
+// number of wire attempts spent. The response's Retry-After header is
+// parsed onto APIError.RetryAfter so a degraded resource_protection 503
+// can tell the caller when the asset may be re-requested (issue #435).
 func decodeResponse(method, path string, resp *http.Response, data []byte, out any, attempts int) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{
@@ -772,6 +830,7 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+		apiErr.RetryAfter = parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 		if apiErr.TierLimit() {
 			if hint := apiErr.Hint(); hint != "" {
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
@@ -780,6 +839,9 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 		}
 		if apiErr.RateLimited() {
 			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
+		}
+		if apiErr.ResourceProtected() {
+			return fmt.Errorf("resource protected: %w — %s%s", apiErr, apiErr.Hint(), retryAfterSuffix(apiErr.RetryAfter))
 		}
 		if apiErr.Unauthorized() {
 			if hint := apiErr.Hint(); hint != "" {
@@ -962,8 +1024,12 @@ func (c *Client) postMultipartFile(ctx context.Context, endpoint, filename strin
 			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+		apiErr.RetryAfter = parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 		if resp.StatusCode == http.StatusUnsupportedMediaType {
 			return fmt.Errorf("unsupported image type: %w", apiErr)
+		}
+		if apiErr.ResourceProtected() {
+			return fmt.Errorf("resource protected: %w — %s%s", apiErr, apiErr.Hint(), retryAfterSuffix(apiErr.RetryAfter))
 		}
 		if apiErr.Forbidden() {
 			if hint := apiErr.Hint(); hint != "" {

@@ -43,7 +43,7 @@ Please read the CupThread OpenAPI 3.1 specification at https://api.cupthread.com
 | [`reference/endpoints.md`](reference/endpoints.md) | Per-endpoint contract tables for every public & SDK route |
 | [`reference/oauth.md`](reference/oauth.md) | OAuth authorization server (QUAL-04) and the redirect-URI scheme policy (SEC-46) |
 | [`reference/email-subscriptions.md`](reference/email-subscriptions.md) | Changelog subscribe/confirm/unsubscribe (#635, SEC-35) and weekly-digest unsubscribe (PRIV-07) |
-| [`reference/rate-limits-and-cache.md`](reference/rate-limits-and-cache.md) | 429 budgets, shared cache, body limits (SEC-36), anonymous-access gates (PRIV-12) |
+| [`reference/rate-limits-and-cache.md`](reference/rate-limits-and-cache.md) | 429 budgets, shared cache, body limits (SEC-36), anonymous-access gates (PRIV-12), optional-image protection (`resource_protection` 503) |
 | [`reference/uploads-and-attachments.md`](reference/uploads-and-attachments.md) | Upload sessions, content scan (SEC-25), uploader binding (SEC-28), image media-type policy |
 | [`reference/user-identity-and-privacy.md`](reference/user-identity-and-privacy.md) | `X-User-Token` & identity linking (SEC-12), pseudonyms (PRIV-06), avatars (PRIV-19), erasure & redaction (PRIV-01) |
 | [`reference/voting-and-submissions.md`](reference/voting-and-submissions.md) | Votes & ship-notification opt-in, Turnstile gates (SEC-846, #242), 402 quotas, tiers |
@@ -80,6 +80,7 @@ One line each; schemas and error contracts live in the OpenAPI spec.
 | `/api/v1/feedback` | `POST` | Submit feedback referencing finalized `uploadId`s (≤ 8); `422 scan_rejected` fails the whole submission (SEC-25). |
 | `/api/v1/feedback/attachments/:id/download` (alias `GET …/attachments/:id`) | `GET` | Private attachment download via signed `?token=` or workspace-member auth. |
 | `/api/v1/files/:key` | `GET` | Public serving of console image assets only; optional fixed `width` thumbnail set. Private feedback attachments answer `403 private_attachment_forbidden`. |
+| `/api/v1/public/resource-protection` | `GET` | Optional-image availability signal: `{"optionalImagesDisabled": boolean}`, `Cache-Control: no-store`. While `true`, an uncached optional managed image answers `503 resource_protection` (`no-store` + `Retry-After`) — temporary, not deleted; render local placeholders, honor `Retry-After` (edge-cache hits can still serve `200` during protection). See [rate-limits-and-cache.md](reference/rate-limits-and-cache.md#optional-image-protection-resource_protection-503). |
 | `/api/v1/uploads/r2` | `POST` | Removed tombstone — always `410 Gone`. |
 | `/api/v1/console/workspaces/:wsId/...` | various | Console surface (feature requests, submissions, columns, versions, changelog, moderation, members, billing, integrations, exports). Moderation: list/hide/delete comments. |
 
@@ -153,7 +154,7 @@ Every response carries `X-Request-Id` (caller-supplied if it matches `^[A-Za-z0-
 - Parse the machine-readable `code` field of `{"error": string, "code"?: string}` bodies — never the message text.
 - Turnstile-guarded public endpoints (`POST /feedback`, `POST /feature-requests`, `POST /uploads/sessions`, `POST /feature-requests/:id/vote`, `POST /changelog/subscribe`) answer coded `403`s (SaaS #1086): `turnstile_required` (token absent), `turnstile_verification_failed` (siteverify rejection), `turnstile_not_configured` (server lacks a secret). On `turnstile_required`, mint a fresh token and retry once — the hosted `/turnstile/verify` WebView challenge page mints one when the app config publishes `turnstile.siteKey` (bridge contract in `reference/endpoints.md`).
 - Validation `400`s (`"error": "Validation failed"`) additionally carry an optional `details` object — the zod `flatten()` output `{formErrors: string[], fieldErrors: Record<fieldName, string[]>}` (SaaS #1475); it is absent on every other error, so render the per-field reasons from it when present instead of only the generic message. The CLI's `APIError` already exposes it verbatim as `Details` and renders a capped summary.
-- Deterministic client errors (`402`, `409`, `422`, `413`, validation `400`s): fix the request or surface to the user; never auto-retry. Transient (`429`, `500 image_upload_failed`): retry with exponential backoff.
+- Deterministic client errors (`402`, `409`, `422`, `413`, validation `400`s): fix the request or surface to the user; never auto-retry. Transient (`429`, `500 image_upload_failed`): retry with exponential backoff. The `503 resource_protection` degraded-image answer is a third class — retryable-with-timing: honor `Retry-After`, poll `/api/v1/public/resource-protection`, never cache the 503, never model the asset as deleted.
 - Uniform `404`s are deliberate existence hiding (private apps, unapproved requests, unknown ids) — no client may infer existence from a `404` vs `403` distinction.
 
 ## Maintainer note — size budget
