@@ -84,7 +84,9 @@ Feedback attachments are uploaded through **pre-allocated upload sessions**; dir
 - Success `200`: `{ "uploadId", "status": "uploaded", "stored": true, "filename", "mimeType", "size", "sha256" }`.
 - Uploads are bounded streams: an over-cap body fails with `413` `file_too_large` (the `Content-Length` header is checked before a byte is read).
 - Content inspection (magic bytes, malware sniffing) runs on the stored bytes: a rejected file is marked scan-rejected and answers `415` with the inspection reason. Deterministic — never retry; drop or replace the file.
-- Session/slot errors: `401` `unauthorized` (no token), `401` `session_invalid_or_expired`, `401` `session_expired`, `404` `upload_not_found` (that `uploadId` is not in this session), `409` `already_uploaded` (slots are single-shot), `409` `session_not_pending` (the session was already finalized into a submission). The item write is metered per client IP like session creation, so `429` can occur.
+- **Per-session in-flight cap (SaaS #1513):** at most **one item of a session may be in flight**. A concurrent `PUT`/`POST` for a sibling item of the same session is answered `409` `{"error": "…", "code": "already_uploaded"}` **without reading the body**. Clients that upload a session's items in parallel should retry the `409` losers after the in-flight request settles (the cap frees on every terminal settle — `uploaded`, scan-rejected `aborted`, or the retryable-failure release); a `409` that persists after the session has no in-flight item is a real single-shot slot conflict, not a contention artifact. Sequential per-item uploads are unchanged.
+- **SVG inspection ceiling (SaaS #1513):** a payload screened as SVG (a `.svg` extension or a declared `Content-Type: image/svg+xml`) larger than **10,000,000 bytes** is rejected with `415` `{"error": "SVG exceeds the content-inspection size limit of 10000000 bytes", "code": "svg_too_large"}` **before any server-side decoding**, regardless of the slot's declared `maxBytes`. SVGs at or under the ceiling keep the unchanged full-document active-content screen (`415` `unsafe_svg_script`).
+- Session/slot errors: `401` `unauthorized` (no token), `401` `session_invalid_or_expired`, `401` `session_expired`, `404` `upload_not_found` (that `uploadId` is not in this session), `409` `already_uploaded` (slots are single-shot **and** another item of the same session may currently be in flight — SaaS #1513), `409` `session_not_pending` (the session was already finalized into a submission). The item write is metered per client IP like session creation, so `429` can occur.
 
 **Step 3 — submit feedback with the finalized ids: `POST /api/v1/feedback`**:
 
@@ -108,7 +110,7 @@ Client guidance:
 
 1. Create the session **before** uploading anything, and reuse one session for all files of a single composer submission (1–8 slots).
 2. Present the **same identity** on session creation and feedback submission — for anonymous users that means the same `X-User-Token` on both calls (SEC-28).
-3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user.
+3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user. When uploading a session's items in parallel, retry the `409` `already_uploaded` losers after the in-flight request settles (SaaS #1513) — only one item of a session may be in flight.
 4. Never fabricate, guess, or pre-assign `uploadId`s, and never send raw attachment URLs or storage keys — `direct_attachment_forbidden` is a hard rejection.
 
 ---

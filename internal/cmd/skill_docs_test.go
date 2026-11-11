@@ -3167,3 +3167,88 @@ func TestAPISkillIssue246OAuthBasicClientAuth(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue434UploadItemPutSessionCap pins the issue #434 sync
+// (SaaS PR #1517, SaaS #1513): the public item-PUT (`PUT|POST
+// /api/v1/uploads/{uploadId}`) gained two behavioral guarantees with no
+// schema change, and the skills must mirror them. (1) Per-session in-flight
+// cap: at most one item of a session may be in flight — concurrent PUTs for
+// sibling items of the same session answer `409` `already_uploaded` without
+// reading the body, and parallel uploaders retry the losers after the
+// in-flight request settles; sequential per-item uploads are unchanged. (2)
+// SVG inspection ceiling: a payload screened as SVG (`.svg` extension or
+// declared `image/svg+xml`) over 10,000,000 bytes is refused `415`
+// `svg_too_large` before any server-side decoding, regardless of the slot's
+// declared size; the active-content screen (`unsafe_svg_script`) is
+// unchanged at or under the ceiling. Red-before/green-after: reverting any
+// of the doc phrases below must fail this test.
+func TestSkillDocsIssue434UploadItemPutSessionCap(t *testing.T) {
+	apiDoc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		"**Per-session in-flight cap (SaaS #1513):** at most **one item of a session may be in flight**",
+		"answered `409` `{\"error\": \"…\", \"code\": \"already_uploaded\"}` **without reading the body**",
+		"retry the `409` losers after the in-flight request settles",
+		"a `409` that persists after the session has no in-flight item is a real single-shot slot conflict, not a contention artifact",
+		"**SVG inspection ceiling (SaaS #1513):** a payload screened as SVG (a `.svg` extension or a declared `Content-Type: image/svg+xml`) larger than **10,000,000 bytes** is rejected with `415`",
+		`"code": "svg_too_large"`,
+		"**before any server-side decoding**, regardless of the slot's declared `maxBytes`",
+		"keep the unchanged full-document active-content screen (`415` `unsafe_svg_script`)",
+		"Sequential per-item uploads are unchanged",
+	} {
+		if !strings.Contains(apiDoc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#434 marker %q", marker)
+		}
+	}
+
+	// The SKILL.md route row and lifecycle paragraph carry the compact
+	// cross-cutting note for agents working from the index alone.
+	skill := readSkillFile(t, "cupthread-api", "SKILL.md")
+	itemRow := skillLineByPrefix(t, skill, "| `/api/v1/uploads/:uploadId` | `PUT`/`POST` |")
+	for _, marker := range []string{
+		"One item per session in flight",
+		"sibling `409 already_uploaded` losers retry after it settles (SaaS #1513)",
+		"SVG > 10 MB → `415 svg_too_large` pre-decode",
+	} {
+		if !strings.Contains(itemRow, marker) {
+			t.Errorf("SKILL.md uploads/:uploadId row is missing required issue-#434 marker %q; got: %s", marker, itemRow)
+		}
+	}
+	for _, marker := range []string{
+		"at most **one item per session may be in flight** (SaaS #1513)",
+		"`409 already_uploaded` answered before the body is read",
+		"refused `415 svg_too_large` before decoding regardless of the slot's declared size (SaaS #1513)",
+	} {
+		if !strings.Contains(skill, marker) {
+			t.Errorf("SKILL.md is missing required issue-#434 marker %q", marker)
+		}
+	}
+
+	// The endpoints.md route row mirrors the OpenAPI response docs.
+	endpoints := readSkillFile(t, "cupthread-api", "reference/endpoints.md")
+	row := skillLineByPrefix(t, endpoints, "| `/api/v1/uploads/:uploadId` | `PUT` |")
+	for _, marker := range []string{
+		"concurrent sibling-PUTs answer `409 already_uploaded` without reading the body",
+		"refused `415 svg_too_large` before any decode, regardless of the slot's declared size",
+	} {
+		if !strings.Contains(row, marker) {
+			t.Errorf("endpoints.md uploads/:uploadId row is missing required issue-#434 marker %q; got: %s", marker, row)
+		}
+	}
+
+	// Each SDK skill's step-2 upload bullet carries the retry-after-settle
+	// guidance and the SVG ceiling so a custom parallel uploader cannot treat
+	// the sibling `409` as a fatal slot conflict.
+	for _, sdk := range []string{"cupthread-swift-sdk", "cupthread-android-sdk", "cupthread-react-native-sdk", "cupthread-flutter-sdk"} {
+		sdkDoc := readSkill(t, sdk)
+		for _, marker := range []string{
+			"only **one item of a session may be in flight** (SaaS #1513)",
+			"concurrent sibling uploads are answered `409` without the body being read — retry the losers after the in-flight request settles",
+			"sequential uploads are unchanged",
+			"an SVG (`.svg` or `image/svg+xml`) over 10,000,000 bytes is refused `415` `svg_too_large` before any server-side decoding, regardless of the slot's declared `maxBytes`",
+		} {
+			if !strings.Contains(sdkDoc, marker) {
+				t.Errorf("%s docs are missing required issue-#434 marker %q", sdk, marker)
+			}
+		}
+	}
+}
