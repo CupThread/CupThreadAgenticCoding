@@ -137,8 +137,11 @@ func TestResourceProtection503ExposesRetryAfter(t *testing.T) {
 	defer noHint.Close()
 	err2 := New(noHint.URL).Do(t.Context(), "GET", "/x", nil, nil, nil)
 	var apiErr2 *APIError
-	if !errors.As(err2, &apiErr2) || apiErr2.RetryAfter != 0 {
-		t.Errorf("RetryAfter = %v without a Retry-After header, want 0 (%v)", apiErr2.RetryAfter, err2)
+	if !errors.As(err2, &apiErr2) {
+		t.Fatalf("expected *APIError, got %v", err2)
+	}
+	if apiErr2.RetryAfter != 0 {
+		t.Errorf("RetryAfter = %v without a Retry-After header, want 0", apiErr2.RetryAfter)
 	}
 }
 

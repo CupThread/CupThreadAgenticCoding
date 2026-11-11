@@ -107,9 +107,15 @@ include that value in bug reports and support requests.`,
 					}
 					// The server's Retry-After hint (issue #435), present only
 					// when the failing response carried a parseable one —
-					// documented today on the resource_protection 503.
+					// documented today on the resource_protection 503. Rounded
+					// up to whole seconds so an agent can never read a
+					// sub-second hint as 0 and retry early.
 					if apiErr.RetryAfter > 0 {
-						payload["retryAfterSeconds"] = int(apiErr.RetryAfter / time.Second)
+						seconds := int64(apiErr.RetryAfter / time.Second)
+						if apiErr.RetryAfter%time.Second != 0 {
+							seconds++
+						}
+						payload["retryAfterSeconds"] = seconds
 					}
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
