@@ -401,7 +401,7 @@ func (e *APIError) Hint() string {
 		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
 	}
 	if e.ResourceProtected() {
-		return "optional image protection is active on this deployment: the asset is temporarily unavailable, not deleted — the asset URL stays valid, honor the response's Retry-After before re-requesting, poll GET /api/v1/public/resource-protection for optionalImagesDisabled=false before resuming optional image loads, and never cache the degraded 503 response"
+		return "optional image protection is active on this deployment: the asset is temporarily unavailable, not deleted — treat the URL as still valid rather than cleaning it up, honor the response's Retry-After before re-requesting, poll GET /api/v1/public/resource-protection for optionalImagesDisabled=false before resuming optional image loads, and never cache the degraded 503 response"
 	}
 	if e.Forbidden() {
 		return forbiddenHints[e.Code]
@@ -586,7 +586,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 			}
 			continue
 		}
-		return decodeResponse(method, path, resp.Header.Get("Retry-After"), resp, respBody, out, attempt+1)
+		return decodeResponse(method, path, resp, respBody, out, attempt+1)
 	}
 }
 
@@ -675,12 +675,11 @@ func (c *Client) parseRetryAfter(v string, now time.Time) (time.Duration, bool) 
 	return 0, false
 }
 
-// parseRetryAfterHeader is the client-free form of parseRetryAfter used by
-// decodeResponse: delay-seconds or HTTP-date, negative and unparseable
-// values reported as absent. decodeResponse cannot reach the receiver's
-// ceiling-capped variant because the Retry-After value it reports to
-// callers (APIError.RetryAfter, issue #435) is advisory — the caller
-// applies its own pacing policy — so no cap is baked in here.
+// parseRetryAfterHeader parses a Retry-After header value in delay-seconds
+// or HTTP-date form for APIError.RetryAfter (issue #435): an absent,
+// negative, or unparseable value yields 0 ("no usable hint"). Unlike the
+// receiver's ceiling-capped parseRetryAfter, no cap is baked in here — the
+// surfaced hint is advisory, and the caller applies its own pacing policy.
 func parseRetryAfterHeader(v string) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -809,10 +808,10 @@ func (c *Client) readResponseBody(method, path string, resp *http.Response) ([]b
 
 // decodeResponse maps a finished attempt onto the caller's contract: 2xx
 // decodes into out, anything else becomes an *APIError stamped with the
-// number of wire attempts spent. retryAfterHeader carries the response's
-// Retry-After value so a degraded resource_protection 503 can tell the
-// caller when the asset may be re-requested.
-func decodeResponse(method, path, retryAfterHeader string, resp *http.Response, data []byte, out any, attempts int) error {
+// number of wire attempts spent. The response's Retry-After header is
+// parsed onto APIError.RetryAfter so a degraded resource_protection 503
+// can tell the caller when the asset may be re-requested (issue #435).
+func decodeResponse(method, path string, resp *http.Response, data []byte, out any, attempts int) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{
 			Status:   resp.StatusCode,
@@ -831,7 +830,7 @@ func decodeResponse(method, path, retryAfterHeader string, resp *http.Response, 
 			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
-		apiErr.RetryAfter = parseRetryAfterHeader(retryAfterHeader)
+		apiErr.RetryAfter = parseRetryAfterHeader(resp.Header.Get("Retry-After"))
 		if apiErr.TierLimit() {
 			if hint := apiErr.Hint(); hint != "" {
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)

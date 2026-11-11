@@ -106,7 +106,7 @@ When the deployment's image storage is under usage protection, optional managed 
 503 {"error": "Image temporarily unavailable", "code": "resource_protection"}
 ```
 
-with `Cache-Control: no-store` and a `Retry-After` header (icon uploads get the same coded `503` with "Icon uploads are temporarily unavailable"). A cached copy may still serve `200` — protection gates the **bucket read**, not the edge cache. This is a temporary degradation, **not** a missing or deleted resource; the asset URL stays valid.
+with `Cache-Control: no-store` and a `Retry-After` header (icon uploads get the same coded `503` with "Icon uploads are temporarily unavailable"). A cached copy may still serve `200` — protection gates the **bucket read**, not the edge cache. This is a temporary degradation, **not** a missing or deleted resource; the asset is not deleted by protection — treat the URL as still valid rather than cleaning it up.
 
 The companion availability signal is `GET /api/v1/public/resource-protection` → `200 {"optionalImagesDisabled": boolean}` with `Cache-Control: no-store`. It shares the per-IP public-read budget (generic `429`), and the server itself caches the state for 30 s, so polling faster buys nothing.
 
