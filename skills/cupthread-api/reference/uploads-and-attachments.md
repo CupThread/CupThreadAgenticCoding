@@ -111,6 +111,7 @@ Client guidance:
 1. Create the session **before** uploading anything, and reuse one session for all files of a single composer submission (1–8 slots).
 2. Present the **same identity** on session creation and feedback submission — for anonymous users that means the same `X-User-Token` on both calls (SEC-28).
 3. Send an honest `Content-Type` and stay under the slot's `maxBytes`; treat `413`/`415` as deterministic client errors and surface them to the user. When uploading a session's items in parallel, retry the `409` `already_uploaded` losers after the in-flight request settles (SaaS #1513) — only one item of a session may be in flight.
+4. Never fabricate, guess, or pre-assign `uploadId`s, and never send raw attachment URLs or storage keys — `direct_attachment_forbidden` is a hard rejection.
 
 ---
 
