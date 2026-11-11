@@ -105,6 +105,12 @@ include that value in bug reports and support requests.`,
 					if apiErr.Attempts > 1 {
 						payload["attempts"] = apiErr.Attempts
 					}
+					// The server's Retry-After hint (issue #435), present only
+					// when the failing response carried a parseable one —
+					// documented today on the resource_protection 503.
+					if apiErr.RetryAfter > 0 {
+						payload["retryAfterSeconds"] = int(apiErr.RetryAfter / time.Second)
+					}
 					if hint := apiErr.Hint(); hint != "" {
 						payload["hint"] = hint
 					}

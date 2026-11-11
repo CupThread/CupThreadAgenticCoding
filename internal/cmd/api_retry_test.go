@@ -136,6 +136,46 @@ func TestAPIRequestJSONPayloadReportsAttempts(t *testing.T) {
 	}
 }
 
+// TestAPIRequestJSONPayloadReportsRetryAfter pins the issue #435 surface: a
+// resource_protection 503 that exhausts its retries carries the parsed
+// Retry-After as retryAfterSeconds plus the resource-protection hint, so
+// agents can pace their next attempt off the structured payload alone.
+func TestAPIRequestJSONPayloadReportsRetryAfter(t *testing.T) {
+	t.Setenv("CUPTHREAD_TOKEN", "cpt_test_token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"Image temporarily unavailable","code":"resource_protection"}`))
+	}))
+	defer server.Close()
+
+	out, _, _ := runRetryRoot(t, server.URL, "api", "request", "GET", "/api/v1/files/images%2Ficon.png", "--json", "--no-retry")
+	var payload struct {
+		Status   int    `json:"status"`
+		Code     string `json:"code"`
+		Hint     string `json:"hint"`
+		Attempts int    `json:"attempts"`
+		RetryAft int    `json:"retryAfterSeconds"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &payload); err != nil {
+		t.Fatalf("decode stdout payload %q: %v", out, err)
+	}
+	if payload.Status != http.StatusServiceUnavailable || payload.Code != "resource_protection" {
+		t.Errorf("payload = %+v", payload)
+	}
+	if payload.RetryAft != 120 {
+		t.Errorf("retryAfterSeconds = %d, want 120 in the --json error payload", payload.RetryAft)
+	}
+	if !strings.Contains(payload.Hint, "optionalImagesDisabled") {
+		t.Errorf("hint = %q, want the resource-protection guidance", payload.Hint)
+	}
+	if payload.Attempts != 0 {
+		t.Errorf("attempts = %d, want absent (0) under --no-retry", payload.Attempts)
+	}
+}
+
 // TestAPIRequestNoRetryFlagSingleShot: --no-retry restores single-shot
 // semantics — exactly one wire attempt and no attempts field in the payload.
 func TestAPIRequestNoRetryFlagSingleShot(t *testing.T) {

@@ -134,6 +134,8 @@ Client guidance:
 
 **Console-configured app icons are exempt.** `POST /api/v1/console/workspaces/{wsId}/apps/{appId}/icon` (capability `app.configure`, so workspace admin/owner; `cpt_` API tokens are accepted) still accepts SVG icons, but screens them for active content — markers like `<script`, `javascript:`, `onload`/`onerror`/`onclick` handlers, `<!entity`, and `<foreignObject` fail with `415 {"error": "SVG contains prohibited active scripts or external entity references"}` — and applies the same magic-byte check. The endpoint stores the image and updates the app record (`iconUrl`) in the same request, returning the updated `AppRecord`.
 
+**Console icon uploads also degrade under optional-image protection.** While the deployment's protection is active, `POST /api/v1/console/workspaces/{wsId}/apps/{appId}/icon` answers `503 {"error": "Icon uploads are temporarily unavailable", "code": "resource_protection"}` with `Cache-Control: no-store` and `Retry-After` — the same temporary-degradation semantics as the `/api/v1/files/*` read path (see [Optional Image Protection](rate-limits-and-cache.md#optional-image-protection-resource_protection-503)). It is not a validation failure of the icon file and not a permission problem: keep the local file, honor `Retry-After`, and retry the upload once the availability signal (`GET /api/v1/public/resource-protection`) reports `optionalImagesDisabled: false`.
+
 ---
 
 ## Optional Pre-Parse Authorization on `POST /api/v1/uploads/images` (header credentials)

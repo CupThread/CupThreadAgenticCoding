@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"mime/multipart"
 	"net/http"
@@ -195,6 +196,12 @@ type APIError struct {
 	// It is size-capped like every response body and nil for non-JSON
 	// bodies. Never print it raw: render only fields parsed out of it.
 	Body json.RawMessage
+	// RetryAfter is the parsed Retry-After hint of the failing response
+	// (issue #435), populated by decodeResponse for every non-2xx: 0 means
+	// "no usable hint". Only the resource_protection 503 documents the
+	// header today, but any response may carry it, so the field is
+	// unconditional. It is advisory — the caller applies its own pacing.
+	RetryAfter time.Duration
 }
 
 // Limits for rendering APIError.Details so a large schema error cannot flood
@@ -325,6 +332,17 @@ func (e *APIError) TierLimit() bool { return e.Status == http.StatusPaymentRequi
 // sharing that same 60/minute bucket — GET /api/v1/users/{userId}/profile.
 func (e *APIError) RateLimited() bool { return e.Status == http.StatusTooManyRequests }
 
+// ResourceProtected returns true when the API answered 503 with code
+// "resource_protection" (issue #435): the deployment's optional-image
+// protection is active, so an optional managed image — a GET /api/v1/files/*
+// asset or a console icon upload — is temporarily unavailable, not missing
+// or deleted. The degraded response always carries Cache-Control: no-store
+// and Retry-After, and the availability signal lives at
+// GET /api/v1/public/resource-protection.
+func (e *APIError) ResourceProtected() bool {
+	return e.Status == http.StatusServiceUnavailable && e.Code == "resource_protection"
+}
+
 // tierLimitHints maps known 402 error codes to actionable remediation for
 // CLI users and agents: submission endpoints (POST /api/v1/feature-requests,
 // POST /api/v1/feedback) and workspace creation (POST /api/v1/console/
@@ -370,6 +388,9 @@ var unauthorizedHints = map[string]string{
 func (e *APIError) Hint() string {
 	if e.RateLimited() {
 		return "too many requests from this client IP; wait before retrying and back off exponentially on repeated 429s"
+	}
+	if e.ResourceProtected() {
+		return "optional image protection is active on this deployment: the asset is temporarily unavailable, not deleted — the asset URL stays valid, honor the response's Retry-After before re-requesting, poll GET /api/v1/public/resource-protection for optionalImagesDisabled=false before resuming optional image loads, and never cache the degraded 503 response"
 	}
 	if e.Forbidden() {
 		return forbiddenHints[e.Code]
@@ -554,7 +575,7 @@ func (c *Client) DoWithHeaders(ctx context.Context, method, path string, query u
 			}
 			continue
 		}
-		return decodeResponse(method, path, resp, respBody, out, attempt+1)
+		return decodeResponse(method, path, resp.Header.Get("Retry-After"), resp, respBody, out, attempt+1)
 	}
 }
 
@@ -641,6 +662,31 @@ func (c *Client) parseRetryAfter(v string, now time.Time) (time.Duration, bool) 
 		return d, true
 	}
 	return 0, false
+}
+
+// parseRetryAfterHeader is the client-free form of parseRetryAfter used by
+// decodeResponse: delay-seconds or HTTP-date, negative and unparseable
+// values reported as absent. decodeResponse cannot reach the receiver's
+// ceiling-capped variant because the Retry-After value it reports to
+// callers (APIError.RetryAfter, issue #435) is advisory — the caller
+// applies its own pacing policy — so no cap is baked in here.
+func parseRetryAfterHeader(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs < 0 || secs > math.MaxInt64/int64(time.Second) {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 // backoffDelay returns a uniform random wait in [0, cap] where cap is
@@ -752,8 +798,10 @@ func (c *Client) readResponseBody(method, path string, resp *http.Response) ([]b
 
 // decodeResponse maps a finished attempt onto the caller's contract: 2xx
 // decodes into out, anything else becomes an *APIError stamped with the
-// number of wire attempts spent.
-func decodeResponse(method, path string, resp *http.Response, data []byte, out any, attempts int) error {
+// number of wire attempts spent. retryAfterHeader carries the response's
+// Retry-After value so a degraded resource_protection 503 can tell the
+// caller when the asset may be re-requested.
+func decodeResponse(method, path, retryAfterHeader string, resp *http.Response, data []byte, out any, attempts int) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &APIError{
 			Status:   resp.StatusCode,
@@ -772,6 +820,7 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 			apiErr.Details = parsed.Details
 		}
 		apiErr.RequestID = sanitizeRequestID(resp.Header.Get(requestIDHeader))
+		apiErr.RetryAfter = parseRetryAfterHeader(retryAfterHeader)
 		if apiErr.TierLimit() {
 			if hint := apiErr.Hint(); hint != "" {
 				return fmt.Errorf("tier limit: %w — %s", apiErr, hint)
@@ -780,6 +829,9 @@ func decodeResponse(method, path string, resp *http.Response, data []byte, out a
 		}
 		if apiErr.RateLimited() {
 			return fmt.Errorf("rate limited: %w — %s", apiErr, apiErr.Hint())
+		}
+		if apiErr.ResourceProtected() {
+			return fmt.Errorf("resource protected: %w — %s", apiErr, apiErr.Hint())
 		}
 		if apiErr.Unauthorized() {
 			if hint := apiErr.Hint(); hint != "" {

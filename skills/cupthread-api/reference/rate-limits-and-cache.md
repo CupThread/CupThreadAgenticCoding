@@ -97,3 +97,23 @@ Client guidance:
 - On `403` + `code: "email_not_verified"` from changelog subscribe, prompt for the **signed-in account's own email** — third-party addresses are not accepted on sign-in-only changelogs.
 
 ---
+
+## Optional Image Protection (`resource_protection` 503)
+
+When the deployment's image storage is under usage protection, optional managed images degrade instead of serving: an uncached `GET /api/v1/files/*` read answers
+
+```json
+503 {"error": "Image temporarily unavailable", "code": "resource_protection"}
+```
+
+with `Cache-Control: no-store` and a `Retry-After` header (icon uploads get the same coded `503` with "Icon uploads are temporarily unavailable"). A cached copy may still serve `200` — protection gates the **bucket read**, not the edge cache. This is a temporary degradation, **not** a missing or deleted resource; the asset URL stays valid.
+
+The companion availability signal is `GET /api/v1/public/resource-protection` → `200 {"optionalImagesDisabled": boolean}` with `Cache-Control: no-store`. It shares the per-IP public-read budget (generic `429`), and the server itself caches the state for 30 s, so polling faster buys nothing.
+
+Client contract:
+
+- **Branch on `code == "resource_protection"` + status `503`**, never on the `error` text — the messages differ per surface and are deliberately opaque.
+- **Treat it as temporary unavailability**: honor `Retry-After` before re-requesting, and resume normal loading once the signal reports `optionalImagesDisabled: false`. Never model the asset as deleted (no `404`-style cleanup, no link removal).
+- **Never cache the degraded response** — `no-store` is on the response, and clients must not persist the 503 body or treat it as the asset's state.
+- **Image-displaying clients** should poll the signal (~30 s cadence) and, while it reports `true`, render a local accessible placeholder for optional managed images (assets under `<PUBLIC_BASE_URL>/api/v1/files/…`) without requesting them; restore normal loading when it clears. An unreachable or invalid signal answer fails closed: assume `true` until a valid response arrives. Essential, non-image content is unaffected.
+- The signal is informational and does not guarantee a spending cap; do not use it for billing decisions.

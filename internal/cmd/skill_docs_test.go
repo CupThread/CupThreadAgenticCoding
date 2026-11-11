@@ -3252,3 +3252,58 @@ func TestSkillDocsIssue434UploadItemPutSessionCap(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillDocsIssue435OptionalImageProtection pins the issue #435 sync: the
+// public availability signal (GET /api/v1/public/resource-protection →
+// {"optionalImagesDisabled": boolean}, Cache-Control: no-store) and the
+// temporary `503 resource_protection` degraded-image response are documented
+// across the API skill (index row, endpoints row, protection reference
+// section, error-conventions classification, icon-upload note) and every SDK
+// skill, with the fail-closed placeholder guidance and the never-cache rule.
+func TestSkillDocsIssue435OptionalImageProtection(t *testing.T) {
+	apiDoc := readSkill(t, "cupthread-api")
+	for _, marker := range []string{
+		// SKILL.md index row + classification.
+		"`/api/v1/public/resource-protection` | `GET`",
+		"`503 resource_protection`",
+		"retryable-with-timing",
+		// endpoints.md rows.
+		"`200 {\"optionalImagesDisabled\": boolean}` with `Cache-Control: no-store`",
+		"transient availability signal, not a usage or spending guarantee",
+		"Poll no faster than every 30 s",
+		"an unreachable/invalid answer fails closed",
+		"`503 {\"error\": \"Image temporarily unavailable\", \"code\": \"resource_protection\"}`",
+		"a temporary degradation, not a missing or deleted resource",
+		"never cache the degraded response",
+		// rate-limits-and-cache.md protection section.
+		"protection gates the **bucket read**, not the edge cache",
+		"Branch on `code == \"resource_protection\"`",
+		"no `404`-style cleanup, no link removal",
+		// uploads-and-attachments.md icon-upload note.
+		"Icon uploads are temporarily unavailable",
+		"keep the local file, honor `Retry-After`",
+	} {
+		if !strings.Contains(apiDoc, marker) {
+			t.Errorf("cupthread-api docs are missing required issue-#435 marker %q", marker)
+		}
+	}
+
+	// Every SDK skill carries the display-side contract: poll the signal,
+	// placeholder while disabled, fail closed, honor Retry-After on the 503.
+	for _, sdk := range []string{"cupthread-swift-sdk", "cupthread-android-sdk", "cupthread-react-native-sdk", "cupthread-flutter-sdk"} {
+		sdkDoc := readSkill(t, sdk)
+		for _, marker := range []string{
+			"GET /api/v1/public/resource-protection",
+			"optionalImagesDisabled",
+			"local accessible placeholder",
+			"fails closed",
+			"an optional managed image can answer `503 {\"error\": …, \"code\": \"resource_protection\"}`",
+			"never cache the 503 body",
+			"does not guarantee a spending cap",
+		} {
+			if !strings.Contains(sdkDoc, marker) {
+				t.Errorf("%s docs are missing required issue-#435 marker %q", sdk, marker)
+			}
+		}
+	}
+}
