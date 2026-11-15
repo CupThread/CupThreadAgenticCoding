@@ -15,7 +15,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Unit tests only run for pushes to main and for pull requests opened by
+    # lexrus. PRs from anyone else are skipped entirely: go test executes
+    # PR-controlled source, and skipped runs also save Runzivo minutes.
+    if: github.event_name == 'push' || github.event.pull_request.user.login == 'lexrus'
+    runs-on: rzv-ubuntu-24.04-x64-2vcpu-8gb
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -58,6 +62,9 @@ jobs:
       - run: GOOS=plan9 go build ./...
 
   windows:
+    # Same author gate as the build job: no test runs for PRs from other accounts.
+    # The runner stays on GitHub-hosted Windows: Runzivo has no Windows runners.
+    if: github.event_name == 'push' || github.event.pull_request.user.login == 'lexrus'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
